@@ -192,7 +192,7 @@ class QueueConsumer:
         self._running = False
 
     def _insert_batch(self, batch: list[dict]) -> None:
-        """Synchronous: insert batch into SQLite in a transaction."""
+        """Synchronous: insert batch into SQLite in a transaction and notify SSE."""
         query = '''
             INSERT INTO logs (
                 timestamp, received_at, source_ip, source_alias,
@@ -205,10 +205,16 @@ class QueueConsumer:
         
         conn = get_connection(self._db_path)
         try:
-            conn.executemany(query, batch)
+            cursor = conn.cursor()
+            cursor.executemany(query, batch)
             conn.commit()
         except Exception as e:
             conn.rollback()
             raise e
         finally:
             conn.close()
+
+        # Broadcast newly inserted items to active SSE subscribers
+        from app.core.sse import sse_manager
+        for entry in batch:
+            sse_manager.broadcast_sync(entry)
