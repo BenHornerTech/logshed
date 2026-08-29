@@ -6,6 +6,7 @@ Tests FastAPI SPA static serving, AI preview/analyze/audit endpoints, same-host 
 import os
 import sqlite3
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -77,6 +78,9 @@ def populated_db(tmp_path: Path):
     )
     cursor.execute(
         "INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_model', 'gemini-2.5-flash', '2026-08-29T10:00:00Z', 0)"
+    )
+    cursor.execute(
+        "INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_api_key', 'test-api-key', '2026-08-29T10:00:00Z', 0)"
     )
 
     # Populate test logs
@@ -160,21 +164,29 @@ class TestAiEndpoints:
 
     @pytest.mark.asyncio
     async def test_ai_analyze_and_audit_workflow(self, populated_db, auth_client):
-        # Run analysis
-        res = await auth_client.post(
-            "/api/ai/analyze",
-            json={
-                "log_ids": [1, 2],
-                "user_context": "Testing recent router changes",
-                "model": "gemini-2.5-flash",
-            },
-        )
-        assert res.status_code == 200
-        data = res.json()
-        assert "summary" in data
-        assert "root_cause" in data
-        assert "remediation" in data
-        assert data["audit_id"] is not None
+        # Run analysis with mock
+        with patch("app.api.ai.execute_ai_analysis", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = (
+                "Analysis for 2 log entries from router (dnsmasq).",
+                "The log stream indicates potential service configuration errors.",
+                "1. Check container service status.\n2. Review network.",
+                "Raw LLM response",
+                200,
+            )
+            res = await auth_client.post(
+                "/api/ai/analyze",
+                json={
+                    "log_ids": [1, 2],
+                    "user_context": "Testing recent router changes",
+                    "model": "gemini-2.5-flash",
+                },
+            )
+            assert res.status_code == 200
+            data = res.json()
+            assert "summary" in data
+            assert "root_cause" in data
+            assert "remediation" in data
+            assert data["audit_id"] is not None
 
         # Retrieve audit log
         audit_res = await auth_client.get("/api/ai/audit?limit=10")

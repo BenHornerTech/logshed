@@ -22,7 +22,7 @@ import os
 import sqlite3
 import stat
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -611,23 +611,41 @@ class TestSystemAndMaintenance:
 
 
 # ---------------------------------------------------------------------------
-# 6. Notification Stubs Tests
+# 6. Notification Endpoints Tests
 # ---------------------------------------------------------------------------
 
 class TestNotificationStubs:
     @pytest.mark.asyncio
-    async def test_notifications_test_endpoint(self, client: AsyncClient, auth_cookie: dict):
-        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
-        res = await client.post("/api/notifications/test")
-        assert res.status_code == 200
-        assert res.json() == {"status": "ok", "detail": None}
+    async def test_notifications_test_endpoint(self, client: AsyncClient, auth_cookie: dict, tmp_path: Path):
+        db_file = tmp_path / "logs.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_user_key', 'user-key', '2026-08-29T10:00:00Z', 0)")
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_app_token', 'app-token', '2026-08-29T10:00:00Z', 0)")
+        conn.commit()
+        conn.close()
+
+        with patch("app.api.notifications.send_pushover_message", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = {"status": 1}
+            client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+            res = await client.post("/api/notifications/test")
+            assert res.status_code == 200
+            assert res.json()["status"] == "ok"
 
     @pytest.mark.asyncio
-    async def test_notifications_pushover_stub_endpoint(self, client: AsyncClient, auth_cookie: dict):
-        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
-        res = await client.post(
-            "/api/notifications/pushover",
-            json={"title": "Test Title", "message": "Test Message", "priority": 0},
-        )
-        assert res.status_code == 200
-        assert res.json() == {"status": "queued"}
+    async def test_notifications_pushover_stub_endpoint(self, client: AsyncClient, auth_cookie: dict, tmp_path: Path):
+        db_file = tmp_path / "logs.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_user_key', 'user-key', '2026-08-29T10:00:00Z', 0)")
+        conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_app_token', 'app-token', '2026-08-29T10:00:00Z', 0)")
+        conn.commit()
+        conn.close()
+
+        with patch("app.api.notifications.send_pushover_message", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = {"status": 1}
+            client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+            res = await client.post(
+                "/api/notifications/pushover",
+                json={"title": "Test Title", "message": "Test Message", "priority": 0},
+            )
+            assert res.status_code == 200
+            assert res.json()["status"] == "sent"

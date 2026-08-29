@@ -3,12 +3,17 @@ AI Preview, Analysis, and Audit Log API endpoints for Homelab Log Hub.
 """
 
 import datetime
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user, run_db_query
 from app.core.sanitizer import sanitize
+from app.core.security import decrypt_value
+from app.services.ai_engine import execute_ai_analysis
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ai", tags=["AI"])
 
@@ -61,6 +66,34 @@ class AiAuditListResponse(BaseModel):
     total: int
 
 
+def _fetch_and_validate_logs(conn, log_ids: list[int]):
+    """
+    Helper to fetch logs by IDs, sort chronologically, and validate single-host constraint.
+    """
+    placeholders = ",".join("?" * len(log_ids))
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT id, timestamp, source_ip, source_alias, app_name, severity, message
+        FROM logs
+        WHERE id IN ({placeholders})
+        ORDER BY timestamp ASC, id ASC
+        """,
+        log_ids,
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return None, "No logs found for provided IDs."
+
+    # Verify single-host consistency across source_alias and source_ip
+    source_aliases = {r["source_alias"] for r in rows}
+    source_ips = {r["source_ip"] for r in rows}
+    if len(source_aliases) > 1 or len(source_ips) > 1:
+        return None, "Selected logs must share the same host alias and source IP."
+
+    return rows, None
+
+
 @router.post("/preview", response_model=AiPreviewResponse)
 async def preview_ai_prompt(
     req: AiPreviewRequest,
@@ -68,30 +101,15 @@ async def preview_ai_prompt(
 ) -> AiPreviewResponse:
     """
     Generate a sanitized preview of selected logs with token estimation.
-    Enforces that all selected logs belong to the exact same host alias.
+    Enforces that all selected logs belong to the exact same host alias and IP.
+    Makes NO outbound LLM calls.
     """
-    def _fetch_logs_and_settings(conn):
-        placeholders = ",".join("?" * len(req.log_ids))
+    def _fetch(conn):
+        rows, err = _fetch_and_validate_logs(conn, req.log_ids)
+        if err:
+            return None, err
+
         cursor = conn.cursor()
-        cursor.execute(
-            f"""
-            SELECT id, timestamp, source_ip, source_alias, app_name, severity, message
-            FROM logs
-            WHERE id IN ({placeholders})
-            ORDER BY timestamp ASC, id ASC
-            """,
-            req.log_ids,
-        )
-        rows = cursor.fetchall()
-        if not rows:
-            return None, "No logs found for provided IDs."
-
-        # Verify host consistency
-        source_aliases = {r["source_alias"] for r in rows}
-        if len(source_aliases) > 1:
-            return None, "Selected logs must share the same host alias."
-
-        # Fetch provider & model defaults
         cursor.execute("SELECT key, value FROM system_settings WHERE key IN ('ai_provider', 'ai_model')")
         settings_map = {r["key"]: r["value"] for r in cursor.fetchall()}
         provider = settings_map.get("ai_provider") or "gemini"
@@ -99,7 +117,7 @@ async def preview_ai_prompt(
 
         return (rows, provider, model), None
 
-    result, err = await run_db_query(_fetch_logs_and_settings)
+    result, err = await run_db_query(_fetch)
     if err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -135,18 +153,74 @@ async def analyze_logs(
 ) -> AiAnalyzeResponse:
     """
     Execute AI analysis for selected logs.
+    This is the ONLY code path permitted to dispatch outbound LLM requests.
     """
-    # Fetch preview first to validate same host and get sanitized prompt
-    preview_res = await preview_ai_prompt(AiPreviewRequest(log_ids=req.log_ids), user=user)
+    def _fetch_data_and_settings(conn):
+        rows, err = _fetch_and_validate_logs(conn, req.log_ids)
+        if err:
+            return None, err
 
-    model_used = req.model or preview_res.model
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT key, value, is_encrypted FROM system_settings WHERE key IN ('ai_provider', 'ai_model', 'ai_api_key', 'ai_base_url')"
+        )
+        settings_rows = cursor.fetchall()
+        settings = {}
+        for r in settings_rows:
+            k = r["key"]
+            v = r["value"] or ""
+            if bool(r["is_encrypted"]) and v:
+                try:
+                    v = decrypt_value(v)
+                except Exception:
+                    v = ""
+            settings[k] = v
+
+        return (rows, settings), None
+
+    result, err = await run_db_query(_fetch_data_and_settings)
+    if err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=err,
+        )
+
+    rows, settings = result
+    source_alias = rows[0]["source_alias"]
+    app_name = rows[0]["app_name"]
+
+    raw_lines = [f"[{r['timestamp']}] [{r['app_name']}] {r['message']}" for r in rows]
+    sanitized_lines = sanitize(raw_lines)
+    sanitized_logs = "\n".join(sanitized_lines) if isinstance(sanitized_lines, list) else str(sanitized_lines)
+
+    provider = req.provider or settings.get("ai_provider") or "gemini"
+    default_model = "gemini-2.5-flash" if provider == "gemini" else "gpt-4o"
+    model = req.model or settings.get("ai_model") or default_model
+    api_key = settings.get("ai_api_key", "")
+    base_url = settings.get("ai_base_url") or None
+
+    try:
+        summary, root_cause, remediation, raw_response, tokens_used = await execute_ai_analysis(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            source_alias=source_alias,
+            app_name=app_name,
+            sanitized_logs=sanitized_logs,
+            log_count=len(rows),
+            user_context=req.user_context,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except Exception as exc:
+        logger.error(f"AI analysis execution failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI analysis failed: {exc}",
+        )
+
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-    summary = f"Analysis for {preview_res.log_count} log entries from {preview_res.source_alias} ({preview_res.app_name})."
-    root_cause = "The log stream indicates potential service configuration errors or connection anomalies requiring investigation."
-    remediation = "1. Check container service status.\n2. Review system network configurations.\n3. Inspect application logs for unhandled exceptions."
-    response_text = f"## Summary\n{summary}\n\n## Root Cause\n{root_cause}\n\n## Actionable Remediation\n{remediation}"
-    tokens_used = preview_res.estimated_tokens + 150
 
     def _save_audit(conn):
         cursor = conn.cursor()
@@ -158,13 +232,13 @@ async def analyze_logs(
             """,
             (
                 now,
-                preview_res.source_alias,
-                preview_res.app_name,
-                preview_res.log_count,
+                source_alias,
+                app_name,
+                len(rows),
                 req.user_context or "",
-                model_used,
-                preview_res.sanitized_prompt,
-                response_text,
+                model,
+                sanitized_logs,
+                raw_response,
                 tokens_used,
             ),
         )
@@ -178,7 +252,7 @@ async def analyze_logs(
         summary=summary,
         root_cause=root_cause,
         remediation=remediation,
-        model_used=model_used,
+        model_used=model,
         tokens_used=tokens_used,
         audit_id=audit_id,
     )
