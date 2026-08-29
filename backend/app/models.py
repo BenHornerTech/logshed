@@ -21,6 +21,12 @@ class LoginRequest(BaseModel):
     password: str = Field(..., description="Admin password")
 
 
+class PasswordChangeRequest(BaseModel):
+    """Payload for changing admin password."""
+    current_password: str = Field(..., min_length=1, description="Current password")
+    new_password: str = Field(..., min_length=8, description="New password (min 8 characters)")
+
+
 class AuthStatusResponse(BaseModel):
     """Authentication and setup status."""
     setup_required: bool

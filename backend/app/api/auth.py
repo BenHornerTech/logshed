@@ -6,7 +6,7 @@ Provides setup lockout, Argon2id verification, rate-limited login, and session c
 import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from app.api.deps import get_optional_user, run_db_query
+from app.api.deps import get_current_user, get_optional_user, run_db_query
 from app.core.rate_limiter import login_rate_limiter
 from app.core.security import (
     SESSION_COOKIE_NAME,
@@ -14,7 +14,13 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models import AuthStatusResponse, LoginRequest, MessageResponse, SetupRequest
+from app.models import (
+    AuthStatusResponse,
+    LoginRequest,
+    MessageResponse,
+    PasswordChangeRequest,
+    SetupRequest,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -144,3 +150,33 @@ async def auth_status(request: Request) -> AuthStatusResponse:
         setup_required=not is_setup,
         authenticated=user is not None,
     )
+
+
+@router.post("/password", response_model=MessageResponse)
+async def change_password(
+    req: PasswordChangeRequest,
+    user: dict = Depends(get_current_user),
+) -> MessageResponse:
+    """Change the admin password for an authenticated session."""
+    def _verify_and_update(conn):
+        cursor = conn.cursor()
+        cursor.execute("SELECT password_hash FROM admin_auth WHERE id = 1")
+        row = cursor.fetchone()
+        if not row or not verify_password(row[0], req.current_password):
+            return False
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        new_hash = hash_password(req.new_password)
+        cursor.execute(
+            "UPDATE admin_auth SET password_hash = ?, updated_at = ? WHERE id = 1",
+            (new_hash, now),
+        )
+        conn.commit()
+        return True
+
+    success = await run_db_query(_verify_and_update)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
+        )
+    return MessageResponse(status="ok")

@@ -1,0 +1,43 @@
+import { render, screen } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { StorageCard, formatBytes } from '../components/settings/StorageCard.tsx';
+import { StorageMetricsResponse } from '../types.ts';
+
+describe('StorageCard Component', () => {
+  it('formats byte sizes correctly', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(1024)).toBe('1 KB');
+    expect(formatBytes(1024 * 1024 * 50)).toBe('50 MB');
+    expect(formatBytes(1024 * 1024 * 1024 * 2.5)).toBe('2.5 GB');
+  });
+
+  it('renders mock storage metrics with correct calculations', () => {
+    const mockMetrics: StorageMetricsResponse = {
+      db_size_bytes: 18247000000,      // 16.99 GB
+      disk_free_bytes: 450000000000,    // 419.1 GB free
+      disk_total_bytes: 1000000000000,  // 931.32 GB total
+      history: [
+        {
+          recorded_at: '2026-08-29T12:00:00Z',
+          db_size_bytes: 18247000000,
+          disk_free_bytes: 450000000000,
+          disk_total_bytes: 1000000000000,
+          total_logs_count: 26000000,
+        },
+      ],
+    };
+
+    render(<StorageCard metrics={mockMetrics} />);
+
+    // DB size display
+    expect(screen.getByTestId('db-size-display')).toHaveTextContent('16.99 GB');
+    // Disk free display
+    expect(screen.getByTestId('disk-free-display')).toHaveTextContent('419.1 GB');
+    // Total logs count
+    expect(screen.getByText('26,000,000')).toBeInTheDocument();
+
+    // Progress bar width: used = (1000 - 450) / 1000 = 55%
+    const progressBar = screen.getByTestId('disk-usage-bar');
+    expect(progressBar).toHaveStyle({ width: '55%' });
+  });
+});

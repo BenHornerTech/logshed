@@ -8,10 +8,14 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import APIRouter, FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from pathlib import Path
 
-from app.api import aliases, auth, logs, notifications, settings, system
+from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.api import ai, aliases, auth, logs, notifications, settings, system
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
 from app.core.config import get_db_path, get_docker_host
@@ -128,8 +132,28 @@ def create_app() -> FastAPI:
     api_router.include_router(aliases.router)
     api_router.include_router(system.router)
     api_router.include_router(notifications.router)
+    api_router.include_router(ai.router)
 
     app.include_router(api_router)
+
+    # Static files serving with SPA fallback
+    static_dir = Path(__file__).resolve().parent / "static"
+    if static_dir.exists():
+        assets_dir = static_dir / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+        @app.get("/{full_path:path}")
+        async def serve_spa(full_path: str):
+            if full_path.startswith("api"):
+                raise HTTPException(status_code=404, detail="Not Found")
+            file_path = static_dir / full_path
+            if file_path.is_file():
+                return FileResponse(str(file_path))
+            index_path = static_dir / "index.html"
+            if index_path.is_file():
+                return FileResponse(str(index_path))
+            raise HTTPException(status_code=404, detail="Static files not found")
 
     return app
 
