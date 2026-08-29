@@ -1,0 +1,40 @@
+# Git & CI/CD
+.git
+.github
+.gitignore
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Python virtual environment and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend development artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local data & environment configs
+.env
+.env.local
+.env.*.local
+/data/
+
+# OS and Editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Backend tests (not needed inside production runtime image)
+backend/tests/
