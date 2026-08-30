@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>homelab-log-hub</Name>
+  <Repository>ghcr.io/yourusername/homelab-log-hub:latest</Repository>
+  <Registry>https://github.com/orgs/yourusername/packages/container/package/homelab-log-hub</Registry>
+  <Network>br0</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/yourusername/homelab-log-hub/issues</Support>
+  <Project>https://github.com/yourusername/homelab-log-hub</Project>
+  <Overview>Homelab Log Hub is a lightweight, single-process syslog and Docker log aggregator featuring real-time virtualized streaming, SQLite FTS5 search, and user-initiated AI root-cause analysis.</Overview>
+  <Category>Tools: System: Status: Network:Management</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/yourusername/homelab-log-hub/main/frontend/public/icon.svg</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Web UI &amp; REST API" Target="8080" Default="8080" Mode="tcp" Description="Web UI and REST API port." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Syslog Ingestion (UDP)" Target="1514" Default="1514" Mode="udp" Description="Syslog UDP ingestion port (RFC 3164 and RFC 5424)." Type="Port" Display="always" Required="true" Mask="false">1514</Config>
+  <Config Name="Syslog Ingestion (TCP)" Target="1514" Default="1514" Mode="tcp" Description="Syslog TCP ingestion port." Type="Port" Display="always" Required="true" Mask="false">1514</Config>
+  <Config Name="Application Data" Target="/data" Default="/mnt/user/appdata/homelab-log-hub" Mode="rw" Description="Location for SQLite database (logs.db, WAL, SHM) and encryption master key. Recommended on SSD cache pool." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/homelab-log-hub</Config>
+  <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="ro" Description="Host Docker socket for automated container discovery and log streaming (read-only)." Type="Path" Display="always" Required="false" Mask="false">/var/run/docker.sock</Config>
+  <Config Name="PUID" Target="PUID" Default="1000" Description="User ID for non-root execution." Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
+  <Config Name="PGID" Target="PGID" Default="1000" Description="Group ID for non-root execution." Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
+  <Config Name="Timezone" Target="TZ" Default="America/New_York" Description="Container timezone." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
+</Container>
