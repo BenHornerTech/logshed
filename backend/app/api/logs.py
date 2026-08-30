@@ -14,15 +14,17 @@ from app.api.deps import get_current_user, run_db_query
 from app.core.sse import sse_manager
 from app.models import LogContextResponse, LogEntry, LogListResponse
 
+import sqlite3
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/logs", tags=["Logs"])
 
 
-def _sanitize_fts_query(query_str: str) -> str:
+def _escape_fts_tokens(query_str: str) -> str:
     """
-    Sanitize search string for SQLite FTS5 MATCH syntax to avoid syntax errors
-    on unescaped quotes, colons, or punctuation.
+    Fallback token sanitizer that wraps words in double quotes to handle
+    malformed user input without causing FTS5 syntax errors.
     """
     q = query_str.strip()
     if not q:
@@ -30,10 +32,14 @@ def _sanitize_fts_query(query_str: str) -> str:
     words = q.split()
     tokens = []
     for w in words:
-        # Escape double quotes
         escaped = w.replace('"', '""')
         tokens.append(f'"{escaped}"')
     return " ".join(tokens)
+
+
+def _sanitize_fts_query(query_str: str) -> str:
+    """Backwards-compatible alias for _escape_fts_tokens."""
+    return _escape_fts_tokens(query_str)
 
 
 @router.get("", response_model=LogListResponse)
@@ -50,6 +56,7 @@ async def list_logs(
 ) -> LogListResponse:
     """
     Query logs with full-text search, source/app filtering, severity range, and time bounds.
+    Supports native SQLite FTS5 query syntax (e.g. column filters, AND/OR/NOT, wildcards).
     """
     def _query_db(conn):
         where_clauses: list[str] = []
@@ -60,7 +67,7 @@ async def list_logs(
 
         if is_fts:
             from_table = "logs JOIN logs_fts ON logs.id = logs_fts.rowid"
-            fts_term = _sanitize_fts_query(query)
+            fts_term = query.strip()
             where_clauses.append("logs_fts MATCH :fts_term")
             params["fts_term"] = fts_term
 
@@ -88,10 +95,6 @@ async def list_logs(
 
         # Total count query
         count_sql = f"SELECT COUNT(*) FROM {from_table} {where_sql}"
-        cursor = conn.cursor()
-        cursor.execute(count_sql, params)
-        total = cursor.fetchone()[0]
-
         # Log selection query
         select_sql = f"""
             SELECT logs.id, logs.timestamp, logs.received_at, logs.source_ip, logs.source_alias,
@@ -101,8 +104,27 @@ async def list_logs(
             ORDER BY logs.timestamp DESC, logs.id DESC
             LIMIT :limit OFFSET :offset
         """
-        cursor.execute(select_sql, params)
-        rows = cursor.fetchall()
+
+        cursor = conn.cursor()
+        try:
+            cursor.execute(count_sql, params)
+            total = cursor.fetchone()[0]
+            cursor.execute(select_sql, params)
+            rows = cursor.fetchall()
+        except sqlite3.OperationalError as e:
+            if is_fts:
+                logger.info(f"FTS5 query '{params.get('fts_term')}' failed ({e}), falling back to tokenized search.")
+                params["fts_term"] = _escape_fts_tokens(query)
+                try:
+                    cursor.execute(count_sql, params)
+                    total = cursor.fetchone()[0]
+                    cursor.execute(select_sql, params)
+                    rows = cursor.fetchall()
+                except sqlite3.OperationalError:
+                    total = 0
+                    rows = []
+            else:
+                raise
 
         logs = [
             LogEntry(

@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import ai, aliases, auth, logs, notifications, settings, system
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
-from app.core.config import get_db_path, get_docker_host
+from app.core.config import get_cors_origins, get_db_path, get_docker_host
 from app.core.migrations import run_migrations
 from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer
 from app.core.security import get_or_create_master_key
@@ -34,6 +34,27 @@ _prune_worker: Optional[PruneWorker] = None
 _syslog_server: Optional[SyslogServer] = None
 _docker_tailer: Optional[DockerTailer] = None
 _background_tasks: list[asyncio.Task] = []
+
+
+async def _supervise_worker(coro_fn, name: str, *args, **kwargs) -> None:
+    """
+    Supervisor wrapper running a worker coroutine with exception isolation
+    and exponential backoff restart without crashing the event loop (SPEC.md §1).
+    """
+    backoff = 1.0
+    while True:
+        try:
+            await coro_fn(*args, **kwargs)
+            break
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Worker '{name}' crashed with error: {e}. Restarting in {backoff:.1f}s...")
+            try:
+                await asyncio.sleep(backoff)
+            except asyncio.CancelledError:
+                break
+            backoff = min(backoff * 2.0, 60.0)
 
 
 @asynccontextmanager
@@ -53,21 +74,21 @@ async def lifespan(app: FastAPI):
 
     # 2. Start QueueConsumer
     _queue_consumer = QueueConsumer(db_path)
-    _background_tasks.append(asyncio.create_task(_queue_consumer.run()))
+    _background_tasks.append(asyncio.create_task(_supervise_worker(_queue_consumer.run, "QueueConsumer")))
 
     # 3. Start StorageMetricsWorker
     _metrics_worker = StorageMetricsWorker(db_path)
-    _background_tasks.append(asyncio.create_task(_metrics_worker.run()))
+    _background_tasks.append(asyncio.create_task(_supervise_worker(_metrics_worker.run, "StorageMetricsWorker")))
 
     # 4. Start PruneWorker (runs automated daily retention pruning)
     _prune_worker = PruneWorker(db_path)
-    _background_tasks.append(asyncio.create_task(_prune_worker.run()))
+    _background_tasks.append(asyncio.create_task(_supervise_worker(_prune_worker.run, "PruneWorker")))
 
     # 5. Start Syslog Server (optional / non-fatal in dev/test)
     try:
         assembler = KeyedMultilineAssembler()
         _syslog_server = SyslogServer(assembler=assembler, db_path=db_path, host="0.0.0.0", port=1514)
-        _background_tasks.append(asyncio.create_task(_syslog_server.start()))
+        _background_tasks.append(asyncio.create_task(_supervise_worker(_syslog_server.start, "SyslogServer")))
         logger.info("SyslogServer listener started on port 1514.")
     except Exception as e:
         logger.warning(f"SyslogServer could not be started: {e}")
@@ -76,7 +97,7 @@ async def lifespan(app: FastAPI):
     try:
         docker_assembler = KeyedMultilineAssembler()
         _docker_tailer = DockerTailer(assembler=docker_assembler)
-        _background_tasks.append(asyncio.create_task(_docker_tailer.run()))
+        _background_tasks.append(asyncio.create_task(_supervise_worker(_docker_tailer.run, "DockerTailer")))
         logger.info(f"DockerTailer started for {get_docker_host()}.")
     except Exception as e:
         logger.warning(f"DockerTailer could not be started: {e}")
@@ -118,14 +139,7 @@ def create_app() -> FastAPI:
     # CORS Middleware allowing credentials for Vite frontend development
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:8080",
-            "http://127.0.0.1:8080",
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-        ],
+        allow_origins=get_cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

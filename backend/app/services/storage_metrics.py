@@ -116,16 +116,27 @@ class StorageMetricsWorker:
         self._manual_trigger = asyncio.Event()
 
     async def run(self) -> None:
-        """Main loop: sample hourly, or immediately on manual trigger."""
+        """Main loop: sample hourly, or immediately on manual trigger, with exponential backoff on errors."""
         self._running = True
         logger.info("StorageMetricsWorker started.")
+        backoff = 5.0
         
         while self._running:
             try:
                 # Record metrics
                 await asyncio.to_thread(record_metrics, self._db_path)
+                backoff = 5.0
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"Error in StorageMetricsWorker loop: {e}")
+                logger.error(f"Error in StorageMetricsWorker loop: {e}. Retrying in {backoff:.1f}s...")
+                try:
+                    await asyncio.wait_for(self._manual_trigger.wait(), timeout=backoff)
+                    self._manual_trigger.clear()
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2.0, 300.0)
+                continue
             
             # Wait for 3600 seconds or manual trigger
             try:
@@ -135,6 +146,8 @@ class StorageMetricsWorker:
             except asyncio.TimeoutError:
                 # Hourly timer expired, just continue the loop
                 pass
+            except asyncio.CancelledError:
+                break
 
     async def stop(self) -> None:
         """Signal graceful shutdown."""

@@ -4,19 +4,24 @@ Supports UDP and TCP on port 1514, parsing RFC 3164 and RFC 5424.
 """
 
 import asyncio
+from collections import OrderedDict
 import datetime
 import logging
 import re
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
+from app.core.migrations import get_connection
 from app.core.pipeline import KeyedMultilineAssembler
 
 logger = logging.getLogger(__name__)
 
-_alias_cache: dict[str, tuple[str, float]] = {}
+_ALIAS_CACHE_MAX_SIZE = 1000
+_alias_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
+_alias_cache_lock = threading.Lock()
 
 def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
     """
@@ -101,32 +106,43 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
 def resolve_alias(source_ip: str, db_path: str | Path) -> str:
     """
     Look up source_ip in the host_aliases table.
-    Caches aliases for 60 seconds.
+    Caches aliases for 60 seconds with LRU eviction (max 1000 entries).
+    Uses get_connection() to ensure proper WAL mode and pragmas.
     """
     now = time.time()
-    if source_ip in _alias_cache:
-        alias, cached_time = _alias_cache[source_ip]
-        if now - cached_time < 60:
-            return alias
-            
+    with _alias_cache_lock:
+        if source_ip in _alias_cache:
+            alias, cached_time = _alias_cache[source_ip]
+            if now - cached_time < 60:
+                _alias_cache.move_to_end(source_ip)
+                return alias
+            else:
+                del _alias_cache[source_ip]
+
+    alias = source_ip
     try:
-        with sqlite3.connect(db_path) as conn:
+        conn = get_connection(db_path)
+        try:
             cursor = conn.cursor()
             cursor.execute("SELECT alias FROM host_aliases WHERE ip = ?", (source_ip,))
             row = cursor.fetchone()
             if row:
                 alias = row[0]
-                _alias_cache[source_ip] = (alias, now)
-                return alias
+        finally:
+            conn.close()
     except sqlite3.OperationalError:
         # Table might not exist yet
         pass
     except Exception as e:
         logger.error(f"Error resolving alias for {source_ip}: {e}")
-        
-    # Cache the original IP as fallback to avoid hammering the DB
-    _alias_cache[source_ip] = (source_ip, now)
-    return source_ip
+
+    with _alias_cache_lock:
+        _alias_cache[source_ip] = (alias, now)
+        _alias_cache.move_to_end(source_ip)
+        while len(_alias_cache) > _ALIAS_CACHE_MAX_SIZE:
+            _alias_cache.popitem(last=False)
+
+    return alias
 
 
 class SyslogUDPProtocol(asyncio.DatagramProtocol):

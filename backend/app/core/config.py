@@ -39,3 +39,17 @@ def get_port() -> int:
 def get_docker_host() -> str:
     """Returns the Docker host socket or proxy address."""
     return os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
+
+def get_cors_origins() -> list[str]:
+    """Returns the list of allowed CORS origins from CORS_ORIGINS env var or defaults."""
+    env_origins = os.environ.get("CORS_ORIGINS")
+    if env_origins:
+        return [origin.strip() for origin in env_origins.split(",") if origin.strip()]
+    return [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]

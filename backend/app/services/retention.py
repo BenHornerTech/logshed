@@ -93,16 +93,26 @@ class PruneWorker:
         self._stop_event = asyncio.Event()
 
     async def run(self) -> None:
-        """Main loop: run daily retention pruning."""
+        """Main loop: run daily retention pruning with exponential backoff on errors."""
         self._running = True
         logger.info("PruneWorker started.")
+        backoff = 5.0
 
         while self._running:
             try:
                 retention_days = await asyncio.to_thread(self._get_retention_days)
                 await execute_prune_async(self._db_path, retention_days=retention_days)
+                backoff = 5.0
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"Error in PruneWorker daily pruning loop: {e}")
+                logger.error(f"Error in PruneWorker daily pruning loop: {e}. Retrying in {backoff:.1f}s...")
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
+                    break
+                except asyncio.TimeoutError:
+                    backoff = min(backoff * 2.0, 3600.0)
+                    continue
 
             # Wait 24 hours (86400 seconds) or until stop signal
             try:
@@ -110,6 +120,8 @@ class PruneWorker:
                 break
             except asyncio.TimeoutError:
                 continue
+            except asyncio.CancelledError:
+                break
 
     def _get_retention_days(self) -> int:
         """Synchronous query for configured retention_days."""

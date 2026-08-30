@@ -5,6 +5,7 @@ Provides the shared queue, multiline assembly, and SQLite batch consumer.
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Optional
 from pathlib import Path
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 # Module-level shared state
 _log_queue: Optional[asyncio.Queue] = None
 _dropped_logs_total: int = 0
+_dropped_logs_lock = threading.Lock()
 _QUEUE_MAXSIZE = 10000
 
 def get_queue() -> asyncio.Queue:
@@ -26,9 +28,16 @@ def get_queue() -> asyncio.Queue:
         _log_queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
     return _log_queue
 
+def increment_dropped_count(amount: int = 1) -> None:
+    """Thread-safe increment of the dropped logs counter."""
+    global _dropped_logs_total
+    with _dropped_logs_lock:
+        _dropped_logs_total += amount
+
 def get_dropped_count() -> int:
     """Returns the total number of logs dropped due to queue overflow."""
-    return _dropped_logs_total
+    with _dropped_logs_lock:
+        return _dropped_logs_total
 
 def _is_continuation(line: str) -> bool:
     """
@@ -141,8 +150,7 @@ class KeyedMultilineAssembler:
         try:
             queue.put_nowait(merged_entry)
         except asyncio.QueueFull:
-            global _dropped_logs_total
-            _dropped_logs_total += 1
+            increment_dropped_count(1)
 
     async def flush_all(self) -> None:
         """Flush all streams. Called on shutdown."""
@@ -163,6 +171,7 @@ class QueueConsumer:
         """Main loop: drain queue with deadline-based batching (up to 5000 records or 2s window)."""
         self._running = True
         queue = get_queue()
+        error_backoff = 0.5
         
         while self._running:
             # Wait for the first item
@@ -207,8 +216,11 @@ class QueueConsumer:
                     from app.core.sse import sse_manager
                     for entry in batch:
                         sse_manager.broadcast_sync(entry)
+                    error_backoff = 0.5
                 except Exception as e:
-                    logger.error(f"Error inserting batch: {e}")
+                    logger.error(f"Error inserting batch: {e}. Backing off for {error_backoff:.1f}s...")
+                    await asyncio.sleep(error_backoff)
+                    error_backoff = min(error_backoff * 2.0, 30.0)
                     
                 # Mark as done
                 for _ in batch:
