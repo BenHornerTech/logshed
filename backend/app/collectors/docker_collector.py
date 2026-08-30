@@ -150,6 +150,8 @@ async def _tail_container_logs(
     Stream logs for a single container, feeding lines through the assembler.
 
     Streams from 'now' (tail=0, follow=true) so we only get new log lines.
+    Uses proper Docker multiplexed stream frame parsing when tty=false,
+    and newline-delimited raw text when tty=true.
     """
     stream_key = f"docker:{container_id}"
     url = f"/containers/{container_id}/logs"
@@ -161,6 +163,17 @@ async def _tail_container_logs(
         "timestamps": "false",
     }
 
+    # Detect whether the container is running in TTY mode.
+    # TTY mode sends raw text; non-TTY sends multiplexed frames with 8-byte headers.
+    is_tty = False
+    try:
+        inspect_resp = await client.get(f"/containers/{container_id}/json")
+        if inspect_resp.status_code == 200:
+            config = inspect_resp.json().get("Config", {})
+            is_tty = bool(config.get("Tty", False))
+    except Exception:
+        pass  # Default to multiplexed if inspect fails
+
     try:
         async with client.stream("GET", url, params=params) as resp:
             resp.raise_for_status()
@@ -169,15 +182,51 @@ async def _tail_container_logs(
                 if cancel_event.is_set():
                     return
                 buffer += chunk
-                while b"\n" in buffer:
-                    line_bytes, buffer = buffer.split(b"\n", 1)
-                    if not line_bytes:
-                        continue
-                    message = _parse_docker_log_line(line_bytes)
-                    if not message:
-                        continue
-                    entry = _make_log_entry(container_name, container_id, message)
-                    await assembler.feed(stream_key, entry)
+
+                if is_tty:
+                    # TTY mode: raw text, split by newline
+                    while b"\n" in buffer:
+                        line_bytes, buffer = buffer.split(b"\n", 1)
+                        if not line_bytes:
+                            continue
+                        message = line_bytes.decode("utf-8", errors="replace").rstrip("\r")
+                        if message:
+                            entry = _make_log_entry(container_name, container_id, message)
+                            await assembler.feed(stream_key, entry)
+                else:
+                    # Multiplexed mode: 8-byte header + payload
+                    # Header: stream_type(1) + padding(3) + size(4 big-endian)
+                    while len(buffer) >= 8:
+                        # Peek at the header to get payload size
+                        stream_type = buffer[0]
+                        if stream_type not in (0, 1, 2):
+                            # Invalid stream type — likely corrupted or
+                            # actually a TTY stream despite inspect saying otherwise.
+                            # Fall back to newline-delimited parsing for remainder.
+                            is_tty = True
+                            break
+                        payload_size = int.from_bytes(buffer[4:8], "big")
+                        # Sanity-check payload size to avoid OOM on corrupt frames
+                        if payload_size > 16 * 1024 * 1024:  # 16 MB max
+                            logger.warning(
+                                f"Docker frame claims {payload_size} bytes for "
+                                f"{container_name} — dropping frame"
+                            )
+                            buffer = b""
+                            break
+                        frame_total = 8 + payload_size
+                        if len(buffer) < frame_total:
+                            # Need more data to complete this frame
+                            break
+                        payload = buffer[8:frame_total]
+                        buffer = buffer[frame_total:]
+                        # Each payload may contain multiple newline-terminated lines
+                        text = payload.decode("utf-8", errors="replace")
+                        for line in text.splitlines():
+                            line = line.rstrip("\r")
+                            if line:
+                                entry = _make_log_entry(container_name, container_id, line)
+                                await assembler.feed(stream_key, entry)
     except httpx.RemoteProtocolError:
         # Container stopped or connection reset
         logger.debug(f"Log stream ended for container {container_name} ({container_id[:12]})")

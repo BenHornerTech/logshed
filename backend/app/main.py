@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
     # 4. Start Syslog Server (optional / non-fatal in dev/test)
     try:
         assembler = KeyedMultilineAssembler()
-        _syslog_server = SyslogServer(host="0.0.0.0", port=1514, db_path=db_path)
+        _syslog_server = SyslogServer(assembler=assembler, db_path=db_path, host="0.0.0.0", port=1514)
         _background_tasks.append(asyncio.create_task(_syslog_server.start()))
         logger.info("SyslogServer listener started on port 1514.")
     except Exception as e:
@@ -68,11 +68,10 @@ async def lifespan(app: FastAPI):
 
     # 5. Start Docker Tailer (optional / non-fatal if Docker socket is not present)
     try:
-        docker_host = get_docker_host()
         docker_assembler = KeyedMultilineAssembler()
-        _docker_tailer = DockerTailer(docker_host=docker_host, assembler=docker_assembler)
-        _background_tasks.append(asyncio.create_task(_docker_tailer.start()))
-        logger.info(f"DockerTailer started for {docker_host}.")
+        _docker_tailer = DockerTailer(assembler=docker_assembler)
+        _background_tasks.append(asyncio.create_task(_docker_tailer.run()))
+        logger.info(f"DockerTailer started for {get_docker_host()}.")
     except Exception as e:
         logger.warning(f"DockerTailer could not be started: {e}")
 

@@ -177,6 +177,12 @@ class QueueConsumer:
             if batch:
                 try:
                     await asyncio.to_thread(self._insert_batch, batch)
+                    # Broadcast to SSE subscribers on the event loop thread
+                    # (asyncio.Queue is NOT thread-safe, so this must not
+                    # happen inside _insert_batch which runs in a worker thread)
+                    from app.core.sse import sse_manager
+                    for entry in batch:
+                        sse_manager.broadcast_sync(entry)
                 except Exception as e:
                     logger.error(f"Error inserting batch: {e}")
                     
@@ -192,7 +198,7 @@ class QueueConsumer:
         self._running = False
 
     def _insert_batch(self, batch: list[dict]) -> None:
-        """Synchronous: insert batch into SQLite in a transaction and notify SSE."""
+        """Synchronous: insert batch into SQLite in a transaction."""
         query = '''
             INSERT INTO logs (
                 timestamp, received_at, source_ip, source_alias,
@@ -213,8 +219,3 @@ class QueueConsumer:
             raise e
         finally:
             conn.close()
-
-        # Broadcast newly inserted items to active SSE subscribers
-        from app.core.sse import sse_manager
-        for entry in batch:
-            sse_manager.broadcast_sync(entry)
