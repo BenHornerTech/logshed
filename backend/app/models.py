@@ -99,7 +99,7 @@ class SettingsUpdateRequest(BaseModel):
     ai_base_url: Optional[str] = None
     pushover_user_key: Optional[str] = None
     pushover_app_token: Optional[str] = None
-    retention_days: Optional[int] = Field(None, ge=1, le=3650)
+    retention_days: Optional[int] = Field(None, ge=1, le=30)
 
 
 # ---------------------------------------------------------------------------

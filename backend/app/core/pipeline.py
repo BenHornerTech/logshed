@@ -5,6 +5,7 @@ Provides the shared queue, multiline assembly, and SQLite batch consumer.
 
 import asyncio
 import logging
+import time
 from typing import Optional
 from pathlib import Path
 from collections import defaultdict
@@ -159,21 +160,44 @@ class QueueConsumer:
         self._running = False
 
     async def run(self) -> None:
-        """Main loop: drain queue every 2s or 5000 records."""
+        """Main loop: drain queue with deadline-based batching (up to 5000 records or 2s window)."""
         self._running = True
         queue = get_queue()
         
         while self._running:
-            batch = []
-            
-            # Collect up to 5000 items
+            # Wait for the first item
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+            batch = [item]
+            batch_start = time.monotonic()
+
+            # Drain up to 5000 items within 2.0s window from the first item
             while len(batch) < 5000:
-                try:
-                    item = queue.get_nowait()
-                    batch.append(item)
-                except asyncio.QueueEmpty:
+                elapsed = time.monotonic() - batch_start
+                remaining = 2.0 - elapsed
+                if remaining <= 0:
                     break
-                    
+
+                # First try immediate drain of available items
+                try:
+                    next_item = queue.get_nowait()
+                    batch.append(next_item)
+                    continue
+                except asyncio.QueueEmpty:
+                    pass
+
+                # If queue is empty, wait for next item up to remaining batch deadline
+                try:
+                    next_item = await asyncio.wait_for(queue.get(), timeout=remaining)
+                    batch.append(next_item)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    break
+
             if batch:
                 try:
                     await asyncio.to_thread(self._insert_batch, batch)
@@ -189,9 +213,6 @@ class QueueConsumer:
                 # Mark as done
                 for _ in batch:
                     queue.task_done()
-                    
-            if self._running:
-                await asyncio.sleep(2.0)
 
     async def stop(self) -> None:
         """Signal graceful shutdown."""

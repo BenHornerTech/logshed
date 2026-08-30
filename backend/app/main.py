@@ -22,6 +22,7 @@ from app.core.config import get_db_path, get_docker_host
 from app.core.migrations import run_migrations
 from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer
 from app.core.security import get_or_create_master_key
+from app.services.retention import PruneWorker
 from app.services.storage_metrics import StorageMetricsWorker
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Module-level worker references for lifespan management
 _queue_consumer: Optional[QueueConsumer] = None
 _metrics_worker: Optional[StorageMetricsWorker] = None
+_prune_worker: Optional[PruneWorker] = None
 _syslog_server: Optional[SyslogServer] = None
 _docker_tailer: Optional[DockerTailer] = None
 _background_tasks: list[asyncio.Task] = []
@@ -40,7 +42,7 @@ async def lifespan(app: FastAPI):
     Application lifespan manager.
     Initializes database schema, master encryption keys, and starts background workers.
     """
-    global _queue_consumer, _metrics_worker, _syslog_server, _docker_tailer, _background_tasks
+    global _queue_consumer, _metrics_worker, _prune_worker, _syslog_server, _docker_tailer, _background_tasks
 
     db_path = get_db_path()
     logger.info(f"Initializing Homelab Log Hub database at {db_path}...")
@@ -57,7 +59,11 @@ async def lifespan(app: FastAPI):
     _metrics_worker = StorageMetricsWorker(db_path)
     _background_tasks.append(asyncio.create_task(_metrics_worker.run()))
 
-    # 4. Start Syslog Server (optional / non-fatal in dev/test)
+    # 4. Start PruneWorker (runs automated daily retention pruning)
+    _prune_worker = PruneWorker(db_path)
+    _background_tasks.append(asyncio.create_task(_prune_worker.run()))
+
+    # 5. Start Syslog Server (optional / non-fatal in dev/test)
     try:
         assembler = KeyedMultilineAssembler()
         _syslog_server = SyslogServer(assembler=assembler, db_path=db_path, host="0.0.0.0", port=1514)
@@ -66,7 +72,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"SyslogServer could not be started: {e}")
 
-    # 5. Start Docker Tailer (optional / non-fatal if Docker socket is not present)
+    # 6. Start Docker Tailer (optional / non-fatal if Docker socket is not present)
     try:
         docker_assembler = KeyedMultilineAssembler()
         _docker_tailer = DockerTailer(assembler=docker_assembler)
@@ -83,6 +89,8 @@ async def lifespan(app: FastAPI):
         await _docker_tailer.stop()
     if _syslog_server:
         await _syslog_server.stop()
+    if _prune_worker:
+        await _prune_worker.stop()
     if _metrics_worker:
         await _metrics_worker.stop()
     if _queue_consumer:

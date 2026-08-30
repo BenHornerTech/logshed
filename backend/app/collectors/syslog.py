@@ -154,14 +154,19 @@ class SyslogUDPProtocol(asyncio.DatagramProtocol):
             logger.error(f"Error processing UDP syslog message: {e}")
 
 
+MAX_TCP_BUFFER = 65536  # 64 KB limit to prevent unbounded memory growth / OOM DoS
+
+
 class SyslogTCPProtocol(asyncio.Protocol):
     def __init__(self, assembler: KeyedMultilineAssembler, db_path: str | Path):
         self.assembler = assembler
         self.db_path = db_path
         self.buffer = b""
         self.peername = None
+        self.transport = None
 
     def connection_made(self, transport):
+        self.transport = transport
         self.peername = transport.get_extra_info('peername')
         logger.debug(f"Syslog TCP connection from {self.peername}")
 
@@ -172,6 +177,14 @@ class SyslogTCPProtocol(asyncio.Protocol):
             if line:
                 source_ip = self.peername[0] if self.peername else "unknown"
                 asyncio.ensure_future(self.process_message(line, source_ip))
+
+        if len(self.buffer) > MAX_TCP_BUFFER:
+            logger.warning(
+                f"Syslog TCP buffer exceeded {MAX_TCP_BUFFER} bytes without newline from {self.peername}. Closing connection."
+            )
+            self.buffer = b""
+            if self.transport:
+                self.transport.close()
                 
     async def process_message(self, data: bytes, source_ip: str):
         try:

@@ -27,7 +27,7 @@ from app.core.pipeline import (
     get_dropped_count,
     get_queue,
 )
-from app.collectors.syslog import parse_syslog_message
+from app.collectors.syslog import SyslogTCPProtocol, parse_syslog_message
 from app.services.storage_metrics import (
     record_metrics,
     sample_storage_metrics,
@@ -411,6 +411,58 @@ class TestBoundedQueue:
         assert get_dropped_count() == 0
         q = get_queue()
         assert q.qsize() == 10
+
+    @pytest.mark.asyncio
+    async def test_queue_consumer_deadline_drain(self, db_path: Path):
+        """QueueConsumer should aggressively drain available items without unconditional 2s sleep."""
+        consumer = QueueConsumer(db_path)
+        q = get_queue()
+
+        # Enqueue 100 items
+        for i in range(100):
+            q.put_nowait(_make_entry(message=f"consumer_test_{i}"))
+
+        consumer_task = asyncio.create_task(consumer.run())
+
+        # Give it a short moment to process all 100 items immediately
+        for _ in range(20):
+            if q.empty():
+                break
+            await asyncio.sleep(0.05)
+
+        assert q.empty(), "QueueConsumer should have aggressively drained all 100 items"
+        await consumer.stop()
+        await consumer_task
+
+        # Verify items in DB
+        conn = get_connection(db_path)
+        count = conn.execute("SELECT COUNT(*) FROM logs WHERE message LIKE 'consumer_test_%'").fetchone()[0]
+        conn.close()
+        assert count == 100
+
+    @pytest.mark.asyncio
+    async def test_tcp_syslog_buffer_limit_disconnects(self, db_path: Path):
+        """TCP protocol should discard buffer and close connection if buffer exceeds 64KB without newline."""
+        asm = KeyedMultilineAssembler()
+        proto = SyslogTCPProtocol(asm, db_path)
+
+        class MockTransport:
+            def __init__(self):
+                self.closed = False
+            def get_extra_info(self, name):
+                return ("192.168.1.100", 514)
+            def close(self):
+                self.closed = True
+
+        transport = MockTransport()
+        proto.connection_made(transport)
+
+        # Send 70 KB of data without newline
+        oversized_chunk = b"A" * (70 * 1024)
+        proto.data_received(oversized_chunk)
+
+        assert transport.closed is True, "Transport must be closed when buffer exceeds 64KB without newline"
+        assert proto.buffer == b"", "Buffer must be cleared after limit exceeded"
 
 
 # ===================================================================

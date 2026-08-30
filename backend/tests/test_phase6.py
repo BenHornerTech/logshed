@@ -154,8 +154,7 @@ class TestEntrypointStatic:
         assert "stat" in content
 
         # Check /data chown
-        assert "chown -R" in content
-        assert "/data" in content
+        assert "chown appuser:appuser /data" in content or ("chown" in content and "/data" in content)
 
         # Check single worker uvicorn execution with gosu and tini
         assert "--workers 1" in content

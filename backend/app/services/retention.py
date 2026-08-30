@@ -80,3 +80,55 @@ def execute_prune(db_path: str | Path, retention_days: int = 30) -> dict:
 async def execute_prune_async(db_path: str | Path, retention_days: int = 30) -> dict:
     """Async wrapper executing prune on a thread."""
     return await asyncio.to_thread(execute_prune, db_path, retention_days)
+
+
+class PruneWorker:
+    """
+    Background worker that runs daily automated retention pruning.
+    Executes once every 24 hours using the configured retention_days from system_settings.
+    """
+    def __init__(self, db_path: str | Path):
+        self._db_path = Path(db_path)
+        self._running = False
+        self._stop_event = asyncio.Event()
+
+    async def run(self) -> None:
+        """Main loop: run daily retention pruning."""
+        self._running = True
+        logger.info("PruneWorker started.")
+
+        while self._running:
+            try:
+                retention_days = await asyncio.to_thread(self._get_retention_days)
+                await execute_prune_async(self._db_path, retention_days=retention_days)
+            except Exception as e:
+                logger.error(f"Error in PruneWorker daily pruning loop: {e}")
+
+            # Wait 24 hours (86400 seconds) or until stop signal
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=86400.0)
+                break
+            except asyncio.TimeoutError:
+                continue
+
+    def _get_retention_days(self) -> int:
+        """Synchronous query for configured retention_days."""
+        try:
+            with get_connection(self._db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT value FROM system_settings WHERE key = 'retention_days'")
+                row = cursor.fetchone()
+                if row and row[0]:
+                    try:
+                        return int(row[0])
+                    except ValueError:
+                        pass
+        except Exception as e:
+            logger.warning(f"Failed to read retention_days from database, defaulting to 30: {e}")
+        return 30
+
+    async def stop(self) -> None:
+        """Signal graceful shutdown."""
+        self._running = False
+        self._stop_event.set()
+        logger.info("PruneWorker stopping.")

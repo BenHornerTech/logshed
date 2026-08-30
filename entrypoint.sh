@@ -39,7 +39,7 @@ fi
 
 # Ensure /data exists and is owned by appuser
 mkdir -p /data
-chown -R appuser:appuser /data
+chown appuser:appuser /data
 
 # Default port
 PORT=${PORT:-8080}

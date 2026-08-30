@@ -4,6 +4,7 @@ Provides setup lockout, Argon2id verification, rate-limited login, and session c
 """
 
 import datetime
+import os
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.api.deps import get_current_user, get_optional_user, run_db_query
@@ -35,8 +36,22 @@ def _get_client_ip(request: Request) -> str:
     return "127.0.0.1"
 
 
+def _is_secure_cookie(request: Request) -> bool:
+    """
+    Determine whether to set the 'secure' flag on session cookies.
+    Respects COOKIE_SECURE environment variable if set ('true'/'false'),
+    otherwise auto-detects HTTPS request scheme or X-Forwarded-Proto header.
+    """
+    cookie_secure_env = os.environ.get("COOKIE_SECURE", "").strip().lower()
+    if cookie_secure_env in ("true", "1", "yes"):
+        return True
+    if cookie_secure_env in ("false", "0", "no"):
+        return False
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https"
+
+
 @router.post("/setup", response_model=MessageResponse)
-async def setup_admin(req: SetupRequest, response: Response) -> MessageResponse:
+async def setup_admin(req: SetupRequest, request: Request, response: Response) -> MessageResponse:
     """
     First-run setup: creates admin user and password.
     Returns 403 Forbidden once admin_auth is populated.
@@ -71,7 +86,7 @@ async def setup_admin(req: SetupRequest, response: Response) -> MessageResponse:
         value=token,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=_is_secure_cookie(request),
         path="/",
         max_age=7 * 24 * 3600,
     )
@@ -116,7 +131,7 @@ async def login(req: LoginRequest, request: Request, response: Response) -> Mess
         value=token,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=_is_secure_cookie(request),
         path="/",
         max_age=7 * 24 * 3600,
     )
@@ -124,13 +139,14 @@ async def login(req: LoginRequest, request: Request, response: Response) -> Mess
 
 
 @router.post("/logout", response_model=MessageResponse)
-async def logout(response: Response) -> MessageResponse:
+async def logout(request: Request, response: Response) -> MessageResponse:
     """Clears the session cookie."""
     response.delete_cookie(
         key=SESSION_COOKIE_NAME,
         path="/",
         httponly=True,
         samesite="lax",
+        secure=_is_secure_cookie(request),
     )
     return MessageResponse(status="ok")
 

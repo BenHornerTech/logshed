@@ -181,6 +181,27 @@ Multiple transaction queries deadlock on shared index.
             assert "DNS fail" in text
             assert tokens == 320
             assert mock_post.called
+            # Verify API key is passed in headers and NOT in the URL query string
+            called_url = mock_post.call_args[0][0]
+            called_headers = mock_post.call_args[1].get("headers", {})
+            assert "key=" not in called_url
+            assert called_headers.get("x-goog-api-key") == "test-key"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_gemini_error_sanitized(self):
+        mock_err_response = Response(
+            400,
+            text='{"error": "Invalid API key api_key=secret12345678 in request"}',
+        )
+        with patch("httpx.AsyncClient.post", return_value=mock_err_response):
+            with pytest.raises(RuntimeError) as exc_info:
+                await ai_engine.dispatch_gemini_request(
+                    api_key="test-key",
+                    model="gemini-2.5-flash",
+                    prompt="test prompt",
+                )
+            assert "secret12345678" not in str(exc_info.value)
+            assert "[REDACTED]" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_dispatch_openai_request_mocked(self):

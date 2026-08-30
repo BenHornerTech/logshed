@@ -112,12 +112,16 @@ async def dispatch_gemini_request(
     timeout: float = 60.0,
 ) -> tuple[str, int]:
     """
-    Dispatch request to Google Gemini API via HTTP POST.
+    Dispatch request to Google Gemini API via HTTP POST using x-goog-api-key header.
     """
     if not api_key:
         raise ValueError("Google Gemini API key is not configured in settings.")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
     payload = {
         "systemInstruction": {
             "parts": [{"text": SYSTEM_PROMPT}]
@@ -134,9 +138,11 @@ async def dispatch_gemini_request(
     }
 
     async with httpx.AsyncClient(timeout=timeout) as client:
-        res = await client.post(url, json=payload)
+        res = await client.post(url, headers=headers, json=payload)
         if res.status_code != 200:
-            err_msg = f"Gemini API returned HTTP {res.status_code}: {res.text}"
+            from app.core.sanitizer import sanitize
+            clean_err = sanitize(res.text[:500])
+            err_msg = f"Gemini API returned HTTP {res.status_code}: {clean_err}"
             logger.error(err_msg)
             raise RuntimeError(err_msg)
 
@@ -186,7 +192,9 @@ async def dispatch_openai_request(
     async with httpx.AsyncClient(timeout=timeout) as client:
         res = await client.post(url, headers=headers, json=payload)
         if res.status_code != 200:
-            err_msg = f"OpenAI endpoint returned HTTP {res.status_code}: {res.text}"
+            from app.core.sanitizer import sanitize
+            clean_err = sanitize(res.text[:500])
+            err_msg = f"OpenAI endpoint returned HTTP {res.status_code}: {clean_err}"
             logger.error(err_msg)
             raise RuntimeError(err_msg)
 

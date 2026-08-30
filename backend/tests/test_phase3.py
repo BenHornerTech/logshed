@@ -41,6 +41,7 @@ from app.core.security import (
 )
 from app.core.sse import sse_manager
 from app.main import create_app
+from app.services.retention import PruneWorker
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +221,40 @@ class TestAuthentication:
                 res = await client.post(endpoint, json={})
             assert res.status_code == 401, f"{method} {endpoint} did not return 401"
 
+    @pytest.mark.asyncio
+    async def test_cookie_secure_auto_detection_and_env_override(self, client: AsyncClient, monkeypatch):
+        # 1. Plain HTTP without proxy header -> secure not set
+        res_http = await client.post("/api/auth/setup", json={"password": "secure_pwd_123"})
+        assert res_http.status_code == 200
+        set_cookie_http = res_http.headers.get("set-cookie", "").lower()
+        # Ensure secure directive is absent on plain HTTP
+        cookie_parts_http = [p.strip() for p in set_cookie_http.split(";")]
+        assert "secure" not in cookie_parts_http
+
+        # Reset admin auth for next test
+        # 2. Proxy with x-forwarded-proto: https -> secure=True
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as https_client:
+            res_https = await https_client.post(
+                "/api/auth/login",
+                json={"password": "secure_pwd_123"},
+                headers={"x-forwarded-proto": "https"},
+            )
+            assert res_https.status_code == 200
+            set_cookie_https = res_https.headers.get("set-cookie", "").lower()
+            cookie_parts_https = [p.strip() for p in set_cookie_https.split(";")]
+            assert "secure" in cookie_parts_https
+
+        # 3. COOKIE_SECURE environment variable override
+        monkeypatch.setenv("COOKIE_SECURE", "true")
+        async with AsyncClient(transport=transport, base_url="http://test") as env_client:
+            res_env = await env_client.post("/api/auth/login", json={"password": "secure_pwd_123"})
+            assert res_env.status_code == 200
+            set_cookie_env = res_env.headers.get("set-cookie", "").lower()
+            cookie_parts_env = [p.strip() for p in set_cookie_env.split(";")]
+            assert "secure" in cookie_parts_env
+
 
 # ---------------------------------------------------------------------------
 # 2. Secret Encryption at Rest & Key Management Tests
@@ -265,7 +300,7 @@ class TestEncryptionAndKeyManagement:
             "ai_base_url": "https://api.openai.com/v1",
             "pushover_user_key": "u_test_user_key_99999",
             "pushover_app_token": "a_test_app_token_88888",
-            "retention_days": 45,
+            "retention_days": 14,
         }
         res_post = await client.post("/api/settings", json=payload)
         assert res_post.status_code == 200
@@ -287,7 +322,7 @@ class TestEncryptionAndKeyManagement:
         assert decrypt_value(rows["pushover_user_key"][0]) == "u_test_user_key_99999"
 
         assert rows["retention_days"][1] is False
-        assert rows["retention_days"][0] == "45"
+        assert rows["retention_days"][0] == "14"
 
         # 3. GET /api/settings MUST NEVER return decrypted secrets
         res_get = await client.get("/api/settings")
@@ -300,14 +335,14 @@ class TestEncryptionAndKeyManagement:
         assert data["has_ai_api_key"] is True
         assert data["has_pushover_user_key"] is True
         assert data["has_pushover_app_token"] is True
-        assert data["retention_days"] == 45
+        assert data["retention_days"] == 14
         assert data["ai_provider"] == "openai"
 
         # 4. Updating settings with masked value '********' should keep original secret intact
         update2 = {
             "ai_provider": "gemini",
             "ai_api_key": "********",  # Masked placeholder sent back by UI
-            "retention_days": 60,
+            "retention_days": 28,
         }
         res_post2 = await client.post("/api/settings", json=update2)
         assert res_post2.status_code == 200
@@ -317,6 +352,13 @@ class TestEncryptionAndKeyManagement:
             cursor.execute("SELECT value FROM system_settings WHERE key = 'ai_api_key'")
             val = cursor.fetchone()[0]
             assert decrypt_value(val) == "sk-1234567890abcdef1234567890"
+
+        # 5. Verify retention_days > 30 is rejected per SPEC.md (1-30 days)
+        res_invalid = await client.post("/api/settings", json={"retention_days": 31})
+        assert res_invalid.status_code == 422
+
+        res_invalid2 = await client.post("/api/settings", json={"retention_days": 3650})
+        assert res_invalid2.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +650,40 @@ class TestSystemAndMaintenance:
         storage_data = res_storage.json()
         assert storage_data["total_logs_count"] == 1
         assert len(storage_data["history"]) >= 1
+
+    @pytest.mark.asyncio
+    async def test_prune_worker_daily_task(self, tmp_path: Path):
+        db_file = tmp_path / "logs.db"
+
+        # Insert an old log (> 40 days old)
+        old_time = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=45)).isoformat()
+        entries = [
+            {
+                "timestamp": old_time,
+                "received_at": old_time,
+                "source_ip": "10.0.0.1",
+                "source_alias": "srv1",
+                "app_name": "app",
+                "facility": 1,
+                "severity": 6,
+                "message": "old log pruned by worker",
+                "raw": "raw old",
+            }
+        ]
+        _seed_logs(db_file, entries)
+
+        worker = PruneWorker(db_file)
+        task = asyncio.create_task(worker.run())
+
+        # Give it a moment to run first iteration
+        await asyncio.sleep(0.1)
+        await worker.stop()
+        await task
+
+        # Verify old log was pruned
+        with get_connection(db_file) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM logs WHERE message = 'old log pruned by worker'").fetchone()[0]
+            assert count == 0
 
 
 # ---------------------------------------------------------------------------
