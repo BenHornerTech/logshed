@@ -10,13 +10,17 @@ import {
   Save,
   AlertCircle,
   RefreshCw,
+  Copy,
 } from 'lucide-react';
 import { StorageMetricsResponse, AiAuditEntry } from '../../types.ts';
 import { fetchSettings, updateSettings, SettingsResponseData } from '../../api/settings.ts';
 import { fetchStorageMetrics } from '../../api/system.ts';
-import { testNotifications } from '../../api/notifications.ts';
+import { testNotifications, sendPushoverNotification } from '../../api/notifications.ts';
 import { fetchAiAudit } from '../../api/ai.ts';
 import { changePassword } from '../../api/auth.ts';
+import { copyToClipboard } from '../../utils/clipboard.ts';
+import { Modal } from '../common/Modal.tsx';
+import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 import { StorageCard } from './StorageCard.tsx';
 import { RetentionSlider } from './RetentionSlider.tsx';
 import { StorageTrendChart } from './StorageTrendChart.tsx';
@@ -46,6 +50,13 @@ export const SettingsPanel: React.FC = () => {
   const [confirmPwd, setConfirmPwd] = useState<string>('');
   const [isChangingPwd, setIsChangingPwd] = useState<boolean>(false);
   const [pwdMsg, setPwdMsg] = useState<{ text: string; isError: boolean } | null>(null);
+
+  // AI Audit Inspection modal state
+  const [selectedAuditItem, setSelectedAuditItem] = useState<AiAuditEntry | null>(null);
+  const [copiedAuditPrompt, setCopiedAuditPrompt] = useState<boolean>(false);
+  const [isSendingAuditPushover, setIsSendingAuditPushover] = useState<boolean>(false);
+  const [auditPushoverMsg, setAuditPushoverMsg] = useState<string | null>(null);
+  const [showPromptDetails, setShowPromptDetails] = useState<boolean>(false);
 
   const loadAllData = async () => {
     try {
@@ -147,6 +158,36 @@ export const SettingsPanel: React.FC = () => {
       setPwdMsg({ text: err.message || 'Failed to update password.', isError: true });
     } finally {
       setIsChangingPwd(false);
+    }
+  };
+
+  const handleCopyAuditPrompt = async () => {
+    if (selectedAuditItem?.prompt_sent) {
+      const ok = await copyToClipboard(selectedAuditItem.prompt_sent);
+      if (ok) {
+        setCopiedAuditPrompt(true);
+        setTimeout(() => setCopiedAuditPrompt(false), 2000);
+      }
+    }
+  };
+
+  const handleSendAuditPushover = async () => {
+    if (!selectedAuditItem) return;
+    try {
+      setIsSendingAuditPushover(true);
+      setAuditPushoverMsg(null);
+      const title = `[Log Hub Audit] ${selectedAuditItem.source_alias}: ${selectedAuditItem.app_name}`;
+      await sendPushoverNotification({
+        title,
+        message: selectedAuditItem.response_text,
+        priority: 0,
+      });
+      setAuditPushoverMsg('Historical analysis dispatched to Pushover successfully!');
+      setTimeout(() => setAuditPushoverMsg(null), 4000);
+    } catch (err: any) {
+      setAuditPushoverMsg(`Failed to send Pushover notification: ${err.message}`);
+    } finally {
+      setIsSendingAuditPushover(false);
     }
   };
 
@@ -441,23 +482,139 @@ export const SettingsPanel: React.FC = () => {
             {auditLogs.map((item) => (
               <div
                 key={item.id}
-                className="grid grid-cols-[140px_160px_140px_80px_1fr] px-4 py-2.5 items-start hover:bg-dark-800/50 transition text-[11px]"
+                onClick={() => {
+                  setSelectedAuditItem(item);
+                  setShowPromptDetails(false);
+                  setAuditPushoverMsg(null);
+                }}
+                className="grid grid-cols-[140px_160px_140px_80px_1fr] px-4 py-2.5 items-start hover:bg-dark-800 transition text-[11px] cursor-pointer group select-none"
+                title="Click to view full AI diagnosis and remediation"
               >
-                <div className="text-slate-400">{item.timestamp.slice(0, 19).replace('T', ' ')}</div>
+                <div className="text-slate-400 group-hover:text-slate-300">
+                  {item.timestamp.slice(0, 19).replace('T', ' ')}
+                </div>
                 <div className="text-slate-300 truncate pr-2">
                   <span className="font-semibold text-accent-400">{item.source_alias}</span>
                   <span className="text-slate-500"> • {item.app_name}</span>
                 </div>
                 <div className="text-slate-400 truncate">{item.model}</div>
                 <div className="text-slate-300">{item.tokens_used}</div>
-                <div className="text-slate-200 font-sans text-xs truncate pr-2">
-                  {item.response_text.slice(0, 100)}...
+                <div className="text-slate-200 font-sans text-xs truncate pr-2 group-hover:text-white flex items-center justify-between">
+                  <span className="truncate">{item.response_text.slice(0, 100)}...</span>
+                  <span className="text-[10px] font-mono text-accent-400 opacity-0 group-hover:opacity-100 transition shrink-0 ml-2">
+                    View &rarr;
+                  </span>
                 </div>
               </div>
             ))}
           </div>
         )}
       </section>
+
+      {/* Historical AI Analysis Detail Modal */}
+      {selectedAuditItem && (
+        <Modal
+          isOpen={!!selectedAuditItem}
+          onClose={() => setSelectedAuditItem(null)}
+          title="Historical AI Root-Cause Analysis"
+          maxWidth="max-w-3xl"
+        >
+          <div className="space-y-4 text-xs font-sans">
+            {/* Header info */}
+            <div className="p-3 bg-dark-950 rounded-lg border border-dark-700 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Brain className="w-4 h-4 text-accent-400" />
+                <span className="font-semibold text-slate-200 font-mono">
+                  {selectedAuditItem.source_alias} • {selectedAuditItem.app_name}
+                </span>
+                <span className="text-slate-500 text-[11px]">
+                  ({selectedAuditItem.log_count} log{selectedAuditItem.log_count === 1 ? '' : 's'})
+                </span>
+              </div>
+              <div className="flex items-center gap-3 font-mono text-[11px] text-slate-400">
+                <span>Model: <span className="text-slate-200">{selectedAuditItem.model}</span></span>
+                <span>Tokens: <span className="text-slate-200">{selectedAuditItem.tokens_used}</span></span>
+                <span>{selectedAuditItem.timestamp.slice(0, 19).replace('T', ' ')}</span>
+              </div>
+            </div>
+
+            {/* Situational Context note if present */}
+            {selectedAuditItem.user_context && (
+              <div className="bg-dark-950 p-3 rounded-lg border border-dark-700">
+                <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                  Situational Context from Operator
+                </h4>
+                <p className="text-slate-200 text-xs leading-relaxed">
+                  {selectedAuditItem.user_context}
+                </p>
+              </div>
+            )}
+
+            {/* Rendered Full Response with Markdown */}
+            <div className="bg-dark-950 p-4 rounded-lg border border-dark-700">
+              <h4 className="text-[11px] font-semibold text-accent-400 uppercase tracking-wider mb-2">
+                AI Diagnosis & Remediation
+              </h4>
+              <MarkdownRenderer content={selectedAuditItem.response_text} />
+            </div>
+
+            {/* Collapsible Sanitized Prompt / Logs */}
+            <div className="border border-dark-700 rounded-lg overflow-hidden bg-dark-950">
+              <div className="flex items-center justify-between px-3 py-2 bg-dark-900 border-b border-dark-700">
+                <button
+                  type="button"
+                  onClick={() => setShowPromptDetails(!showPromptDetails)}
+                  className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider hover:text-slate-100 transition cursor-pointer"
+                >
+                  {showPromptDetails ? '▼ Hide Submitted Logs & Prompt' : '▶ View Submitted Logs & Prompt'}
+                </button>
+                {showPromptDetails && (
+                  <button
+                    type="button"
+                    onClick={handleCopyAuditPrompt}
+                    className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition cursor-pointer"
+                  >
+                    {copiedAuditPrompt ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedAuditPrompt ? 'Copied' : 'Copy Prompt'}</span>
+                  </button>
+                )}
+              </div>
+              {showPromptDetails && (
+                <pre className="p-3 overflow-x-auto text-xs font-mono text-slate-300 max-h-48 overflow-y-auto leading-relaxed select-text">
+                  <code>{selectedAuditItem.prompt_sent}</code>
+                </pre>
+              )}
+            </div>
+
+            {auditPushoverMsg && (
+              <div className="p-2.5 bg-dark-800 border border-dark-700 rounded text-xs text-slate-300">
+                {auditPushoverMsg}
+              </div>
+            )}
+
+            {/* Footer Buttons */}
+            <div className="flex items-center justify-between pt-2">
+              <button
+                type="button"
+                onClick={() => setSelectedAuditItem(null)}
+                className="text-xs text-slate-400 hover:text-slate-200 underline cursor-pointer"
+              >
+                Close
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSendAuditPushover}
+                disabled={isSendingAuditPushover}
+                className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition shadow-md cursor-pointer"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>{isSendingAuditPushover ? 'Sending...' : 'Send to Pushover'}</span>
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
