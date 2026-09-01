@@ -18,13 +18,76 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
+import re
+
 router = APIRouter(prefix="/logs", tags=["Logs"])
+
+# Reserved FTS5 syntax keywords
+_FTS_KEYWORDS = {"AND", "OR", "NOT", "NEAR"}
+
+
+def _format_fts_query(query_str: str) -> str:
+    """
+    Format user query for FTS5 search with prefix matching.
+    - If user entered quoted phrases (e.g. "exact phrase"), preserve them.
+    - If terms do not end in '*' and are not boolean operators (AND, OR, NOT, NEAR),
+      automatically append '*' for search-as-you-type prefix matching.
+    - If column filters are used (e.g. app_name:nginx), apply wildcard to the value.
+    """
+    q = query_str.strip()
+    if not q:
+        return ""
+
+    # Regex matches:
+    # 1. Quoted strings: "[^"]*" or '[^']*'
+    # 2. Column filters: [a-zA-Z_]+:(?:"[^"]*"|[^\s()]+)
+    # 3. Parentheses: \( or \)
+    # 4. Words/terms: [^\s()]+
+    pattern = re.compile(r'("[^"]*"|\'[^\']*\'|[a-zA-Z_]+:(?:"[^"]*"|[^\s()]+)|\(|\)|[^\s()]+)')
+    tokens = pattern.findall(q)
+    if not tokens:
+        return q
+
+    formatted_tokens = []
+    for token in tokens:
+        token = token.strip()
+        if not token:
+            continue
+
+        # Quoted strings or parentheses
+        if token.startswith(('"', "'")) or token in ("(", ")"):
+            formatted_tokens.append(token)
+            continue
+
+        # Boolean keywords
+        if token.upper() in _FTS_KEYWORDS:
+            formatted_tokens.append(token.upper())
+            continue
+
+        # Column filters: app_name:nginx or app_name:"web server"
+        if ":" in token:
+            col, val = token.split(":", 1)
+            if val.startswith(('"', "'")) or val.endswith("*") or not val:
+                formatted_tokens.append(token)
+            else:
+                clean_val = val.replace('"', '""')
+                formatted_tokens.append(f"{col}:{clean_val}*")
+            continue
+
+        # Regular word token: append wildcard if not already present
+        if token.endswith("*"):
+            formatted_tokens.append(token)
+        else:
+            clean_token = token.replace('"', '""')
+            formatted_tokens.append(f"{clean_token}*")
+
+    return " ".join(formatted_tokens)
 
 
 def _escape_fts_tokens(query_str: str) -> str:
     """
-    Fallback token sanitizer that wraps words in double quotes to handle
-    malformed user input without causing FTS5 syntax errors.
+    Fallback token sanitizer that wraps words in quotes with wildcard suffix
+    to handle malformed user input without causing FTS5 syntax errors.
     """
     q = query_str.strip()
     if not q:
@@ -32,8 +95,9 @@ def _escape_fts_tokens(query_str: str) -> str:
     words = q.split()
     tokens = []
     for w in words:
-        escaped = w.replace('"', '""')
-        tokens.append(f'"{escaped}"')
+        clean = w.replace('"', '').replace("'", '').replace('*', '').strip()
+        if clean:
+            tokens.append(f'"{clean}"*')
     return " ".join(tokens)
 
 
@@ -56,7 +120,8 @@ async def list_logs(
 ) -> LogListResponse:
     """
     Query logs with full-text search, source/app filtering, severity range, and time bounds.
-    Supports native SQLite FTS5 query syntax (e.g. column filters, AND/OR/NOT, wildcards).
+    Supports native SQLite FTS5 query syntax (e.g. column filters, AND/OR/NOT, wildcards)
+    and automatic prefix matching for search-as-you-type.
     """
     def _query_db(conn):
         where_clauses: list[str] = []
@@ -67,7 +132,7 @@ async def list_logs(
 
         if is_fts:
             from_table = "logs JOIN logs_fts ON logs.id = logs_fts.rowid"
-            fts_term = query.strip()
+            fts_term = _format_fts_query(query)
             where_clauses.append("logs_fts MATCH :fts_term")
             params["fts_term"] = fts_term
 

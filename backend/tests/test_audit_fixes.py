@@ -142,12 +142,22 @@ class TestL3FtsSyntaxSupport:
             assert data_bool["total"] == 1
             assert "refused" in data_bool["logs"][0]["message"]
 
-            # 3. Wildcard prefix search: "refus*"
+            # 3. Wildcard prefix search: "refus*" and partial word search: "passwor"
             res_prefix = await client.get("/api/logs", params={"query": "refus*"})
             assert res_prefix.status_code == 200
             assert res_prefix.json()["total"] == 1
 
-            # 4. Malformed syntax (unbalanced quote): fallback should execute without 500 error
+            # 4. Partial word search as you type (auto prefix matching)
+            res_partial = await client.get("/api/logs", params={"query": "passwor"})
+            assert res_partial.status_code == 200
+            assert res_partial.json()["total"] == 1
+            assert "password mismatch" in res_partial.json()["logs"][0]["message"]
+
+            res_partial2 = await client.get("/api/logs", params={"query": "authenticat"})
+            assert res_partial2.status_code == 200
+            assert res_partial2.json()["total"] == 1
+
+            # 5. Malformed syntax (unbalanced quote): fallback should execute without 500 error
             res_bad = await client.get("/api/logs", params={"query": 'Connection "refused'})
             assert res_bad.status_code == 200
             assert res_bad.json()["total"] == 1
