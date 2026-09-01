@@ -27,6 +27,9 @@ from app.services.storage_metrics import StorageMetricsWorker
 
 logger = logging.getLogger(__name__)
 
+# Silence uvicorn HTTP request access logger to prevent self-logging feedback loops
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 # Module-level worker references for lifespan management
 _queue_consumer: Optional[QueueConsumer] = None
 _metrics_worker: Optional[StorageMetricsWorker] = None

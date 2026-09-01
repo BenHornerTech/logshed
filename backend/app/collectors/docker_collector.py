@@ -126,6 +126,36 @@ async def _get_running_containers(client: httpx.AsyncClient) -> list[dict]:
         return []
 
 
+def _should_ignore_container(container_id: str, container_name: str) -> bool:
+    """
+    Determine if a container should be excluded from log tailing.
+    Prevents self-tailing loops for Homelab Log Hub itself.
+    """
+    # 1. Explicitly configured excluded container names/IDs from env
+    exclude_env = os.environ.get("DOCKER_EXCLUDE_CONTAINERS", "")
+    excluded_names = {n.strip().lower() for n in exclude_env.split(",") if n.strip()}
+    # Always exclude default container names for this app
+    excluded_names.update({
+        "homelab-logger",
+        "homelab_logger",
+        "homelab-log-hub",
+        "homelab_log_hub",
+        "log-hub",
+        "log_hub",
+    })
+
+    name_clean = container_name.lower().lstrip("/")
+    if name_clean in excluded_names:
+        return True
+
+    # 2. Check container short ID against HOSTNAME (Docker sets container short ID as hostname inside container)
+    hostname = os.environ.get("HOSTNAME", "").strip().lower()
+    if hostname and (container_id.lower().startswith(hostname) or hostname.startswith(container_id[:12].lower())):
+        return True
+
+    return False
+
+
 async def _get_container_name(client: httpx.AsyncClient, container_id: str) -> str:
     """Inspect a container to get its name."""
     try:
@@ -296,12 +326,15 @@ class DockerTailer:
         logger.info("Docker tailer stopped")
 
     async def _attach_running_containers(self, client: httpx.AsyncClient) -> None:
-        """Enumerate running containers and start a log tailer for each."""
+        """Enumerate running containers and start a log tailer for each, skipping excluded containers."""
         containers = await _get_running_containers(client)
         for c in containers:
             cid = c.get("Id", "")
             names = c.get("Names", [])
             name = names[0].lstrip("/") if names else cid[:12]
+            if _should_ignore_container(cid, name):
+                logger.debug(f"Skipping tailing self/excluded container {name} ({cid[:12]})")
+                continue
             self._start_tailer(client, cid, name)
 
     def _start_tailer(
@@ -310,7 +343,10 @@ class DockerTailer:
         container_id: str,
         container_name: str,
     ) -> None:
-        """Start a log tailer task for a container if not already active."""
+        """Start a log tailer task for a container if not already active and not excluded."""
+        if _should_ignore_container(container_id, container_name):
+            return
+
         if container_id in self._tailers:
             return
 
@@ -376,6 +412,8 @@ class DockerTailer:
                 name = attrs.get("name", cid[:12])
 
                 if action == "start":
+                    if _should_ignore_container(cid, name):
+                        continue
                     logger.info(f"Container started: {name} ({cid[:12]})")
                     self._start_tailer(client, cid, name)
                 elif action == "die":

@@ -515,3 +515,26 @@ class TestDockerLogParsing:
         # Should have valid ISO timestamps
         datetime.datetime.fromisoformat(entry["timestamp"])
         datetime.datetime.fromisoformat(entry["received_at"])
+
+    def test_should_ignore_container(self, monkeypatch):
+        """Self-containers and explicitly excluded containers should be ignored."""
+        from app.collectors.docker_collector import _should_ignore_container
+
+        # Default self-container names
+        assert _should_ignore_container("abc123456789", "homelab-logger") is True
+        assert _should_ignore_container("abc123456789", "/homelab_log_hub") is True
+        assert _should_ignore_container("abc123456789", "log-hub") is True
+
+        # Non-self container
+        assert _should_ignore_container("def987654321", "nginx") is False
+        assert _should_ignore_container("def987654321", "/nextcloud") is False
+
+        # Match container short ID against HOSTNAME env var
+        monkeypatch.setenv("HOSTNAME", "abc123456789")
+        assert _should_ignore_container("abc123456789def012345678", "custom-app-name") is True
+
+        # Match custom DOCKER_EXCLUDE_CONTAINERS
+        monkeypatch.setenv("DOCKER_EXCLUDE_CONTAINERS", "my-db,custom_redis")
+        assert _should_ignore_container("111222333444", "my-db") is True
+        assert _should_ignore_container("111222333444", "/custom_redis") is True
+        assert _should_ignore_container("111222333444", "plex") is False

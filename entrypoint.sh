@@ -48,5 +48,5 @@ PORT=${PORT:-8080}
 if [ $# -gt 0 ]; then
     exec gosu appuser tini -- "$@"
 else
-    exec gosu appuser tini -- uvicorn app.main:app --app-dir /app/backend --host 0.0.0.0 --port "$PORT" --workers 1
+    exec gosu appuser tini -- uvicorn app.main:app --app-dir /app/backend --host 0.0.0.0 --port "$PORT" --workers 1 --no-access-log
 fi
