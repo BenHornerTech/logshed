@@ -4,13 +4,11 @@ Supports UDP and TCP on port 1514, parsing RFC 3164 and RFC 5424.
 """
 
 import asyncio
-from collections import OrderedDict
 import datetime
 import logging
 import re
 import sqlite3
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -18,10 +16,6 @@ from app.core.migrations import get_connection
 from app.core.pipeline import KeyedMultilineAssembler
 
 logger = logging.getLogger(__name__)
-
-_ALIAS_CACHE_MAX_SIZE = 1000
-_alias_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
-_alias_cache_lock = threading.Lock()
 
 def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
     """
@@ -52,20 +46,59 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
         result["severity"] = pri % 8
         content = content[pri_match.end():]
         
-    # Check RFC 5424 version digit
-    v_match = re.match(r"^(\d+)\s+", content)
-    if v_match:
-        content = content[v_match.end():]
-        # TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA [MSG]
-        parts = content.split(" ", 6)
-        if len(parts) >= 6:
-            timestamp, hostname, app_name, procid, msgid, sd = parts[:6]
-            msg = parts[6] if len(parts) > 6 else ""
+    # Check RFC 5424: version MUST be exactly '1' followed by a space.
+    # This prevents misidentifying RFC 3164 messages that start with a digit.
+    if content.startswith("1 "):
+        content = content[2:]  # skip "1 "
+        # RFC 5424 format after version:
+        # TIMESTAMP SP HOSTNAME SP APP-NAME SP PROCID SP MSGID SP STRUCTURED-DATA [SP MSG]
+        # Parse TIMESTAMP HOSTNAME APP-NAME PROCID MSGID by splitting on first 5 spaces
+        header_parts = content.split(" ", 5)
+        if len(header_parts) >= 6:
+            timestamp, hostname, app_name, procid, msgid = header_parts[:5]
+            remainder = header_parts[5]
+            
+            # Parse structured data (bracket-aware)
+            # SD is either "-" (NILVALUE) or one or more [sdid ...] blocks
+            if remainder.startswith("-"):
+                # NILVALUE structured data
+                sd = "-"
+                msg = remainder[1:].lstrip(" ")
+            elif remainder.startswith("["):
+                # Bracket-aware extraction: consume all [...] blocks
+                sd_end = 0
+                i = 0
+                while i < len(remainder) and remainder[i] == "[":
+                    # Find matching closing bracket (not escaped)
+                    j = i + 1
+                    while j < len(remainder):
+                        if remainder[j] == "]":
+                            sd_end = j + 1
+                            break
+                        if remainder[j] == "\\" and j + 1 < len(remainder):
+                            j += 1  # skip escaped char
+                        j += 1
+                    i = sd_end
+                    # skip optional space between SD elements
+                    if i < len(remainder) and remainder[i] == " " and i + 1 < len(remainder) and remainder[i + 1] == "[":
+                        pass  # don't skip, next iteration will see '['
+                sd = remainder[:sd_end]
+                msg = remainder[sd_end:].lstrip(" ")
+            else:
+                # Malformed SD — treat entire remainder as message
+                sd = ""
+                msg = remainder
+
             if timestamp != "-":
                 result["timestamp"] = timestamp
+            if hostname != "-":
+                result["hostname"] = hostname
             if app_name != "-":
                 result["app_name"] = app_name
             result["message"] = msg
+        else:
+            # Not enough fields for valid 5424 — treat as unparsed
+            pass
     else:
         # RFC 3164
         # Mmm dd HH:MM:SS or Mmm  d HH:MM:SS
@@ -80,6 +113,11 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
                 # Handle space-padded day
                 ts_str_clean = re.sub(r'\s+', ' ', ts_str)
                 dt = datetime.datetime.strptime(f"{now.year} {ts_str_clean}", "%Y %b %d %H:%M:%S")
+                parsed_month = dt.month
+                # Year boundary heuristic: if parsed month is ahead of current month,
+                # the message likely came from the previous year
+                if parsed_month > now.month:
+                    dt = dt.replace(year=now.year - 1)
                 result["timestamp"] = dt.replace(tzinfo=datetime.timezone.utc).isoformat()
             except ValueError:
                 pass
@@ -103,23 +141,81 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
                         
     return result
 
+
+class AliasCache:
+    """
+    Preloaded in-memory alias cache. Bulk-loads all host_aliases from the database
+    on startup, then refreshes every refresh_interval seconds via a background task.
+    Lookups are zero-cost dict reads — no DB I/O per message.
+    """
+
+    def __init__(self, db_path: str | Path, refresh_interval: float = 60.0):
+        self._db_path = Path(db_path)
+        self._refresh_interval = refresh_interval
+        self._aliases: dict[str, str] = {}
+        self._lock = threading.Lock()
+        self._refresh_task: asyncio.Task | None = None
+
+    def resolve(self, source_ip: str) -> str:
+        """Look up source_ip in the preloaded alias map. O(1) dict lookup."""
+        with self._lock:
+            return self._aliases.get(source_ip, source_ip)
+
+    def load_aliases(self) -> None:
+        """Synchronous: bulk-load all aliases from host_aliases table."""
+        new_aliases: dict[str, str] = {}
+        try:
+            conn = get_connection(self._db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT ip, alias FROM host_aliases")
+                for row in cursor.fetchall():
+                    new_aliases[row[0]] = row[1]
+            finally:
+                conn.close()
+        except sqlite3.OperationalError:
+            # Table might not exist yet during early startup
+            pass
+        except Exception as e:
+            logger.error(f"Error loading alias cache: {e}")
+            return  # Keep existing cache on error
+
+        with self._lock:
+            self._aliases = new_aliases
+
+    async def start(self) -> None:
+        """Start the periodic refresh background task."""
+        # Initial synchronous load
+        await asyncio.to_thread(self.load_aliases)
+        self._refresh_task = asyncio.create_task(self._refresh_loop())
+
+    async def stop(self) -> None:
+        """Stop the periodic refresh task."""
+        if self._refresh_task:
+            self._refresh_task.cancel()
+            try:
+                await self._refresh_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._refresh_task = None
+
+    async def _refresh_loop(self) -> None:
+        """Background loop that reloads aliases every refresh_interval seconds."""
+        while True:
+            try:
+                await asyncio.sleep(self._refresh_interval)
+                await asyncio.to_thread(self.load_aliases)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error refreshing alias cache: {e}")
+
+
 def resolve_alias(source_ip: str, db_path: str | Path) -> str:
     """
-    Look up source_ip in the host_aliases table.
-    Caches aliases for 60 seconds with LRU eviction (max 1000 entries).
-    Uses get_connection() to ensure proper WAL mode and pragmas.
+    Legacy synchronous alias lookup for CLI and backward compatibility.
+    For high-throughput syslog ingestion, use AliasCache.resolve() instead.
     """
-    now = time.time()
-    with _alias_cache_lock:
-        if source_ip in _alias_cache:
-            alias, cached_time = _alias_cache[source_ip]
-            if now - cached_time < 60:
-                _alias_cache.move_to_end(source_ip)
-                return alias
-            else:
-                del _alias_cache[source_ip]
-
-    alias = source_ip
     try:
         conn = get_connection(db_path)
         try:
@@ -127,28 +223,18 @@ def resolve_alias(source_ip: str, db_path: str | Path) -> str:
             cursor.execute("SELECT alias FROM host_aliases WHERE ip = ?", (source_ip,))
             row = cursor.fetchone()
             if row:
-                alias = row[0]
+                return row[0]
         finally:
             conn.close()
-    except sqlite3.OperationalError:
-        # Table might not exist yet
+    except Exception:
         pass
-    except Exception as e:
-        logger.error(f"Error resolving alias for {source_ip}: {e}")
-
-    with _alias_cache_lock:
-        _alias_cache[source_ip] = (alias, now)
-        _alias_cache.move_to_end(source_ip)
-        while len(_alias_cache) > _ALIAS_CACHE_MAX_SIZE:
-            _alias_cache.popitem(last=False)
-
-    return alias
+    return source_ip
 
 
 class SyslogUDPProtocol(asyncio.DatagramProtocol):
-    def __init__(self, assembler: KeyedMultilineAssembler, db_path: str | Path):
+    def __init__(self, assembler: KeyedMultilineAssembler, alias_cache: AliasCache):
         self.assembler = assembler
-        self.db_path = db_path
+        self.alias_cache = alias_cache
         self.transport = None
 
     def connection_made(self, transport):
@@ -162,8 +248,8 @@ class SyslogUDPProtocol(asyncio.DatagramProtocol):
     async def process_message(self, data: bytes, source_ip: str):
         try:
             parsed = parse_syslog_message(data, source_ip)
-            alias = await asyncio.to_thread(resolve_alias, source_ip, self.db_path)
-            parsed["source_alias"] = alias
+            # Zero-cost in-memory lookup — no DB I/O
+            parsed["source_alias"] = self.alias_cache.resolve(source_ip)
             stream_key = f"{source_ip}:{parsed['app_name']}"
             await self.assembler.feed(stream_key, parsed)
         except Exception as e:
@@ -174,9 +260,9 @@ MAX_TCP_BUFFER = 65536  # 64 KB limit to prevent unbounded memory growth / OOM D
 
 
 class SyslogTCPProtocol(asyncio.Protocol):
-    def __init__(self, assembler: KeyedMultilineAssembler, db_path: str | Path):
+    def __init__(self, assembler: KeyedMultilineAssembler, alias_cache: AliasCache):
         self.assembler = assembler
-        self.db_path = db_path
+        self.alias_cache = alias_cache
         self.buffer = b""
         self.peername = None
         self.transport = None
@@ -205,8 +291,8 @@ class SyslogTCPProtocol(asyncio.Protocol):
     async def process_message(self, data: bytes, source_ip: str):
         try:
             parsed = parse_syslog_message(data, source_ip)
-            alias = await asyncio.to_thread(resolve_alias, source_ip, self.db_path)
-            parsed["source_alias"] = alias
+            # Zero-cost in-memory lookup — no DB I/O
+            parsed["source_alias"] = self.alias_cache.resolve(source_ip)
             stream_key = f"{source_ip}:{parsed['app_name']}"
             await self.assembler.feed(stream_key, parsed)
         except Exception as e:
@@ -224,15 +310,19 @@ class SyslogServer:
         self.port = port
         self.udp_transport = None
         self.tcp_server = None
+        self.alias_cache = AliasCache(db_path)
 
     async def start(self) -> None:
-        """Create and start both UDP and TCP transports."""
+        """Create and start alias cache refresh, then both UDP and TCP transports."""
         loop = asyncio.get_running_loop()
+
+        # Pre-load aliases before starting listeners
+        await self.alias_cache.start()
         
         # Start UDP
         try:
             self.udp_transport, _ = await loop.create_datagram_endpoint(
-                lambda: SyslogUDPProtocol(self.assembler, self.db_path),
+                lambda: SyslogUDPProtocol(self.assembler, self.alias_cache),
                 local_addr=(self.host, self.port)
             )
             logger.info(f"Started Syslog UDP server on {self.host}:{self.port}")
@@ -242,7 +332,7 @@ class SyslogServer:
         # Start TCP
         try:
             self.tcp_server = await loop.create_server(
-                lambda: SyslogTCPProtocol(self.assembler, self.db_path),
+                lambda: SyslogTCPProtocol(self.assembler, self.alias_cache),
                 self.host, self.port
             )
             logger.info(f"Started Syslog TCP server on {self.host}:{self.port}")
@@ -250,7 +340,9 @@ class SyslogServer:
             logger.error(f"Failed to start Syslog TCP server: {e}")
 
     async def stop(self) -> None:
-        """Close transports."""
+        """Close transports and stop alias cache refresh."""
+        await self.alias_cache.stop()
+
         if self.udp_transport:
             self.udp_transport.close()
             
@@ -259,3 +351,4 @@ class SyslogServer:
             await self.tcp_server.wait_closed()
             
         logger.info("Syslog servers stopped")
+

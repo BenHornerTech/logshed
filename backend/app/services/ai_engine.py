@@ -2,13 +2,19 @@
 AI Engine Service for Homelab Log Hub.
 Provides unified client abstraction for Google Gemini and OpenAI / OpenAI-compatible
 endpoints with prompt construction, structured parsing, and audit logging.
+
+Uses the google-genai SDK for Gemini and the openai SDK for OpenAI-compatible
+endpoints, as required by SPEC §4.2 and AGENTS.md.
 """
 
 import datetime
 import logging
 import re
 from typing import Any, Optional
-import httpx
+
+from google import genai
+from google.genai import types as genai_types
+from openai import AsyncOpenAI
 
 from app.core.security import decrypt_value
 
@@ -112,53 +118,46 @@ async def dispatch_gemini_request(
     timeout: float = 60.0,
 ) -> tuple[str, int]:
     """
-    Dispatch request to Google Gemini API via HTTP POST using x-goog-api-key header.
+    Dispatch request to Google Gemini API via the google-genai SDK.
+    Uses client.aio for async operations with API key authentication.
     """
     if not api_key:
         raise ValueError("Google Gemini API key is not configured in settings.")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": api_key,
-    }
-    payload = {
-        "systemInstruction": {
-            "parts": [{"text": SYSTEM_PROMPT}]
-        },
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": prompt}],
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.2,
-        },
-    }
+    try:
+        client = genai.Client(api_key=api_key)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        res = await client.post(url, headers=headers, json=payload)
-        if res.status_code != 200:
-            from app.core.sanitizer import sanitize
-            clean_err = sanitize(res.text[:500])
-            err_msg = f"Gemini API returned HTTP {res.status_code}: {clean_err}"
-            logger.error(err_msg)
-            raise RuntimeError(err_msg)
+        response = await client.aio.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0.2,
+            ),
+        )
 
-        data = res.json()
-        try:
-            candidate = data["candidates"][0]
-            text = candidate["content"]["parts"][0]["text"]
-        except (KeyError, IndexError) as e:
-            logger.error(f"Unexpected Gemini response structure: {data}")
-            raise RuntimeError(f"Unexpected response structure from Gemini API: {e}")
+        text = response.text
+        if not text:
+            raise RuntimeError("Gemini API returned empty response text.")
 
-        # Extract tokens
-        usage = data.get("usageMetadata", {})
-        tokens_used = usage.get("totalTokenCount", max(1, len(prompt) // 4 + len(text) // 4))
+        # Extract token usage from response metadata
+        tokens_used = 0
+        if response.usage_metadata:
+            tokens_used = response.usage_metadata.total_token_count or 0
+        if tokens_used == 0:
+            # Fallback estimation if usage metadata is unavailable
+            tokens_used = max(1, len(prompt) // 4 + len(text) // 4)
 
         return text, tokens_used
+
+    except ValueError:
+        raise
+    except Exception as e:
+        from app.core.sanitizer import sanitize
+        clean_err = sanitize(str(e)[:500])
+        err_msg = f"Gemini API error: {clean_err}"
+        logger.error(err_msg)
+        raise RuntimeError(err_msg)
 
 
 async def dispatch_openai_request(
@@ -169,48 +168,49 @@ async def dispatch_openai_request(
     timeout: float = 60.0,
 ) -> tuple[str, int]:
     """
-    Dispatch request to OpenAI or OpenAI-compatible endpoint (e.g. Ollama, vLLM, LocalAI).
+    Dispatch request to OpenAI or OpenAI-compatible endpoint (e.g. Ollama, vLLM, LocalAI)
+    via the openai SDK with configurable base_url.
     """
     effective_base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
-    url = f"{effective_base_url}/chat/completions"
 
-    headers = {
-        "Content-Type": "application/json",
-    }
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        client = AsyncOpenAI(
+            api_key=api_key or "not-needed",
+            base_url=effective_base_url,
+            timeout=timeout,
+        )
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-    }
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        res = await client.post(url, headers=headers, json=payload)
-        if res.status_code != 200:
-            from app.core.sanitizer import sanitize
-            clean_err = sanitize(res.text[:500])
-            err_msg = f"OpenAI endpoint returned HTTP {res.status_code}: {clean_err}"
-            logger.error(err_msg)
-            raise RuntimeError(err_msg)
+        choice = response.choices[0]
+        text = choice.message.content
+        if not text:
+            raise RuntimeError("OpenAI endpoint returned empty response content.")
 
-        data = res.json()
-        try:
-            choice = data["choices"][0]
-            text = choice["message"]["content"]
-        except (KeyError, IndexError) as e:
-            logger.error(f"Unexpected OpenAI response structure: {data}")
-            raise RuntimeError(f"Unexpected response structure from OpenAI endpoint: {e}")
-
-        # Extract tokens
-        usage = data.get("usage", {})
-        tokens_used = usage.get("total_tokens", max(1, len(prompt) // 4 + len(text) // 4))
+        # Extract token usage
+        tokens_used = 0
+        if response.usage:
+            tokens_used = response.usage.total_tokens or 0
+        if tokens_used == 0:
+            tokens_used = max(1, len(prompt) // 4 + len(text) // 4)
 
         return text, tokens_used
+
+    except ValueError:
+        raise
+    except Exception as e:
+        from app.core.sanitizer import sanitize
+        clean_err = sanitize(str(e)[:500])
+        err_msg = f"OpenAI endpoint error: {clean_err}"
+        logger.error(err_msg)
+        raise RuntimeError(err_msg)
 
 
 async def execute_ai_analysis(

@@ -3,7 +3,6 @@ Tests for low severity audit fixes (L1 through L6).
 """
 
 import asyncio
-from collections import OrderedDict
 import concurrent.futures
 import datetime
 import os
@@ -13,9 +12,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.collectors.syslog import (
-    _alias_cache,
-    _alias_cache_lock,
-    _ALIAS_CACHE_MAX_SIZE,
+    AliasCache,
     resolve_alias,
 )
 from app.core.config import get_cors_origins
@@ -149,28 +146,36 @@ class TestL3FtsSyntaxSupport:
 
 
 # ---------------------------------------------------------------------------
-# L4 & L5: Alias cache bounding and get_connection usage
+# L4 & L5: Alias cache preloading and resolve_alias
 # ---------------------------------------------------------------------------
 class TestL4AndL5AliasCache:
-    def test_alias_cache_lru_bounding(self, tmp_path: Path):
+    def test_alias_cache_bulk_load(self, tmp_path: Path):
+        """AliasCache.load_aliases() preloads ALL aliases from DB into memory."""
         db_file = tmp_path / "logs.db"
         run_migrations(db_file)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        with _alias_cache_lock:
-            _alias_cache.clear()
+        # Insert multiple aliases
+        with get_connection(db_file) as conn:
+            for i in range(50):
+                conn.execute(
+                    "INSERT INTO host_aliases (ip, alias, created_at) VALUES (?, ?, ?)",
+                    (f"10.0.0.{i}", f"host-{i}", now),
+                )
+            conn.commit()
 
-        # Insert 1050 items
-        for i in range(1050):
-            resolve_alias(f"192.168.100.{i}", db_file)
+        cache = AliasCache(db_file)
+        cache.load_aliases()
 
-        with _alias_cache_lock:
-            assert len(_alias_cache) <= _ALIAS_CACHE_MAX_SIZE
-            # The earliest inserted item (0) should have been evicted
-            assert "192.168.100.0" not in _alias_cache
-            # The most recent item should be present
-            assert "192.168.100.1049" in _alias_cache
+        # All 50 should be resolvable from memory
+        for i in range(50):
+            assert cache.resolve(f"10.0.0.{i}") == f"host-{i}"
+
+        # Unknown IP returns the IP itself
+        assert cache.resolve("10.0.0.200") == "10.0.0.200"
 
     def test_alias_resolution_persisted(self, tmp_path: Path):
+        """resolve_alias (legacy synchronous) still works correctly."""
         db_file = tmp_path / "logs.db"
         run_migrations(db_file)
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -182,11 +187,36 @@ class TestL4AndL5AliasCache:
             )
             conn.commit()
 
-        with _alias_cache_lock:
-            _alias_cache.clear()
-
         resolved = resolve_alias("192.168.1.99", db_file)
         assert resolved == "truenas-core"
+
+    @pytest.mark.asyncio
+    async def test_alias_cache_async_lifecycle_and_refresh(self, tmp_path: Path):
+        """AliasCache start() preloads data and background refresh task updates on changes."""
+        db_file = tmp_path / "logs.db"
+        run_migrations(db_file)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        cache = AliasCache(db_file, refresh_interval=0.05)
+        await cache.start()
+
+        # Initially no aliases
+        assert cache.resolve("192.168.1.10") == "192.168.1.10"
+
+        # Insert new alias into DB
+        with get_connection(db_file) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('192.168.1.10', 'nas-primary', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        # Wait for periodic refresh
+        await asyncio.sleep(0.12)
+        assert cache.resolve("192.168.1.10") == "nas-primary"
+
+        await cache.stop()
+        assert cache._refresh_task is None
 
 
 # ---------------------------------------------------------------------------

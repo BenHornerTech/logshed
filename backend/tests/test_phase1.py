@@ -27,7 +27,7 @@ from app.core.pipeline import (
     get_dropped_count,
     get_queue,
 )
-from app.collectors.syslog import SyslogTCPProtocol, parse_syslog_message
+from app.collectors.syslog import AliasCache, SyslogTCPProtocol, parse_syslog_message
 from app.services.storage_metrics import (
     record_metrics,
     sample_storage_metrics,
@@ -117,6 +117,34 @@ class TestSyslogParsing:
         assert result["severity"] == 5      # 165 % 8
         assert result["app_name"] == "unknown"  # '-' maps to unknown
         assert "Just a message" in result["message"]
+
+    def test_rfc5424_structured_data_with_spaces(self):
+        raw = b'<134>1 2024-01-15T10:30:00.000Z srv01 myapp 1234 ID47 [meta key="value with spaces" tag="audit"] Actual message text'
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["facility"] == 16
+        assert result["severity"] == 6
+        assert result["app_name"] == "myapp"
+        assert result.get("hostname") == "srv01"
+        assert result["timestamp"] == "2024-01-15T10:30:00.000Z"
+        assert result["message"] == "Actual message text"
+
+    def test_rfc5424_multiple_structured_data_elements(self):
+        raw = b'<134>1 2024-01-15T10:30:00.000Z srv01 myapp 1234 ID47 [sd1 a="1"][sd2 b="2"] Multiblock message'
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["app_name"] == "myapp"
+        assert result["message"] == "Multiblock message"
+
+    def test_rfc3164_message_starting_with_number_not_misidentified_as_5424(self):
+        # Starts with number after PRI and timestamp, but is RFC 3164
+        raw = b"<134>Jan 15 10:30:00 srv01 myapp: 42 connections opened"
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["facility"] == 16
+        assert result["severity"] == 6
+        assert result["app_name"] == "myapp"
+        assert result["message"] == "42 connections opened"
 
     def test_unparseable_fallback(self):
         raw = b"This is not a syslog message at all"
@@ -444,7 +472,8 @@ class TestBoundedQueue:
     async def test_tcp_syslog_buffer_limit_disconnects(self, db_path: Path):
         """TCP protocol should discard buffer and close connection if buffer exceeds 64KB without newline."""
         asm = KeyedMultilineAssembler()
-        proto = SyslogTCPProtocol(asm, db_path)
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(asm, alias_cache)
 
         class MockTransport:
             def __init__(self):

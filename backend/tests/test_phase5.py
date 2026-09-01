@@ -7,10 +7,10 @@ audit logging, same-host constraints, and manual Pushover notifications.
 import json
 import sqlite3
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient, Response
+from httpx import ASGITransport, AsyncClient
 
 from app.core import pipeline as pipeline_mod
 from app.core.config import get_secret_key_path
@@ -155,24 +155,19 @@ Multiple transaction queries deadlock on shared index.
 
     @pytest.mark.asyncio
     async def test_dispatch_gemini_request_mocked(self):
-        mock_response = Response(
-            200,
-            json={
-                "candidates": [
-                    {
-                        "content": {
-                            "parts": [
-                                {
-                                    "text": "## Summary\nDNS fail\n\n## Root Cause\nTimeout\n\n## Actionable Remediation\nRestart"
-                                }
-                            ]
-                        }
-                    }
-                ],
-                "usageMetadata": {"totalTokenCount": 320},
-            },
-        )
-        with patch("httpx.AsyncClient.post", return_value=mock_response) as mock_post:
+        mock_usage = MagicMock()
+        mock_usage.total_token_count = 320
+
+        mock_response = MagicMock()
+        mock_response.text = "## Summary\nDNS fail\n\n## Root Cause\nTimeout\n\n## Actionable Remediation\nRestart"
+        mock_response.usage_metadata = mock_usage
+
+        mock_generate = AsyncMock(return_value=mock_response)
+        with patch("app.services.ai_engine.genai") as mock_genai:
+            mock_client_instance = MagicMock()
+            mock_client_instance.aio.models.generate_content = mock_generate
+            mock_genai.Client.return_value = mock_client_instance
+
             text, tokens = await ai_engine.dispatch_gemini_request(
                 api_key="test-key",
                 model="gemini-2.5-flash",
@@ -180,20 +175,20 @@ Multiple transaction queries deadlock on shared index.
             )
             assert "DNS fail" in text
             assert tokens == 320
-            assert mock_post.called
-            # Verify API key is passed in headers and NOT in the URL query string
-            called_url = mock_post.call_args[0][0]
-            called_headers = mock_post.call_args[1].get("headers", {})
-            assert "key=" not in called_url
-            assert called_headers.get("x-goog-api-key") == "test-key"
+            assert mock_generate.called
+            # Verify API key is passed to the Client constructor
+            mock_genai.Client.assert_called_once_with(api_key="test-key")
 
     @pytest.mark.asyncio
     async def test_dispatch_gemini_error_sanitized(self):
-        mock_err_response = Response(
-            400,
-            text='{"error": "Invalid API key api_key=secret12345678 in request"}',
+        mock_generate = AsyncMock(
+            side_effect=Exception('Invalid API key api_key=secret12345678 in request')
         )
-        with patch("httpx.AsyncClient.post", return_value=mock_err_response):
+        with patch("app.services.ai_engine.genai") as mock_genai:
+            mock_client_instance = MagicMock()
+            mock_client_instance.aio.models.generate_content = mock_generate
+            mock_genai.Client.return_value = mock_client_instance
+
             with pytest.raises(RuntimeError) as exc_info:
                 await ai_engine.dispatch_gemini_request(
                     api_key="test-key",
@@ -205,20 +200,25 @@ Multiple transaction queries deadlock on shared index.
 
     @pytest.mark.asyncio
     async def test_dispatch_openai_request_mocked(self):
-        mock_response = Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": "## Summary\nOllama summary\n\n## Root Cause\nOllama cause\n\n## Actionable Remediation\nOllama fix"
-                        }
-                    }
-                ],
-                "usage": {"total_tokens": 210},
-            },
-        )
-        with patch("httpx.AsyncClient.post", return_value=mock_response) as mock_post:
+        mock_usage = MagicMock()
+        mock_usage.total_tokens = 210
+
+        mock_message = MagicMock()
+        mock_message.content = "## Summary\nOllama summary\n\n## Root Cause\nOllama cause\n\n## Actionable Remediation\nOllama fix"
+
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_response.usage = mock_usage
+
+        mock_create = AsyncMock(return_value=mock_response)
+        with patch("app.services.ai_engine.AsyncOpenAI") as mock_openai_cls:
+            mock_client_instance = MagicMock()
+            mock_client_instance.chat.completions.create = mock_create
+            mock_openai_cls.return_value = mock_client_instance
+
             text, tokens = await ai_engine.dispatch_openai_request(
                 api_key="sk-test",
                 model="gpt-4o",
@@ -227,7 +227,13 @@ Multiple transaction queries deadlock on shared index.
             )
             assert "Ollama summary" in text
             assert tokens == 210
-            assert mock_post.called
+            assert mock_create.called
+            # Verify the custom base_url was passed to the client
+            mock_openai_cls.assert_called_once_with(
+                api_key="sk-test",
+                base_url="http://localhost:11434/v1",
+                timeout=60.0,
+            )
 
 
 class TestAiPreviewAndGating:
