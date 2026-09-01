@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.api.deps import get_current_user, run_db_query
 from app.core.sanitizer import sanitize
 from app.core.security import decrypt_value
-from app.services.ai_engine import execute_ai_analysis
+from app.services.ai_engine import build_analysis_prompt, execute_ai_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -130,13 +130,20 @@ async def preview_ai_prompt(
 
     raw_lines = [f"[{r['timestamp']}] [{r['app_name']}] {r['message']}" for r in rows]
     sanitized_lines = sanitize(raw_lines)
-    sanitized_prompt = "\n".join(sanitized_lines) if isinstance(sanitized_lines, list) else str(sanitized_lines)
+    sanitized_logs_text = "\n".join(sanitized_lines) if isinstance(sanitized_lines, list) else str(sanitized_lines)
+
+    full_prompt = build_analysis_prompt(
+        source_alias=source_alias,
+        app_name=app_name,
+        sanitized_logs=sanitized_logs_text,
+        log_count=len(rows),
+    )
 
     # Estimate token count (~4 characters per token + framing overhead)
-    estimated_tokens = max(1, len(sanitized_prompt) // 4 + 50)
+    estimated_tokens = max(1, len(full_prompt) // 4 + 50)
 
     return AiPreviewResponse(
-        sanitized_prompt=sanitized_prompt,
+        sanitized_prompt=full_prompt,
         estimated_tokens=estimated_tokens,
         provider=provider,
         model=model,

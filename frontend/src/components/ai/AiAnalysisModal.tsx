@@ -119,9 +119,20 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
     }
   };
 
+  const displayedPrompt = React.useMemo(() => {
+    if (!preview) return '';
+    if (!userContext.trim()) return preview.sanitized_prompt;
+    // Inject situational context before the sanitized log stream
+    const parts = preview.sanitized_prompt.split('### Sanitized Log Stream');
+    if (parts.length === 2) {
+      return `${parts[0]}### Situational Context from Operator\n${userContext.trim()}\n\n### Sanitized Log Stream${parts[1]}`;
+    }
+    return preview.sanitized_prompt;
+  }, [preview, userContext]);
+
   const handleCopyPrompt = () => {
-    if (preview) {
-      navigator.clipboard.writeText(preview.sanitized_prompt);
+    if (displayedPrompt) {
+      navigator.clipboard.writeText(displayedPrompt);
       setCopiedPrompt(true);
       setTimeout(() => setCopiedPrompt(false), 2000);
     }
@@ -152,7 +163,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
           {preview && (
             <div className="flex items-center gap-2 font-mono text-[11px] text-slate-400">
               <span className="px-2 py-0.5 bg-dark-800 rounded border border-dark-700">
-                ~{preview.estimated_tokens} tokens
+                ~{Math.max(1, Math.floor(displayedPrompt.length / 4) + 50)} tokens
               </span>
             </div>
           )}
@@ -191,7 +202,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                 </button>
               </div>
               <div className="bg-dark-950 border border-dark-700 rounded-lg p-3 font-mono text-slate-300 text-xs whitespace-pre-wrap max-h-48 overflow-y-auto select-text">
-                {preview.sanitized_prompt}
+                {displayedPrompt}
               </div>
             </div>
 
