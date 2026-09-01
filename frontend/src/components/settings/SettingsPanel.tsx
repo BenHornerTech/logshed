@@ -520,21 +520,51 @@ export const SettingsPanel: React.FC = () => {
           maxWidth="max-w-3xl"
         >
           <div className="space-y-4 text-xs font-sans">
-            {/* Header info */}
-            <div className="p-3 bg-dark-950 rounded-lg border border-dark-700 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Brain className="w-4 h-4 text-accent-400" />
-                <span className="font-semibold text-slate-200 font-mono">
-                  {selectedAuditItem.source_alias} • {selectedAuditItem.app_name}
-                </span>
-                <span className="text-slate-500 text-[11px]">
-                  ({selectedAuditItem.log_count} log{selectedAuditItem.log_count === 1 ? '' : 's'})
+            {/* Header info - 2-row layout */}
+            <div className="bg-dark-950 p-3.5 rounded-lg border border-dark-700 space-y-2.5">
+              {/* Row 1: Source / App Name + Timestamp */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Brain className="w-4 h-4 text-accent-400" />
+                  <span className="font-semibold text-slate-100 font-mono text-xs">
+                    {selectedAuditItem.source_alias} • {selectedAuditItem.app_name}
+                  </span>
+                  <span className="text-slate-400 text-[11px]">
+                    ({selectedAuditItem.log_count} log{selectedAuditItem.log_count === 1 ? '' : 's'})
+                  </span>
+                </div>
+                <span className="font-mono text-[11px] text-slate-400">
+                  {selectedAuditItem.timestamp.slice(0, 19).replace('T', ' ')}
                 </span>
               </div>
-              <div className="flex items-center gap-3 font-mono text-[11px] text-slate-400">
-                <span>Model: <span className="text-slate-200">{selectedAuditItem.model}</span></span>
-                <span>Tokens: <span className="text-slate-200">{selectedAuditItem.tokens_used}</span></span>
-                <span>{selectedAuditItem.timestamp.slice(0, 19).replace('T', ' ')}</span>
+
+              {/* Row 2: Model Badge + Token Breakdown Pills */}
+              <div className="flex flex-wrap items-center justify-between pt-2 border-t border-dark-800 text-[11px] font-mono gap-2">
+                <div className="flex items-center gap-1.5 bg-dark-900 border border-dark-700 px-2 py-0.5 rounded text-slate-300">
+                  <span className="text-slate-400 text-[10px] uppercase font-semibold">Model:</span>
+                  <span className="text-accent-400 font-medium">{selectedAuditItem.model}</span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-slate-300">
+                    Total: <span className="text-slate-100 font-semibold">{selectedAuditItem.tokens_used.toLocaleString()}</span>
+                  </span>
+                  {selectedAuditItem.tokens_in !== undefined && (
+                    <span className="bg-emerald-950/60 border border-emerald-800/80 text-emerald-300 px-1.5 py-0.5 rounded">
+                      ↓ {selectedAuditItem.tokens_in.toLocaleString()} in
+                    </span>
+                  )}
+                  {selectedAuditItem.tokens_out !== undefined && (
+                    <span className="bg-sky-950/60 border border-sky-800/80 text-sky-300 px-1.5 py-0.5 rounded">
+                      ↑ {selectedAuditItem.tokens_out.toLocaleString()} out
+                    </span>
+                  )}
+                  {Boolean(selectedAuditItem.tokens_thoughts) && (
+                    <span className="bg-purple-950/60 border border-purple-800/80 text-purple-300 px-1.5 py-0.5 rounded">
+                      ⚡ {selectedAuditItem.tokens_thoughts!.toLocaleString()} thinking
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 

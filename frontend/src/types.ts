@@ -92,6 +92,9 @@ export interface AiAnalysisResponse {
   root_cause: string;
   remediation: string;
   model_used: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  tokens_thoughts?: number;
   tokens_used: number;
   audit_id?: number;
 }
@@ -106,6 +109,9 @@ export interface AiAuditEntry {
   model: string;
   prompt_sent: string;
   response_text: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  tokens_thoughts?: number;
   tokens_used: number;
 }
 

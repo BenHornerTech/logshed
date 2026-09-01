@@ -287,10 +287,48 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
         {/* Structured AI Analysis Result */}
         {analysisResult && (
           <div className="space-y-4 animate-in fade-in">
-            {/* Header info */}
-            <div className="flex items-center justify-between text-slate-400 font-mono text-[11px]">
-              <span>Model: <span className="text-slate-200">{analysisResult.model_used}</span></span>
-              <span>Tokens Used: <span className="text-slate-200">{analysisResult.tokens_used}</span></span>
+            {/* Header info - 2-row layout */}
+            <div className="bg-dark-950 p-3 rounded-lg border border-dark-700 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-emerald-400" />
+                  <span className="font-semibold text-slate-200">
+                    {selectedLogs.length} Log{selectedLogs.length === 1 ? '' : 's'} Analyzed
+                  </span>
+                  {preview && (
+                    <span className="text-slate-400 font-mono text-[11px]">
+                      ({preview.source_alias} • {preview.app_name})
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 font-mono text-[11px] bg-dark-900 border border-dark-700 px-2 py-0.5 rounded text-slate-300">
+                  <span className="text-slate-400 text-[10px] uppercase font-semibold">Model:</span>
+                  <span className="text-accent-400 font-medium">{analysisResult.model_used}</span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between pt-1.5 border-t border-dark-800 text-[11px] font-mono text-slate-400 gap-2">
+                <span>
+                  Total Tokens: <span className="text-slate-100 font-semibold">{analysisResult.tokens_used.toLocaleString()}</span>
+                </span>
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  {analysisResult.tokens_in !== undefined && (
+                    <span className="bg-emerald-950/60 border border-emerald-800/80 text-emerald-300 px-1.5 py-0.5 rounded">
+                      ↓ {analysisResult.tokens_in.toLocaleString()} in
+                    </span>
+                  )}
+                  {analysisResult.tokens_out !== undefined && (
+                    <span className="bg-sky-950/60 border border-sky-800/80 text-sky-300 px-1.5 py-0.5 rounded">
+                      ↑ {analysisResult.tokens_out.toLocaleString()} out
+                    </span>
+                  )}
+                  {Boolean(analysisResult.tokens_thoughts) && (
+                    <span className="bg-purple-950/60 border border-purple-800/80 text-purple-300 px-1.5 py-0.5 rounded">
+                      ⚡ {analysisResult.tokens_thoughts!.toLocaleString()} thinking
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
 
             {/* Summary */}

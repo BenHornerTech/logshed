@@ -640,7 +640,7 @@ class TestSchemaIntegrity:
         conn = get_connection(db_path)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version == 1
+        assert version >= 1
 
     def test_wal_mode_enabled(self, db_path: Path):
         """WAL journal mode should be active."""
@@ -723,4 +723,4 @@ class TestSchemaIntegrity:
         conn = get_connection(p)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version == 1
+        assert version >= 1

@@ -141,14 +141,24 @@ async def dispatch_gemini_request(
             raise RuntimeError("Gemini API returned empty response text.")
 
         # Extract token usage from response metadata
+        tokens_in = 0
+        tokens_out = 0
+        tokens_thoughts = 0
         tokens_used = 0
         if response.usage_metadata:
-            tokens_used = response.usage_metadata.total_token_count or 0
+            tokens_in = response.usage_metadata.prompt_token_count or 0
+            tokens_out = response.usage_metadata.candidates_token_count or 0
+            tokens_thoughts = getattr(response.usage_metadata, "thoughts_token_count", 0) or 0
+            tokens_used = response.usage_metadata.total_token_count or (tokens_in + tokens_out + tokens_thoughts)
+            if tokens_thoughts == 0 and tokens_used > (tokens_in + tokens_out):
+                tokens_thoughts = tokens_used - (tokens_in + tokens_out)
         if tokens_used == 0:
             # Fallback estimation if usage metadata is unavailable
-            tokens_used = max(1, len(prompt) // 4 + len(text) // 4)
+            tokens_in = max(1, len(prompt) // 4)
+            tokens_out = max(1, len(text) // 4)
+            tokens_used = tokens_in + tokens_out
 
-        return text, tokens_used
+        return text, tokens_in, tokens_out, tokens_thoughts, tokens_used
 
     except ValueError:
         raise
@@ -166,7 +176,7 @@ async def dispatch_openai_request(
     prompt: str,
     base_url: Optional[str] = None,
     timeout: float = 60.0,
-) -> tuple[str, int]:
+) -> tuple[str, int, int, int, int]:
     """
     Dispatch request to OpenAI or OpenAI-compatible endpoint (e.g. Ollama, vLLM, LocalAI)
     via the openai SDK with configurable base_url.
@@ -195,13 +205,24 @@ async def dispatch_openai_request(
             raise RuntimeError("OpenAI endpoint returned empty response content.")
 
         # Extract token usage
+        tokens_in = 0
+        tokens_out = 0
+        tokens_thoughts = 0
         tokens_used = 0
         if response.usage:
-            tokens_used = response.usage.total_tokens or 0
+            tokens_in = response.usage.prompt_tokens or 0
+            tokens_out = response.usage.completion_tokens or 0
+            if hasattr(response.usage, "completion_tokens_details") and response.usage.completion_tokens_details:
+                tokens_thoughts = getattr(response.usage.completion_tokens_details, "reasoning_tokens", 0) or 0
+            tokens_used = response.usage.total_tokens or (tokens_in + tokens_out)
+            if tokens_thoughts == 0 and tokens_used > (tokens_in + tokens_out):
+                tokens_thoughts = tokens_used - (tokens_in + tokens_out)
         if tokens_used == 0:
-            tokens_used = max(1, len(prompt) // 4 + len(text) // 4)
+            tokens_in = max(1, len(prompt) // 4)
+            tokens_out = max(1, len(text) // 4)
+            tokens_used = tokens_in + tokens_out
 
-        return text, tokens_used
+        return text, tokens_in, tokens_out, tokens_thoughts, tokens_used
 
     except ValueError:
         raise
@@ -223,10 +244,10 @@ async def execute_ai_analysis(
     sanitized_logs: str,
     log_count: int,
     user_context: Optional[str] = None,
-) -> tuple[str, str, str, str, int]:
+) -> tuple[str, str, str, str, str, int, int, int, int]:
     """
     Unified entrypoint to run on-demand AI analysis.
-    Returns (summary, root_cause, remediation, raw_response, tokens_used).
+    Returns (summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used).
     """
     prompt = build_analysis_prompt(
         source_alias=source_alias,
@@ -239,13 +260,13 @@ async def execute_ai_analysis(
     norm_provider = (provider or "gemini").lower()
 
     if norm_provider == "gemini":
-        raw_text, tokens = await dispatch_gemini_request(
+        raw_text, tokens_in, tokens_out, tokens_thoughts, tokens_used = await dispatch_gemini_request(
             api_key=api_key,
             model=model or "gemini-2.5-flash",
             prompt=prompt,
         )
     elif norm_provider in ("openai", "openai_compatible"):
-        raw_text, tokens = await dispatch_openai_request(
+        raw_text, tokens_in, tokens_out, tokens_thoughts, tokens_used = await dispatch_openai_request(
             api_key=api_key,
             model=model or ("gpt-4o" if norm_provider == "openai" else "llama3.2"),
             prompt=prompt,
@@ -255,4 +276,4 @@ async def execute_ai_analysis(
         raise ValueError(f"Unsupported AI provider: {provider}")
 
     summary, root_cause, remediation = parse_structured_ai_response(raw_text)
-    return summary, root_cause, remediation, raw_text, tokens
+    return summary, root_cause, remediation, raw_text, prompt, tokens_in, tokens_out, tokens_thoughts, tokens_used

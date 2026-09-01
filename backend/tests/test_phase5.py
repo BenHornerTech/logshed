@@ -156,6 +156,9 @@ Multiple transaction queries deadlock on shared index.
     @pytest.mark.asyncio
     async def test_dispatch_gemini_request_mocked(self):
         mock_usage = MagicMock()
+        mock_usage.prompt_token_count = 250
+        mock_usage.candidates_token_count = 70
+        mock_usage.thoughts_token_count = 0
         mock_usage.total_token_count = 320
 
         mock_response = MagicMock()
@@ -168,12 +171,15 @@ Multiple transaction queries deadlock on shared index.
             mock_client_instance.aio.models.generate_content = mock_generate
             mock_genai.Client.return_value = mock_client_instance
 
-            text, tokens = await ai_engine.dispatch_gemini_request(
+            text, tokens_in, tokens_out, tokens_thoughts, tokens = await ai_engine.dispatch_gemini_request(
                 api_key="test-key",
                 model="gemini-2.5-flash",
                 prompt="test prompt",
             )
             assert "DNS fail" in text
+            assert tokens_in == 250
+            assert tokens_out == 70
+            assert tokens_thoughts == 0
             assert tokens == 320
             assert mock_generate.called
             # Verify API key is passed to the Client constructor
@@ -201,6 +207,9 @@ Multiple transaction queries deadlock on shared index.
     @pytest.mark.asyncio
     async def test_dispatch_openai_request_mocked(self):
         mock_usage = MagicMock()
+        mock_usage.prompt_tokens = 160
+        mock_usage.completion_tokens = 50
+        mock_usage.completion_tokens_details = None
         mock_usage.total_tokens = 210
 
         mock_message = MagicMock()
@@ -219,13 +228,16 @@ Multiple transaction queries deadlock on shared index.
             mock_client_instance.chat.completions.create = mock_create
             mock_openai_cls.return_value = mock_client_instance
 
-            text, tokens = await ai_engine.dispatch_openai_request(
+            text, tokens_in, tokens_out, tokens_thoughts, tokens = await ai_engine.dispatch_openai_request(
                 api_key="sk-test",
                 model="gpt-4o",
                 prompt="test prompt",
                 base_url="http://localhost:11434/v1",
             )
             assert "Ollama summary" in text
+            assert tokens_in == 160
+            assert tokens_out == 50
+            assert tokens_thoughts == 0
             assert tokens == 210
             assert mock_create.called
             # Verify the custom base_url was passed to the client
@@ -300,6 +312,10 @@ class TestAiAnalyzeWorkflow:
                 "Invalid Bearer token supplied by client combined with unreachable upstream DNS resolver 1.1.1.1.",
                 "1. Verify client authorization headers.\n2. Check firewall outbound UDP/TCP port 53 to 1.1.1.1.",
                 mock_raw_response,
+                "### System Metadata\n- Host: router\n\n### Sanitized Log Stream (Chronological)\n```\nlog line\n```",
+                180,
+                65,
+                0,
                 245,
             ),
         ) as mock_exec:
@@ -318,6 +334,9 @@ class TestAiAnalyzeWorkflow:
             assert "Invalid Bearer token supplied" in data["root_cause"]
             assert "Verify client authorization headers" in data["remediation"]
             assert data["model_used"] == "gemini-2.5-flash"
+            assert data["tokens_in"] == 180
+            assert data["tokens_out"] == 65
+            assert data["tokens_thoughts"] == 0
             assert data["tokens_used"] == 245
             assert data["audit_id"] is not None
 
@@ -356,6 +375,10 @@ class TestAiAnalyzeWorkflow:
                 "DNS timeout.",
                 "Restart.",
                 mock_raw,
+                "### System Metadata\n- Host: router\n\n### Sanitized Log Stream (Chronological)\n```\nlog line\n```",
+                140,
+                50,
+                0,
                 190,
             ),
         ) as mock_exec:
@@ -370,6 +393,9 @@ class TestAiAnalyzeWorkflow:
             assert res.status_code == 200
             data = res.json()
             assert "Ollama local model diagnosis" in data["summary"]
+            assert data["tokens_in"] == 140
+            assert data["tokens_out"] == 50
+            assert data["tokens_thoughts"] == 0
             assert data["tokens_used"] == 190
             assert data["model_used"] == "llama3.2"
 
@@ -385,7 +411,17 @@ class TestAiAnalyzeWorkflow:
         with patch(
             "app.api.ai.execute_ai_analysis",
             new_callable=AsyncMock,
-            return_value=("Audit test summary", "Audit test cause", "Audit test fix", "Raw audit text", 111),
+            return_value=(
+                "Audit test summary",
+                "Audit test cause",
+                "Audit test fix",
+                "Raw audit text",
+                "### System Metadata\n- Host: router\n\n### Sanitized Log Stream\n```\nlogs\n```",
+                80,
+                31,
+                0,
+                111,
+            ),
         ):
             res = await auth_client.post(
                 "/api/ai/analyze",

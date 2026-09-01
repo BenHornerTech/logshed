@@ -171,6 +171,10 @@ class TestAiEndpoints:
                 "The log stream indicates potential service configuration errors.",
                 "1. Check container service status.\n2. Review network.",
                 "Raw LLM response",
+                "Full prompt sent with logs and metadata",
+                150,
+                50,
+                0,
                 200,
             )
             res = await auth_client.post(

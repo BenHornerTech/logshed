@@ -44,6 +44,9 @@ class AiAnalyzeResponse(BaseModel):
     root_cause: str
     remediation: str
     model_used: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_thoughts: int = 0
     tokens_used: int
     audit_id: Optional[int] = None
 
@@ -58,6 +61,9 @@ class AiAuditItem(BaseModel):
     model: str
     prompt_sent: str
     response_text: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_thoughts: int = 0
     tokens_used: int
 
 
@@ -207,7 +213,7 @@ async def analyze_logs(
     base_url = settings.get("ai_base_url") or None
 
     try:
-        summary, root_cause, remediation, raw_response, tokens_used = await execute_ai_analysis(
+        summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await execute_ai_analysis(
             provider=provider,
             model=model,
             api_key=api_key,
@@ -234,8 +240,8 @@ async def analyze_logs(
         cursor.execute(
             """
             INSERT INTO ai_audit_log
-            (timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text, tokens_used)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text, tokens_in, tokens_out, tokens_thoughts, tokens_used)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 now,
@@ -244,8 +250,11 @@ async def analyze_logs(
                 len(rows),
                 req.user_context or "",
                 model,
-                sanitized_logs,
+                prompt_sent,
                 raw_response,
+                tokens_in,
+                tokens_out,
+                tokens_thoughts,
                 tokens_used,
             ),
         )
@@ -260,6 +269,9 @@ async def analyze_logs(
         root_cause=root_cause,
         remediation=remediation,
         model_used=model,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        tokens_thoughts=tokens_thoughts,
         tokens_used=tokens_used,
         audit_id=audit_id,
     )
@@ -281,7 +293,11 @@ async def list_ai_audit(
 
         cursor.execute(
             """
-            SELECT id, timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text, tokens_used
+            SELECT id, timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text,
+                   COALESCE(tokens_in, 0) AS tokens_in,
+                   COALESCE(tokens_out, 0) AS tokens_out,
+                   COALESCE(tokens_thoughts, MAX(0, tokens_used - (COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0)))) AS tokens_thoughts,
+                   tokens_used
             FROM ai_audit_log
             ORDER BY timestamp DESC, id DESC
             LIMIT ? OFFSET ?
@@ -289,21 +305,36 @@ async def list_ai_audit(
             (limit, offset),
         )
         rows = cursor.fetchall()
-        items = [
-            AiAuditItem(
-                id=r["id"],
-                timestamp=str(r["timestamp"]),
-                source_alias=r["source_alias"],
-                app_name=r["app_name"],
-                log_count=r["log_count"],
-                user_context=r["user_context"],
-                model=r["model"],
-                prompt_sent=r["prompt_sent"],
-                response_text=r["response_text"],
-                tokens_used=r["tokens_used"],
+        items = []
+        for r in rows:
+            p_sent = r["prompt_sent"]
+            if p_sent and not p_sent.startswith("### System Metadata") and not p_sent.startswith("### Sanitized Log Stream"):
+                # Reconstitute full prompt structure for older records that stored only raw sanitized logs
+                p_sent = build_analysis_prompt(
+                    source_alias=r["source_alias"],
+                    app_name=r["app_name"],
+                    sanitized_logs=p_sent,
+                    log_count=r["log_count"],
+                    user_context=r["user_context"],
+                )
+
+            items.append(
+                AiAuditItem(
+                    id=r["id"],
+                    timestamp=str(r["timestamp"]),
+                    source_alias=r["source_alias"],
+                    app_name=r["app_name"],
+                    log_count=r["log_count"],
+                    user_context=r["user_context"],
+                    model=r["model"],
+                    prompt_sent=p_sent,
+                    response_text=r["response_text"],
+                    tokens_in=r["tokens_in"],
+                    tokens_out=r["tokens_out"],
+                    tokens_thoughts=r["tokens_thoughts"],
+                    tokens_used=r["tokens_used"],
+                )
             )
-            for r in rows
-        ]
         return items, total
 
     items, total = await run_db_query(_read_audit)

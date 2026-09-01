@@ -159,9 +159,22 @@ CREATE TABLE system_settings (
 ''')
 
 
+def migrate_v2(conn: sqlite3.Connection) -> None:
+    """
+    Migration v2: Add tokens_in, tokens_out, and tokens_thoughts columns to ai_audit_log.
+    """
+    logger.info("Running migration v2 (adding tokens_in, tokens_out, tokens_thoughts to ai_audit_log)...")
+    for col in ("tokens_in", "tokens_out", "tokens_thoughts"):
+        try:
+            conn.execute(f"ALTER TABLE ai_audit_log ADD COLUMN {col} INTEGER DEFAULT 0;")
+        except sqlite3.OperationalError:
+            pass
+
+
 # Registry of migrations to run. Must be ordered by version ascending.
 MIGRATIONS = [
     (1, migrate_v1),
+    (2, migrate_v2),
 ]
 
 def run_migrations(db_path: Union[str, Path]) -> None:
