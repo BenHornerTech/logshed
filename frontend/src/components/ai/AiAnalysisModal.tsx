@@ -46,11 +46,20 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   }, [isOpen, selectedLogs]);
 
   const loadPreview = async () => {
+    const validLogIds = selectedLogs
+      .map((l) => l.id)
+      .filter((id): id is number => typeof id === 'number' && !isNaN(id));
+
+    if (validLogIds.length === 0) {
+      setPreviewError('No valid log IDs selected for AI analysis.');
+      return;
+    }
+
     try {
       setIsLoadingPreview(true);
       setPreviewError(null);
       const res = await previewAiPrompt({
-        log_ids: selectedLogs.map((l) => l.id),
+        log_ids: validLogIds,
       });
       setPreview(res);
       setProvider(res.provider);
@@ -63,11 +72,20 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   };
 
   const handleRunAnalysis = async () => {
+    const validLogIds = selectedLogs
+      .map((l) => l.id)
+      .filter((id): id is number => typeof id === 'number' && !isNaN(id));
+
+    if (validLogIds.length === 0) {
+      setAnalysisError('No valid log IDs selected for AI analysis.');
+      return;
+    }
+
     try {
       setIsAnalyzing(true);
       setAnalysisError(null);
       const res = await analyzeLogs({
-        log_ids: selectedLogs.map((l) => l.id),
+        log_ids: validLogIds,
         user_context: userContext.trim() || undefined,
         provider,
         model,

@@ -28,6 +28,7 @@ from app.core.pipeline import (
     get_queue,
 )
 from app.collectors.syslog import AliasCache, SyslogTCPProtocol, parse_syslog_message
+from app.core.sse import sse_manager
 from app.services.storage_metrics import (
     record_metrics,
     sample_storage_metrics,
@@ -467,6 +468,40 @@ class TestBoundedQueue:
         count = conn.execute("SELECT COUNT(*) FROM logs WHERE message LIKE 'consumer_test_%'").fetchone()[0]
         conn.close()
         assert count == 100
+
+    @pytest.mark.asyncio
+    async def test_queue_consumer_populates_entry_id_and_broadcasts(self, db_path: Path):
+        """QueueConsumer should populate generated row id on entry and broadcast with valid integer id."""
+        consumer = QueueConsumer(db_path)
+        q = get_queue()
+        sse_q = await sse_manager.subscribe()
+
+        try:
+            entry = _make_entry(message="test_log_with_id_broadcast")
+            assert "id" not in entry
+            q.put_nowait(entry)
+
+            consumer_task = asyncio.create_task(consumer.run())
+
+            # Wait for item to be processed and received over SSE queue (consumer has 2.0s batch window)
+            received_entry = await asyncio.wait_for(sse_q.get(), timeout=3.5)
+            assert "id" in received_entry
+            assert isinstance(received_entry["id"], int)
+            assert received_entry["id"] > 0
+            assert received_entry["message"] == "test_log_with_id_broadcast"
+
+            # Verify the id matches the row in DB
+            conn = get_connection(db_path)
+            row = conn.execute("SELECT id, message FROM logs WHERE id = ?", (received_entry["id"],)).fetchone()
+            conn.close()
+            assert row is not None
+            assert row[0] == received_entry["id"]
+            assert row[1] == "test_log_with_id_broadcast"
+
+            await consumer.stop()
+            await consumer_task
+        finally:
+            await sse_manager.unsubscribe(sse_q)
 
     @pytest.mark.asyncio
     async def test_tcp_syslog_buffer_limit_disconnects(self, db_path: Path):

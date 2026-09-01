@@ -222,7 +222,7 @@ class QueueConsumer:
         self._running = False
 
     def _insert_batch(self, batch: list[dict]) -> None:
-        """Synchronous: insert batch into SQLite in a transaction."""
+        """Synchronous: insert batch into SQLite in a transaction and assign generated row IDs."""
         query = '''
             INSERT INTO logs (
                 timestamp, received_at, source_ip, source_alias,
@@ -236,7 +236,9 @@ class QueueConsumer:
         conn = get_connection(self._db_path)
         try:
             cursor = conn.cursor()
-            cursor.executemany(query, batch)
+            for entry in batch:
+                cursor.execute(query, entry)
+                entry["id"] = cursor.lastrowid
             conn.commit()
         except Exception as e:
             conn.rollback()
