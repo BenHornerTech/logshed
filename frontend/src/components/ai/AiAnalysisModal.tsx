@@ -5,6 +5,7 @@ import { previewAiPrompt, analyzeLogs } from '../../api/ai.ts';
 import { sendPushoverNotification } from '../../api/notifications.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
 import { Modal } from '../common/Modal.tsx';
+import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 
 interface AiAnalysisModalProps {
   isOpen: boolean;
@@ -297,7 +298,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               <h4 className="text-[11px] font-semibold text-accent-400 uppercase tracking-wider mb-1">
                 Summary
               </h4>
-              <p className="text-slate-200 text-xs leading-relaxed">{analysisResult.summary}</p>
+              <MarkdownRenderer content={analysisResult.summary} />
             </div>
 
             {/* Root Cause */}
@@ -305,9 +306,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               <h4 className="text-[11px] font-semibold text-amber-400 uppercase tracking-wider mb-1">
                 Root Cause Analysis
               </h4>
-              <p className="text-slate-200 text-xs leading-relaxed whitespace-pre-wrap">
-                {analysisResult.root_cause}
-              </p>
+              <MarkdownRenderer content={analysisResult.root_cause} />
             </div>
 
             {/* Actionable Remediation */}
@@ -315,9 +314,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               <h4 className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider mb-1">
                 Actionable Remediation
               </h4>
-              <div className="text-slate-200 text-xs leading-relaxed font-mono whitespace-pre-wrap">
-                {analysisResult.remediation}
-              </div>
+              <MarkdownRenderer content={analysisResult.remediation} />
             </div>
 
             {pushoverStatus && (
