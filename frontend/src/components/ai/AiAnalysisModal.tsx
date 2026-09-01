@@ -3,6 +3,7 @@ import { Sparkles, Send, Copy, Check, Shield, RefreshCw, AlertCircle } from 'luc
 import { LogEntry, AiPreviewResponse, AiAnalysisResponse } from '../../types.ts';
 import { previewAiPrompt, analyzeLogs } from '../../api/ai.ts';
 import { sendPushoverNotification } from '../../api/notifications.ts';
+import { copyToClipboard } from '../../utils/clipboard.ts';
 import { Modal } from '../common/Modal.tsx';
 
 interface AiAnalysisModalProps {
@@ -130,11 +131,13 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
     return preview.sanitized_prompt;
   }, [preview, userContext]);
 
-  const handleCopyPrompt = () => {
+  const handleCopyPrompt = async () => {
     if (displayedPrompt) {
-      navigator.clipboard.writeText(displayedPrompt);
-      setCopiedPrompt(true);
-      setTimeout(() => setCopiedPrompt(false), 2000);
+      const ok = await copyToClipboard(displayedPrompt);
+      if (ok) {
+        setCopiedPrompt(true);
+        setTimeout(() => setCopiedPrompt(false), 2000);
+      }
     }
   };
 
