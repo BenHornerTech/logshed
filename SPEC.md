@@ -15,6 +15,7 @@ Only the following are true environment variables, supplied at container start a
 - `PORT` — web/API port (defaults to `8080` if unset).
 - `PUID` and `PGID` — user and group IDs for the application to run as (defaults to `1000` if unset).
 - `LOG_HUB_SECRET_KEY` — optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
+- `COOKIE_SECURE` — optional boolean (`true`/`false`, defaults to `false`). When `false` (the default), session cookies are issued without the `Secure` flag to allow direct HTTP access over local IP addresses in homelabs, or automatically detects HTTPS via `X-Forwarded-Proto` header or request scheme. Set to `true` when running behind an SSL-terminating reverse proxy that does not send `X-Forwarded-Proto`.
 
 All other configuration — AI provider, AI API key, AI base URL, AI model, Pushover user key, Pushover app token, and `retention_days` — is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
 
@@ -220,6 +221,8 @@ python -m app.cli reset-admin --password <new_password>
 | `POST` | `/api/auth/setup` | First-time admin creation (returns `403` if already configured) | `{"password": "..."}` |
 | `POST` | `/api/auth/login` | Session login (rate-limited) | `{"password": "..."}` |
 | `POST` | `/api/auth/logout` | Invalidate session cookie | None |
+| `GET` | `/api/auth/status` | Read setup status and current session authentication state | None (returns `{"setup_required": bool, "authenticated": bool}`) |
+| `POST` | `/api/auth/password` | Update admin password for authenticated session | `{"current_password": "...", "new_password": "..."}` |
 | **Log Management** |  |  |  |
 | `GET` | `/api/logs` | Search & filter logs. Severity filter follows RFC 5424 numeric ordering directly, where lower numbers are more severe (`WHERE severity <= :severity_max`, e.g., `severity_max=3` returns Emergency(0) through Error(3)) | `query`, `severity_max` (0-7), `app_name`, `source`, `from`, `to`, `limit`, `offset` |
 | `GET` | `/api/logs/stream` | Real-time Server-Sent Events (SSE) | `severity_max`, `source`, `app_name` |

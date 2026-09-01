@@ -41,15 +41,27 @@ def get_docker_host() -> str:
     return os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
 
 def get_cors_origins() -> list[str]:
-    """Returns the list of allowed CORS origins from CORS_ORIGINS env var or defaults."""
+    """
+    Returns the list of allowed CORS origins.
+    Strictly defaults to [] in production (same-origin React SPA bundle).
+    Populates development origins only if ENVIRONMENT=development or DEBUG=True,
+    or if explicitly overridden via the CORS_ORIGINS environment variable.
+    """
     env_origins = os.environ.get("CORS_ORIGINS")
-    if env_origins:
+    if env_origins is not None:
         return [origin.strip() for origin in env_origins.split(",") if origin.strip()]
-    return [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+
+    is_dev = (
+        os.environ.get("ENVIRONMENT", "").lower() == "development"
+        or os.environ.get("DEBUG", "").lower() in ("true", "1", "yes")
+    )
+    if is_dev:
+        return [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    return []

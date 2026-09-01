@@ -72,7 +72,6 @@ class KeyedMultilineAssembler:
         self._buffers: dict[str, list[dict]] = defaultdict(list)
         # Maps stream_key to its flush timer handle
         self._timers: dict[str, asyncio.TimerHandle] = {}
-        self._lock = asyncio.Lock()
         self._flush_timeout = 0.150  # 150ms
 
     async def feed(self, stream_key: str, entry: dict) -> None:
@@ -84,43 +83,36 @@ class KeyedMultilineAssembler:
         message = entry.get('message', '')
         is_cont = _is_continuation(message)
         
-        async with self._lock:
-            # If it's NOT a continuation, but we have buffered content for this stream,
-            # we should flush the existing buffer before starting a new one.
-            if not is_cont and self._buffers[stream_key]:
-                self._flush_stream_internal(stream_key)
+        # If it's NOT a continuation, but we have buffered content for this stream,
+        # we should flush the existing buffer before starting a new one.
+        if not is_cont and self._buffers[stream_key]:
+            self._flush_stream_internal(stream_key)
+        
+        # Add to buffer
+        self._buffers[stream_key].append(entry)
+        
+        # Reset timer
+        if stream_key in self._timers:
+            self._timers[stream_key].cancel()
             
-            # Add to buffer
-            self._buffers[stream_key].append(entry)
-            
-            # Reset timer
-            if stream_key in self._timers:
-                self._timers[stream_key].cancel()
-                
-            loop = asyncio.get_running_loop()
-            self._timers[stream_key] = loop.call_later(
-                self._flush_timeout, 
-                self._schedule_flush, 
-                stream_key
-            )
+        loop = asyncio.get_running_loop()
+        self._timers[stream_key] = loop.call_later(
+            self._flush_timeout, 
+            self._flush_stream_internal, 
+            stream_key
+        )
 
     def _schedule_flush(self, stream_key: str) -> None:
-        """Scheduled by call_later to flush asynchronously."""
-        asyncio.create_task(self._flush_stream_locked(stream_key))
-
-    async def _flush_stream_locked(self, stream_key: str) -> None:
-        """Locking wrapper around internal flush logic."""
-        async with self._lock:
-            self._flush_stream_internal(stream_key)
+        """Scheduled by call_later to flush synchronously."""
+        self._flush_stream_internal(stream_key)
 
     async def _flush_stream(self, stream_key: str) -> None:
-        """Public async flush method for a stream."""
-        async with self._lock:
-            self._flush_stream_internal(stream_key)
+        """Async flush method for a stream."""
+        self._flush_stream_internal(stream_key)
 
     def _flush_stream_internal(self, stream_key: str) -> None:
         """
-        Internal flush logic, must be called with lock held.
+        Internal flush logic.
         Takes buffered lines, merges them, and puts to the shared queue.
         """
         if stream_key in self._timers:
@@ -154,10 +146,9 @@ class KeyedMultilineAssembler:
 
     async def flush_all(self) -> None:
         """Flush all streams. Called on shutdown."""
-        async with self._lock:
-            keys = list(self._buffers.keys())
-            for k in keys:
-                self._flush_stream_internal(k)
+        keys = list(self._buffers.keys())
+        for k in keys:
+            self._flush_stream_internal(k)
 
 class QueueConsumer:
     """
@@ -215,7 +206,7 @@ class QueueConsumer:
                     # happen inside _insert_batch which runs in a worker thread)
                     from app.core.sse import sse_manager
                     for entry in batch:
-                        sse_manager.broadcast_sync(entry)
+                        await sse_manager.broadcast(entry)
                     error_backoff = 0.5
                 except Exception as e:
                     logger.error(f"Error inserting batch: {e}. Backing off for {error_backoff:.1f}s...")

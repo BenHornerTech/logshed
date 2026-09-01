@@ -53,11 +53,19 @@ class TestL1DropCounterThreadSafety:
 
 
 # ---------------------------------------------------------------------------
-# L2: CORS configuration
+# L2 / M6: CORS configuration
 # ---------------------------------------------------------------------------
 class TestL2CorsConfiguration:
     def test_default_cors_origins(self, monkeypatch):
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+        monkeypatch.delenv("DEBUG", raising=False)
+        origins = get_cors_origins()
+        assert origins == []
+
+    def test_development_cors_origins(self, monkeypatch):
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        monkeypatch.setenv("ENVIRONMENT", "development")
         origins = get_cors_origins()
         assert "http://localhost:5173" in origins
         assert "http://localhost:8080" in origins

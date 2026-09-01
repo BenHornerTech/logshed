@@ -29,7 +29,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.core import pipeline as pipeline_mod
-from app.core.config import get_secret_key_path
+from app.core.config import get_cors_origins, get_secret_key_path
 from app.core.migrations import get_connection, run_migrations
 from app.core.rate_limiter import login_rate_limiter
 from app.core.security import (
@@ -254,6 +254,29 @@ class TestAuthentication:
             set_cookie_env = res_env.headers.get("set-cookie", "").lower()
             cookie_parts_env = [p.strip() for p in set_cookie_env.split(";")]
             assert "secure" in cookie_parts_env
+
+    def test_cors_origins_defaults_and_env_overrides(self, monkeypatch):
+        # Default in production is strict empty list []
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+        monkeypatch.delenv("DEBUG", raising=False)
+        assert get_cors_origins() == []
+
+        # Explicit CORS_ORIGINS overrides
+        monkeypatch.setenv("CORS_ORIGINS", "http://custom:3000, https://app.homelab.local")
+        assert get_cors_origins() == ["http://custom:3000", "https://app.homelab.local"]
+
+        # ENVIRONMENT=development loads dev origins
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        dev_origins = get_cors_origins()
+        assert "http://localhost:5173" in dev_origins
+
+        # DEBUG=true loads dev origins
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+        monkeypatch.setenv("DEBUG", "true")
+        debug_origins = get_cors_origins()
+        assert "http://localhost:5173" in debug_origins
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +546,7 @@ class TestLogQuerying:
                 if sse_manager.subscriber_count() > 0:
                     break
                 await asyncio.sleep(0.01)
-            sse_manager.broadcast_sync(test_entry)
+            await sse_manager.broadcast(test_entry)
 
         broadcast_task = asyncio.create_task(_trigger_broadcast())
 

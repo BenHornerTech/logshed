@@ -33,6 +33,7 @@ _metrics_worker: Optional[StorageMetricsWorker] = None
 _prune_worker: Optional[PruneWorker] = None
 _syslog_server: Optional[SyslogServer] = None
 _docker_tailer: Optional[DockerTailer] = None
+_assembler: Optional[KeyedMultilineAssembler] = None
 _background_tasks: list[asyncio.Task] = []
 
 
@@ -63,7 +64,7 @@ async def lifespan(app: FastAPI):
     Application lifespan manager.
     Initializes database schema, master encryption keys, and starts background workers.
     """
-    global _queue_consumer, _metrics_worker, _prune_worker, _syslog_server, _docker_tailer, _background_tasks
+    global _queue_consumer, _metrics_worker, _prune_worker, _syslog_server, _docker_tailer, _assembler, _background_tasks
 
     db_path = get_db_path()
     logger.info(f"Initializing Homelab Log Hub database at {db_path}...")
@@ -72,31 +73,32 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(run_migrations, db_path)
     await asyncio.to_thread(get_or_create_master_key)
 
-    # 2. Start QueueConsumer
+    # 2. Shared KeyedMultilineAssembler for all collectors
+    _assembler = KeyedMultilineAssembler()
+
+    # 3. Start QueueConsumer
     _queue_consumer = QueueConsumer(db_path)
     _background_tasks.append(asyncio.create_task(_supervise_worker(_queue_consumer.run, "QueueConsumer")))
 
-    # 3. Start StorageMetricsWorker
+    # 4. Start StorageMetricsWorker
     _metrics_worker = StorageMetricsWorker(db_path)
     _background_tasks.append(asyncio.create_task(_supervise_worker(_metrics_worker.run, "StorageMetricsWorker")))
 
-    # 4. Start PruneWorker (runs automated daily retention pruning)
+    # 5. Start PruneWorker (runs automated daily retention pruning)
     _prune_worker = PruneWorker(db_path)
     _background_tasks.append(asyncio.create_task(_supervise_worker(_prune_worker.run, "PruneWorker")))
 
-    # 5. Start Syslog Server (optional / non-fatal in dev/test)
+    # 6. Start Syslog Server (optional / non-fatal in dev/test)
     try:
-        assembler = KeyedMultilineAssembler()
-        _syslog_server = SyslogServer(assembler=assembler, db_path=db_path, host="0.0.0.0", port=1514)
+        _syslog_server = SyslogServer(assembler=_assembler, db_path=db_path, host="0.0.0.0", port=1514)
         _background_tasks.append(asyncio.create_task(_supervise_worker(_syslog_server.start, "SyslogServer")))
         logger.info("SyslogServer listener started on port 1514.")
     except Exception as e:
         logger.warning(f"SyslogServer could not be started: {e}")
 
-    # 6. Start Docker Tailer (optional / non-fatal if Docker socket is not present)
+    # 7. Start Docker Tailer (optional / non-fatal if Docker socket is not present)
     try:
-        docker_assembler = KeyedMultilineAssembler()
-        _docker_tailer = DockerTailer(assembler=docker_assembler)
+        _docker_tailer = DockerTailer(assembler=_assembler)
         _background_tasks.append(asyncio.create_task(_supervise_worker(_docker_tailer.run, "DockerTailer")))
         logger.info(f"DockerTailer started for {get_docker_host()}.")
     except Exception as e:
@@ -110,6 +112,8 @@ async def lifespan(app: FastAPI):
         await _docker_tailer.stop()
     if _syslog_server:
         await _syslog_server.stop()
+    if _assembler:
+        await _assembler.flush_all()
     if _prune_worker:
         await _prune_worker.stop()
     if _metrics_worker:
