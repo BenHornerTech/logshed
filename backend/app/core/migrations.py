@@ -85,6 +85,7 @@ CREATE TABLE logs (
 CREATE INDEX idx_logs_time_sev ON logs(timestamp DESC, severity);
 CREATE INDEX idx_logs_app_time ON logs(app_name, timestamp DESC);
 CREATE INDEX idx_logs_src_time ON logs(source_alias, timestamp DESC);
+CREATE INDEX idx_logs_source_ip ON logs(source_ip);
 
 CREATE VIRTUAL TABLE logs_fts USING fts5(
     app_name,

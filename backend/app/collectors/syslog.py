@@ -142,6 +142,14 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
     return result
 
 
+_active_caches: list["AliasCache"] = []
+
+def reload_active_alias_caches() -> None:
+    """Reload all active in-memory alias caches immediately."""
+    for cache in list(_active_caches):
+        cache.load_aliases()
+
+
 class AliasCache:
     """
     Preloaded in-memory alias cache. Bulk-loads all host_aliases from the database
@@ -155,6 +163,8 @@ class AliasCache:
         self._aliases: dict[str, str] = {}
         self._lock = threading.Lock()
         self._refresh_task: asyncio.Task | None = None
+        if self not in _active_caches:
+            _active_caches.append(self)
 
     def resolve(self, source_ip: str) -> str:
         """Look up source_ip in the preloaded alias map. O(1) dict lookup."""
@@ -191,6 +201,9 @@ class AliasCache:
 
     async def stop(self) -> None:
         """Stop the periodic refresh task."""
+        if self in _active_caches:
+            _active_caches.remove(self)
+
         if self._refresh_task:
             self._refresh_task.cancel()
             try:

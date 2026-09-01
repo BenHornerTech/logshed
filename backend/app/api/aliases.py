@@ -6,6 +6,7 @@ import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, run_db_query
+from app.collectors.syslog import reload_active_alias_caches
 from app.models import HostAliasCreate, HostAliasResponse, MessageResponse
 
 router = APIRouter(prefix="/aliases", tags=["Host Aliases"])
@@ -36,7 +37,7 @@ async def create_or_update_alias(
     req: HostAliasCreate,
     user: dict = Depends(get_current_user),
 ) -> HostAliasResponse:
-    """Create or update an IP-to-hostname alias mapping."""
+    """Create or update an IP-to-hostname alias mapping, updating existing logs retroactively."""
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def _upsert(conn):
@@ -51,6 +52,8 @@ async def create_or_update_alias(
             """,
             (req.ip, req.alias, req.notes, now),
         )
+        # Retroactively update previously ingested logs for this source IP
+        cursor.execute("UPDATE logs SET source_alias = ? WHERE source_ip = ?", (req.alias, req.ip))
         conn.commit()
 
         cursor.execute("SELECT ip, alias, notes, created_at FROM host_aliases WHERE ip = ?", (req.ip,))
@@ -62,7 +65,9 @@ async def create_or_update_alias(
             created_at=str(row["created_at"]),
         )
 
-    return await run_db_query(_upsert)
+    res = await run_db_query(_upsert)
+    reload_active_alias_caches()
+    return res
 
 
 @router.delete("/{ip}", response_model=MessageResponse)
@@ -70,12 +75,16 @@ async def delete_alias(
     ip: str,
     user: dict = Depends(get_current_user),
 ) -> MessageResponse:
-    """Delete a host alias mapping by IP address."""
+    """Delete a host alias mapping by IP address, reverting existing logs to raw IP."""
     def _delete(conn):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM host_aliases WHERE ip = ?", (ip,))
+        deleted = cursor.rowcount > 0
+        if deleted:
+            # Revert previously ingested logs for this source IP back to the raw IP
+            cursor.execute("UPDATE logs SET source_alias = source_ip WHERE source_ip = ?", (ip,))
         conn.commit()
-        return cursor.rowcount > 0
+        return deleted
 
     deleted = await run_db_query(_delete)
     if not deleted:
@@ -84,4 +93,5 @@ async def delete_alias(
             detail=f"Host alias for IP '{ip}' not found.",
         )
 
+    reload_active_alias_caches()
     return MessageResponse(status="ok")

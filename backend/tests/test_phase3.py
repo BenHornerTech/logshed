@@ -605,6 +605,72 @@ class TestHostAliases:
         del_404 = await client.delete("/api/aliases/192.168.1.10")
         assert del_404.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_host_alias_retroactively_updates_existing_logs(
+        self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
+    ):
+        """Creating, updating, or deleting a host alias must retroactively update previously ingested logs."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+
+        # Seed logs with raw IP as source_alias
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_file) as conn:
+            conn.execute(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                   VALUES (?, ?, '192.168.1.99', '192.168.1.99', 'kernel', 1, 3, 'Link down on eth0', 'raw log 1')""",
+                (now, now),
+            )
+            conn.execute(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                   VALUES (?, ?, '192.168.1.99', '192.168.1.99', 'dhcp', 1, 6, 'Assigned 192.168.1.105', 'raw log 2')""",
+                (now, now),
+            )
+            conn.commit()
+
+        # Verify initial state via API
+        res_before = await client.get("/api/logs", params={"source": "192.168.1.99"})
+        assert res_before.status_code == 200
+        assert res_before.json()["total"] == 2
+
+        # 1. Create alias -> should retroactively update existing logs
+        create_res = await client.post(
+            "/api/aliases",
+            json={"ip": "192.168.1.99", "alias": "switch-core", "notes": "Core Managed Switch"},
+        )
+        assert create_res.status_code == 200
+
+        # Query logs by new alias
+        res_alias = await client.get("/api/logs", params={"source": "switch-core"})
+        assert res_alias.status_code == 200
+        assert res_alias.json()["total"] == 2
+        for log in res_alias.json()["logs"]:
+            assert log["source_alias"] == "switch-core"
+            assert log["source_ip"] == "192.168.1.99"
+
+        # 2. Update alias to a new name
+        update_res = await client.post(
+            "/api/aliases",
+            json={"ip": "192.168.1.99", "alias": "switch-aggregation", "notes": "Renamed switch"},
+        )
+        assert update_res.status_code == 200
+
+        res_updated = await client.get("/api/logs", params={"source": "switch-aggregation"})
+        assert res_updated.status_code == 200
+        assert res_updated.json()["total"] == 2
+        for log in res_updated.json()["logs"]:
+            assert log["source_alias"] == "switch-aggregation"
+
+        # 3. Delete alias -> should revert source_alias back to source_ip
+        del_res = await client.delete("/api/aliases/192.168.1.99")
+        assert del_res.status_code == 200
+
+        res_reverted = await client.get("/api/logs", params={"source": "192.168.1.99"})
+        assert res_reverted.status_code == 200
+        assert res_reverted.json()["total"] == 2
+        for log in res_reverted.json()["logs"]:
+            assert log["source_alias"] == "192.168.1.99"
+
 
 # ---------------------------------------------------------------------------
 # 5. System, Storage & Maintenance Tests
