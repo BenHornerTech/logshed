@@ -444,8 +444,48 @@ class TestAiAnalyzeWorkflow:
         assert entry["user_context"] == "Audit check context"
         assert entry["tokens_used"] == 111
 
+    @pytest.mark.asyncio
+    async def test_delete_ai_audit_item_and_clear_all(self, populated_db, auth_client):
+        """DELETE /api/ai/audit/{id} deletes a single item, and DELETE /api/ai/audit clears all."""
+        # Create an audit entry
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=("Summary", "Cause", "Fix", "Raw", "Prompt", 50, 20, 0, 70),
+        ):
+            res = await auth_client.post(
+                "/api/ai/analyze",
+                json={"log_ids": [1, 2]},
+            )
+            assert res.status_code == 200
+            audit_id = res.json()["audit_id"]
 
-class TestPushoverNotifications:
+        # Delete single item
+        del_res = await auth_client.delete(f"/api/ai/audit/{audit_id}")
+        assert del_res.status_code == 200
+        assert del_res.json()["status"] == "ok"
+        assert del_res.json()["deleted_id"] == audit_id
+
+        # Re-deleting returns 404
+        del_res_404 = await auth_client.delete(f"/api/ai/audit/{audit_id}")
+        assert del_res_404.status_code == 404
+
+        # Create another item and test clear all
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=("Summary 2", "Cause 2", "Fix 2", "Raw 2", "Prompt 2", 50, 20, 0, 70),
+        ):
+            await auth_client.post("/api/ai/analyze", json={"log_ids": [1, 2]})
+
+        clear_res = await auth_client.delete("/api/ai/audit")
+        assert clear_res.status_code == 200
+        assert clear_res.json()["status"] == "ok"
+
+        # Verify audit is empty
+        list_res = await auth_client.get("/api/ai/audit")
+        assert list_res.status_code == 200
+        assert list_res.json()["total"] == 0
     @pytest.mark.asyncio
     async def test_test_notifications_endpoint(self, populated_db, auth_client):
         """POST /api/notifications/test sends a verification message to Pushover API."""

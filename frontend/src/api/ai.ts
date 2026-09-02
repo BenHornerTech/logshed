@@ -18,3 +18,15 @@ export async function analyzeLogs(req: AiAnalysisRequest): Promise<AiAnalysisRes
 export async function fetchAiAudit(limit: number = 50, offset: number = 0): Promise<{ items: AiAuditEntry[]; total: number }> {
   return apiFetch<{ items: AiAuditEntry[]; total: number }>(`/api/ai/audit?limit=${limit}&offset=${offset}`);
 }
+
+export async function deleteAiAuditItem(auditId: number): Promise<{ status: string; deleted_id?: number }> {
+  return apiFetch<{ status: string; deleted_id?: number }>(`/api/ai/audit/${auditId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function clearAiAuditLog(): Promise<{ status: string; deleted_count?: number }> {
+  return apiFetch<{ status: string; deleted_count?: number }>('/api/ai/audit', {
+    method: 'DELETE',
+  });
+}

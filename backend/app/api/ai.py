@@ -6,70 +6,24 @@ import datetime
 import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user, run_db_query
 from app.core.sanitizer import sanitize
 from app.core.security import decrypt_value
+from app.models import (
+    AiAnalyzeRequest,
+    AiAnalyzeResponse,
+    AiAuditDeleteResponse,
+    AiAuditItem,
+    AiAuditListResponse,
+    AiPreviewRequest,
+    AiPreviewResponse,
+)
 from app.services.ai_engine import build_analysis_prompt, execute_ai_analysis
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ai", tags=["AI"])
-
-
-class AiPreviewRequest(BaseModel):
-    log_ids: list[int] = Field(..., min_length=1)
-
-
-class AiPreviewResponse(BaseModel):
-    sanitized_prompt: str
-    estimated_tokens: int
-    provider: str
-    model: str
-    log_count: int
-    source_alias: str
-    app_name: str
-
-
-class AiAnalyzeRequest(BaseModel):
-    log_ids: list[int] = Field(..., min_length=1)
-    user_context: Optional[str] = None
-    provider: Optional[str] = None
-    model: Optional[str] = None
-
-
-class AiAnalyzeResponse(BaseModel):
-    summary: str
-    root_cause: str
-    remediation: str
-    model_used: str
-    tokens_in: int = 0
-    tokens_out: int = 0
-    tokens_thoughts: int = 0
-    tokens_used: int
-    audit_id: Optional[int] = None
-
-
-class AiAuditItem(BaseModel):
-    id: int
-    timestamp: str
-    source_alias: str
-    app_name: str
-    log_count: int
-    user_context: Optional[str] = None
-    model: str
-    prompt_sent: str
-    response_text: str
-    tokens_in: int = 0
-    tokens_out: int = 0
-    tokens_thoughts: int = 0
-    tokens_used: int
-
-
-class AiAuditListResponse(BaseModel):
-    items: list[AiAuditItem]
-    total: int
 
 
 def _fetch_and_validate_logs(conn, log_ids: list[int]):
@@ -165,54 +119,54 @@ async def analyze_logs(
     user: dict = Depends(get_current_user),
 ) -> AiAnalyzeResponse:
     """
-    Execute AI analysis for selected logs.
-    This is the ONLY code path permitted to dispatch outbound LLM requests.
+    Executes full on-demand AI root-cause analysis on selected logs.
+    Persists diagnosis in ai_audit_log and returns structured output.
     """
-    def _fetch_data_and_settings(conn):
-        rows, err = _fetch_and_validate_logs(conn, req.log_ids)
-        if err:
-            return None, err
-
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT key, value, is_encrypted FROM system_settings WHERE key IN ('ai_provider', 'ai_model', 'ai_api_key', 'ai_base_url')"
-        )
-        settings_rows = cursor.fetchall()
-        settings = {}
-        for r in settings_rows:
-            k = r["key"]
-            v = r["value"] or ""
-            if bool(r["is_encrypted"]) and v:
-                try:
-                    v = decrypt_value(v)
-                except Exception:
-                    v = ""
-            settings[k] = v
-
-        return (rows, settings), None
-
-    result, err = await run_db_query(_fetch_data_and_settings)
-    if err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=err,
-        )
-
-    rows, settings = result
-    source_alias = rows[0]["source_alias"]
-    app_name = rows[0]["app_name"]
-
-    raw_lines = [f"[{r['timestamp']}] [{r['app_name']}] {r['message']}" for r in rows]
-    sanitized_lines = sanitize(raw_lines)
-    sanitized_logs = "\n".join(sanitized_lines) if isinstance(sanitized_lines, list) else str(sanitized_lines)
-
-    provider = req.provider or settings.get("ai_provider") or "gemini"
-    default_model = "gemini-2.5-flash" if provider == "gemini" else "gpt-4o"
-    model = req.model or settings.get("ai_model") or default_model
-    api_key = settings.get("ai_api_key", "")
-    base_url = settings.get("ai_base_url") or None
-
     try:
+        def _fetch_data_and_settings(conn):
+            rows, err = _fetch_and_validate_logs(conn, req.log_ids)
+            if err:
+                return None, err
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT key, value, is_encrypted FROM system_settings WHERE key IN ('ai_provider', 'ai_model', 'ai_api_key', 'ai_base_url')"
+            )
+            settings_rows = cursor.fetchall()
+            settings = {}
+            for r in settings_rows:
+                k = r["key"]
+                v = r["value"] or ""
+                if bool(r["is_encrypted"]) and v:
+                    try:
+                        v = decrypt_value(v)
+                    except Exception:
+                        v = ""
+                settings[k] = v
+
+            return (rows, settings), None
+
+        result, err = await run_db_query(_fetch_data_and_settings)
+        if err:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=err,
+            )
+
+        rows, settings = result
+        source_alias = rows[0]["source_alias"]
+        app_name = rows[0]["app_name"]
+
+        raw_lines = [f"[{r['timestamp']}] [{r['app_name']}] {r['message']}" for r in rows]
+        sanitized_lines = sanitize(raw_lines)
+        sanitized_logs = "\n".join(sanitized_lines) if isinstance(sanitized_lines, list) else str(sanitized_lines)
+
+        provider = req.provider or settings.get("ai_provider") or "gemini"
+        default_model = "gemini-2.5-flash" if provider == "gemini" else "gpt-4o"
+        model = req.model or settings.get("ai_model") or default_model
+        api_key = settings.get("ai_api_key", "")
+        base_url = settings.get("ai_base_url") or None
+
         summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await execute_ai_analysis(
             provider=provider,
             model=model,
@@ -224,57 +178,60 @@ async def analyze_logs(
             log_count=len(rows),
             user_context=req.user_context,
         )
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        def _save_audit(conn):
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO ai_audit_log
+                (timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text, tokens_in, tokens_out, tokens_thoughts, tokens_used)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    source_alias,
+                    app_name,
+                    len(rows),
+                    req.user_context or "",
+                    model,
+                    prompt_sent,
+                    raw_response,
+                    tokens_in,
+                    tokens_out,
+                    tokens_thoughts,
+                    tokens_used,
+                ),
+            )
+            audit_id = cursor.lastrowid
+            conn.commit()
+            return audit_id
+
+        audit_id = await run_db_query(_save_audit)
+
+        return AiAnalyzeResponse(
+            summary=summary,
+            root_cause=root_cause,
+            remediation=remediation,
+            model_used=model,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            tokens_thoughts=tokens_thoughts,
+            tokens_used=tokens_used,
+            audit_id=audit_id,
+        )
+    except HTTPException:
+        raise
     except ValueError as ve:
+        logger.warning(f"AI analysis validation error: {ve}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     except Exception as exc:
-        logger.error(f"AI analysis execution failed: {exc}")
+        logger.error(f"AI analysis execution failed: {exc}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"AI analysis failed: {exc}",
         )
-
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-    def _save_audit(conn):
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO ai_audit_log
-            (timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text, tokens_in, tokens_out, tokens_thoughts, tokens_used)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                now,
-                source_alias,
-                app_name,
-                len(rows),
-                req.user_context or "",
-                model,
-                prompt_sent,
-                raw_response,
-                tokens_in,
-                tokens_out,
-                tokens_thoughts,
-                tokens_used,
-            ),
-        )
-        audit_id = cursor.lastrowid
-        conn.commit()
-        return audit_id
-
-    audit_id = await run_db_query(_save_audit)
-
-    return AiAnalyzeResponse(
-        summary=summary,
-        root_cause=root_cause,
-        remediation=remediation,
-        model_used=model,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        tokens_thoughts=tokens_thoughts,
-        tokens_used=tokens_used,
-        audit_id=audit_id,
-    )
 
 
 @router.get("/audit", response_model=AiAuditListResponse)
@@ -339,3 +296,42 @@ async def list_ai_audit(
 
     items, total = await run_db_query(_read_audit)
     return AiAuditListResponse(items=items, total=total)
+
+
+@router.delete("/audit/{audit_id}", response_model=AiAuditDeleteResponse)
+async def delete_ai_audit_item(
+    audit_id: int,
+    user: dict = Depends(get_current_user),
+) -> AiAuditDeleteResponse:
+    """
+    Delete a single AI audit log entry by ID.
+    """
+    def _delete(conn):
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ai_audit_log WHERE id = ?", (audit_id,))
+        affected = cursor.rowcount
+        conn.commit()
+        return affected > 0
+
+    found = await run_db_query(_delete)
+    if not found:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI audit entry not found")
+    return AiAuditDeleteResponse(status="ok", deleted_id=audit_id, deleted_count=1)
+
+
+@router.delete("/audit", response_model=AiAuditDeleteResponse)
+async def clear_ai_audit_log(
+    user: dict = Depends(get_current_user),
+) -> AiAuditDeleteResponse:
+    """
+    Clear all AI audit log entries.
+    """
+    def _clear(conn):
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ai_audit_log")
+        affected = cursor.rowcount
+        conn.commit()
+        return affected
+
+    count = await run_db_query(_clear)
+    return AiAuditDeleteResponse(status="ok", deleted_count=count)

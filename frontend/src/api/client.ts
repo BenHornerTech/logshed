@@ -27,12 +27,21 @@ export async function apiFetch<T>(endpoint: string, options: RequestInit = {}): 
     let errorMsg = `Request failed with status ${response.status}`;
     let errorData = null;
     try {
-      errorData = await response.json();
-      if (errorData?.detail) {
-        errorMsg = typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail);
+      const text = await response.text();
+      try {
+        errorData = JSON.parse(text);
+        if (errorData?.detail) {
+          errorMsg = typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail);
+        } else if (text && text.trim().length > 0) {
+          errorMsg = text;
+        }
+      } catch {
+        if (text && text.trim().length > 0) {
+          errorMsg = text;
+        }
       }
     } catch {
-      // Non-JSON response
+      // Fallback to default message
     }
     throw new ApiError(response.status, errorMsg, errorData);
   }

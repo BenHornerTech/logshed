@@ -235,7 +235,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                   type="text"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                  placeholder="gemini-2.5-flash / gpt-4o / llama3.2"
+                  placeholder={provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'openai' ? 'gpt-4o' : 'llama3.2'}
                   className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
                 />
               </div>

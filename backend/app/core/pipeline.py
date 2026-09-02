@@ -4,9 +4,11 @@ Provides the shared queue, multiline assembly, and SQLite batch consumer.
 """
 
 import asyncio
+import datetime
 import logging
 import threading
 import time
+import traceback
 from typing import Optional
 from pathlib import Path
 from collections import defaultdict
@@ -14,6 +16,71 @@ from collections import defaultdict
 from app.core.migrations import get_connection
 
 logger = logging.getLogger(__name__)
+
+
+class InternalLogHandler(logging.Handler):
+    """
+    Python logging handler that captures internal application warnings and errors
+    and feeds them directly into the Log Hub ingestion pipeline.
+    Ignores noisy HTTP access logs to prevent self-referential loops.
+    """
+    IGNORED_LOGGERS = {
+        "uvicorn.access",
+        "httpcore",
+        "httpx",
+        "asyncio",
+    }
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.name in self.IGNORED_LOGGERS or record.name.startswith("uvicorn.access"):
+            return
+
+        # Map Python log levels to RFC 5424 severity (0-7)
+        if record.levelno >= logging.CRITICAL:
+            severity = 2
+        elif record.levelno >= logging.ERROR:
+            severity = 3
+        elif record.levelno >= logging.WARNING:
+            severity = 4
+        elif record.levelno >= logging.INFO:
+            severity = 6
+        else:
+            severity = 7
+
+        msg = record.getMessage()
+        if record.exc_info:
+            msg += "\n" + "".join(traceback.format_exception(*record.exc_info))
+
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        app_subname = record.name.split(".")[-1] if "." in record.name else record.name
+        log_entry = {
+            "timestamp": now_iso,
+            "received_at": now_iso,
+            "source_ip": "127.0.0.1",
+            "source_alias": "homelab-log-hub",
+            "app_name": f"log-hub/{app_subname}",
+            "facility": 1,
+            "severity": severity,
+            "message": msg,
+            "raw": f"[{now_iso}] [{record.name}] [{record.levelname}] {msg}",
+        }
+
+        try:
+            queue = get_queue()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                if threading.current_thread() is threading.main_thread():
+                    queue.put_nowait(log_entry)
+                else:
+                    loop.call_soon_threadsafe(queue.put_nowait, log_entry)
+            else:
+                queue.put_nowait(log_entry)
+        except Exception:
+            pass
 
 # Module-level shared state
 _log_queue: Optional[asyncio.Queue] = None
@@ -101,14 +168,6 @@ class KeyedMultilineAssembler:
             self._flush_stream_internal, 
             stream_key
         )
-
-    def _schedule_flush(self, stream_key: str) -> None:
-        """Scheduled by call_later to flush synchronously."""
-        self._flush_stream_internal(stream_key)
-
-    async def _flush_stream(self, stream_key: str) -> None:
-        """Async flush method for a stream."""
-        self._flush_stream_internal(stream_key)
 
     def _flush_stream_internal(self, stream_key: str) -> None:
         """

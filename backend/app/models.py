@@ -173,3 +173,74 @@ class PushoverNotificationRequest(BaseModel):
 class NotificationQueuedResponse(BaseModel):
     """Response for queued notification."""
     status: str = "queued"
+
+
+# ---------------------------------------------------------------------------
+# AI Models
+# ---------------------------------------------------------------------------
+
+class AiPreviewRequest(BaseModel):
+    """Payload for generating sanitized AI prompt preview."""
+    log_ids: list[int] = Field(..., min_length=1)
+
+
+class AiPreviewResponse(BaseModel):
+    """Preview of sanitized prompt and token estimate."""
+    sanitized_prompt: str
+    estimated_tokens: int
+    provider: str
+    model: str
+    log_count: int
+    source_alias: str
+    app_name: str
+
+
+class AiAnalyzeRequest(BaseModel):
+    """Payload for triggering on-demand AI analysis."""
+    log_ids: list[int] = Field(..., min_length=1)
+    user_context: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
+class AiAnalyzeResponse(BaseModel):
+    """Structured root-cause diagnosis returned from LLM."""
+    summary: str
+    root_cause: str
+    remediation: str
+    model_used: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_thoughts: int = 0
+    tokens_used: int
+    audit_id: Optional[int] = None
+
+
+class AiAuditItem(BaseModel):
+    """Single historical AI analysis record."""
+    id: int
+    timestamp: str
+    source_alias: str
+    app_name: str
+    log_count: int
+    user_context: Optional[str] = None
+    model: str
+    prompt_sent: str
+    response_text: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_thoughts: int = 0
+    tokens_used: int
+
+
+class AiAuditListResponse(BaseModel):
+    """Paginated list of historical AI analysis audits."""
+    items: list[AiAuditItem]
+    total: int
+
+
+class AiAuditDeleteResponse(BaseModel):
+    """Status response for deleting AI audit records."""
+    status: str = "ok"
+    deleted_id: Optional[int] = None
+    deleted_count: Optional[int] = None

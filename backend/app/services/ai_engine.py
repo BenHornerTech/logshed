@@ -7,7 +7,6 @@ Uses the google-genai SDK for Gemini and the openai SDK for OpenAI-compatible
 endpoints, as required by SPEC §4.2 and AGENTS.md.
 """
 
-import datetime
 import logging
 import re
 from typing import Any, Optional
@@ -16,7 +15,7 @@ from google import genai
 from google.genai import types as genai_types
 from openai import AsyncOpenAI
 
-from app.core.security import decrypt_value
+from app.core.sanitizer import sanitize
 
 logger = logging.getLogger(__name__)
 
@@ -111,12 +110,28 @@ def parse_structured_ai_response(text: str) -> tuple[str, str, str]:
     return summary, root_cause, remediation
 
 
+def _get_token_count(obj: Any, *attr_names: str) -> int:
+    """Safely extracts an integer token count from an SDK response/usage object."""
+    if obj is None:
+        return 0
+    for name in attr_names:
+        val = getattr(obj, name, None)
+        if isinstance(val, int) and not isinstance(val, bool):
+            return val
+        if isinstance(val, (float, str)):
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    return 0
+
+
 async def dispatch_gemini_request(
     api_key: str,
     model: str,
     prompt: str,
     timeout: float = 60.0,
-) -> tuple[str, int]:
+) -> tuple[str, int, int, int, int]:
     """
     Dispatch request to Google Gemini API via the google-genai SDK.
     Uses client.aio for async operations with API key authentication.
@@ -140,18 +155,20 @@ async def dispatch_gemini_request(
         if not text:
             raise RuntimeError("Gemini API returned empty response text.")
 
-        # Extract token usage from response metadata
+        # Extract token usage from response metadata across all Google GenAI SDK versions
+        usage = getattr(response, "usage_metadata", None) or getattr(response, "usage", None)
         tokens_in = 0
         tokens_out = 0
         tokens_thoughts = 0
         tokens_used = 0
-        if response.usage_metadata:
-            tokens_in = response.usage_metadata.prompt_token_count or 0
-            tokens_out = response.usage_metadata.candidates_token_count or 0
-            tokens_thoughts = getattr(response.usage_metadata, "thoughts_token_count", 0) or 0
-            tokens_used = response.usage_metadata.total_token_count or (tokens_in + tokens_out + tokens_thoughts)
+        if usage:
+            tokens_in = _get_token_count(usage, "prompt_token_count", "total_input_tokens", "input_tokens")
+            tokens_out = _get_token_count(usage, "candidates_token_count", "total_output_tokens", "output_tokens")
+            tokens_thoughts = _get_token_count(usage, "thoughts_token_count", "total_thought_tokens", "thought_tokens", "thinking_tokens")
+            tokens_used = _get_token_count(usage, "total_token_count", "total_tokens") or (tokens_in + tokens_out + tokens_thoughts)
             if tokens_thoughts == 0 and tokens_used > (tokens_in + tokens_out):
                 tokens_thoughts = tokens_used - (tokens_in + tokens_out)
+
         if tokens_used == 0:
             # Fallback estimation if usage metadata is unavailable
             tokens_in = max(1, len(prompt) // 4)
@@ -163,8 +180,7 @@ async def dispatch_gemini_request(
     except ValueError:
         raise
     except Exception as e:
-        from app.core.sanitizer import sanitize
-        clean_err = sanitize(str(e)[:500])
+        clean_err = str(sanitize(str(e)[:500]))
         err_msg = f"Gemini API error: {clean_err}"
         logger.error(err_msg)
         raise RuntimeError(err_msg)
@@ -210,11 +226,13 @@ async def dispatch_openai_request(
         tokens_thoughts = 0
         tokens_used = 0
         if response.usage:
-            tokens_in = response.usage.prompt_tokens or 0
-            tokens_out = response.usage.completion_tokens or 0
-            if hasattr(response.usage, "completion_tokens_details") and response.usage.completion_tokens_details:
-                tokens_thoughts = getattr(response.usage.completion_tokens_details, "reasoning_tokens", 0) or 0
-            tokens_used = response.usage.total_tokens or (tokens_in + tokens_out)
+            tokens_in = _get_token_count(response.usage, "prompt_tokens", "prompt_token_count", "input_tokens")
+            tokens_out = _get_token_count(response.usage, "completion_tokens", "candidates_token_count", "output_tokens")
+            details = getattr(response.usage, "completion_tokens_details", None)
+            tokens_thoughts = _get_token_count(details, "reasoning_tokens", "thought_tokens", "thinking_tokens") if details else 0
+            if tokens_thoughts == 0:
+                tokens_thoughts = _get_token_count(response.usage, "reasoning_tokens", "thoughts_token_count")
+            tokens_used = _get_token_count(response.usage, "total_tokens", "total_token_count") or (tokens_in + tokens_out + tokens_thoughts)
             if tokens_thoughts == 0 and tokens_used > (tokens_in + tokens_out):
                 tokens_thoughts = tokens_used - (tokens_in + tokens_out)
         if tokens_used == 0:
@@ -227,8 +245,7 @@ async def dispatch_openai_request(
     except ValueError:
         raise
     except Exception as e:
-        from app.core.sanitizer import sanitize
-        clean_err = sanitize(str(e)[:500])
+        clean_err = str(sanitize(str(e)[:500]))
         err_msg = f"OpenAI endpoint error: {clean_err}"
         logger.error(err_msg)
         raise RuntimeError(err_msg)

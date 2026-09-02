@@ -140,6 +140,9 @@ CREATE TABLE ai_audit_log (
     model TEXT NOT NULL,
     prompt_sent TEXT NOT NULL,
     response_text TEXT NOT NULL,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    tokens_thoughts INTEGER NOT NULL DEFAULT 0,
     tokens_used INTEGER NOT NULL DEFAULT 0
 );
 
@@ -159,16 +162,31 @@ CREATE TABLE system_settings (
 ''')
 
 
+def ensure_ai_audit_columns(conn: sqlite3.Connection) -> None:
+    """
+    Idempotently verifies and adds tokens_in, tokens_out, tokens_thoughts
+    columns to ai_audit_log if they are missing.
+    """
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(ai_audit_log);")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    if not existing_cols:
+        return
+    for col in ("tokens_in", "tokens_out", "tokens_thoughts"):
+        if col not in existing_cols:
+            try:
+                conn.execute(f"ALTER TABLE ai_audit_log ADD COLUMN {col} INTEGER DEFAULT 0;")
+                logger.info(f"Added missing column '{col}' to ai_audit_log table.")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Could not add column '{col}' to ai_audit_log: {e}")
+
+
 def migrate_v2(conn: sqlite3.Connection) -> None:
     """
     Migration v2: Add tokens_in, tokens_out, and tokens_thoughts columns to ai_audit_log.
     """
     logger.info("Running migration v2 (adding tokens_in, tokens_out, tokens_thoughts to ai_audit_log)...")
-    for col in ("tokens_in", "tokens_out", "tokens_thoughts"):
-        try:
-            conn.execute(f"ALTER TABLE ai_audit_log ADD COLUMN {col} INTEGER DEFAULT 0;")
-        except sqlite3.OperationalError:
-            pass
+    ensure_ai_audit_columns(conn)
 
 
 # Registry of migrations to run. Must be ordered by version ascending.

@@ -11,12 +11,13 @@ import {
   AlertCircle,
   RefreshCw,
   Copy,
+  Trash2,
 } from 'lucide-react';
 import { StorageMetricsResponse, AiAuditEntry } from '../../types.ts';
 import { fetchSettings, updateSettings, SettingsResponseData } from '../../api/settings.ts';
 import { fetchStorageMetrics } from '../../api/system.ts';
 import { testNotifications, sendPushoverNotification } from '../../api/notifications.ts';
-import { fetchAiAudit } from '../../api/ai.ts';
+import { fetchAiAudit, deleteAiAuditItem, clearAiAuditLog } from '../../api/ai.ts';
 import { changePassword } from '../../api/auth.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
 import { Modal } from '../common/Modal.tsx';
@@ -57,6 +58,9 @@ export const SettingsPanel: React.FC = () => {
   const [isSendingAuditPushover, setIsSendingAuditPushover] = useState<boolean>(false);
   const [auditPushoverMsg, setAuditPushoverMsg] = useState<string | null>(null);
   const [showPromptDetails, setShowPromptDetails] = useState<boolean>(false);
+  const [isDeletingAuditId, setIsDeletingAuditId] = useState<number | null>(null);
+  const [showClearAllAuditModal, setShowClearAllAuditModal] = useState<boolean>(false);
+  const [isClearingAllAudit, setIsClearingAllAudit] = useState<boolean>(false);
 
   const loadAllData = async () => {
     try {
@@ -191,6 +195,36 @@ export const SettingsPanel: React.FC = () => {
     }
   };
 
+  const handleDeleteAuditItem = async (id: number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    try {
+      setIsDeletingAuditId(id);
+      await deleteAiAuditItem(id);
+      setAuditLogs((prev) => prev.filter((item) => item.id !== id));
+      if (selectedAuditItem && selectedAuditItem.id === id) {
+        setSelectedAuditItem(null);
+      }
+    } catch (err: any) {
+      alert(`Failed to delete AI analysis: ${err.message || err}`);
+    } finally {
+      setIsDeletingAuditId(null);
+    }
+  };
+
+  const handleClearAllAudit = async () => {
+    try {
+      setIsClearingAllAudit(true);
+      await clearAiAuditLog();
+      setAuditLogs([]);
+      setSelectedAuditItem(null);
+      setShowClearAllAuditModal(false);
+    } catch (err: any) {
+      alert(`Failed to clear AI audit log: ${err.message || err}`);
+    } finally {
+      setIsClearingAllAudit(false);
+    }
+  };
+
   if (isLoading && !settings) {
     return (
       <div className="p-8 text-center text-slate-500 font-mono text-xs flex items-center justify-center gap-2">
@@ -279,7 +313,7 @@ export const SettingsPanel: React.FC = () => {
                 type="text"
                 value={aiModel}
                 onChange={(e) => setAiModel(e.target.value)}
-                placeholder="gemini-2.5-flash / gpt-4o / llama3.2"
+                placeholder={aiProvider === 'gemini' ? 'gemini-2.5-flash' : aiProvider === 'openai' ? 'gpt-4o' : 'llama3.2'}
                 className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
               />
             </div>
@@ -463,6 +497,17 @@ export const SettingsPanel: React.FC = () => {
             <History className="w-4 h-4 text-accent-500" />
             <span>AI Root-Cause Audit Log ({auditLogs.length})</span>
           </h3>
+          {auditLogs.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowClearAllAuditModal(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium bg-red-950/40 hover:bg-red-900/60 border border-red-800/80 text-red-300 rounded transition cursor-pointer"
+              title="Delete all historical AI root-cause analyses"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear All</span>
+            </button>
+          )}
         </div>
 
         {auditLogs.length === 0 ? (
@@ -471,12 +516,13 @@ export const SettingsPanel: React.FC = () => {
           </div>
         ) : (
           <div className="divide-y divide-dark-800 font-mono text-xs">
-            <div className="grid grid-cols-[140px_160px_140px_80px_1fr] px-4 py-2 text-slate-400 font-semibold text-[11px] bg-dark-950/60 select-none">
+            <div className="grid grid-cols-[135px_150px_130px_75px_1fr_95px] px-4 py-2 text-slate-400 font-semibold text-[11px] bg-dark-950/60 select-none">
               <div>TIMESTAMP</div>
               <div>HOST • APP</div>
               <div>MODEL</div>
               <div>TOKENS</div>
               <div>SUMMARY</div>
+              <div className="text-right">ACTIONS</div>
             </div>
 
             {auditLogs.map((item) => (
@@ -487,8 +533,7 @@ export const SettingsPanel: React.FC = () => {
                   setShowPromptDetails(false);
                   setAuditPushoverMsg(null);
                 }}
-                className="grid grid-cols-[140px_160px_140px_80px_1fr] px-4 py-2.5 items-start hover:bg-dark-800 transition text-[11px] cursor-pointer group select-none"
-                title="Click to view full AI diagnosis and remediation"
+                className="grid grid-cols-[135px_150px_130px_75px_1fr_95px] px-4 py-2.5 items-center hover:bg-dark-800 transition text-[11px] cursor-pointer group select-none"
               >
                 <div className="text-slate-400 group-hover:text-slate-300">
                   {item.timestamp.slice(0, 19).replace('T', ' ')}
@@ -498,12 +543,32 @@ export const SettingsPanel: React.FC = () => {
                   <span className="text-slate-500"> • {item.app_name}</span>
                 </div>
                 <div className="text-slate-400 truncate">{item.model}</div>
-                <div className="text-slate-300">{item.tokens_used}</div>
-                <div className="text-slate-200 font-sans text-xs truncate pr-2 group-hover:text-white flex items-center justify-between">
-                  <span className="truncate">{item.response_text.slice(0, 100)}...</span>
-                  <span className="text-[10px] font-mono text-accent-400 opacity-0 group-hover:opacity-100 transition shrink-0 ml-2">
-                    View &rarr;
-                  </span>
+                <div className="text-slate-300">{item.tokens_used.toLocaleString()}</div>
+                <div className="text-slate-200 font-sans text-xs truncate pr-2 group-hover:text-white">
+                  {item.response_text.slice(0, 100)}...
+                </div>
+                <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAuditItem(item);
+                      setShowPromptDetails(false);
+                      setAuditPushoverMsg(null);
+                    }}
+                    className="px-2 py-0.5 text-[11px] font-mono text-accent-400 bg-accent-950/50 hover:bg-accent-900/60 border border-accent-800/80 rounded transition cursor-pointer"
+                    title="View analysis details"
+                  >
+                    View
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDeletingAuditId === item.id}
+                    onClick={(e) => handleDeleteAuditItem(item.id, e)}
+                    className="p-1 text-slate-400 hover:text-red-400 hover:bg-red-950/50 rounded border border-transparent hover:border-red-900/50 transition cursor-pointer disabled:opacity-50"
+                    title="Delete this analysis"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             ))}
@@ -623,23 +688,77 @@ export const SettingsPanel: React.FC = () => {
             )}
 
             {/* Footer Buttons */}
-            <div className="flex items-center justify-between pt-2">
+            <div className="flex items-center justify-between pt-2 border-t border-dark-800">
               <button
                 type="button"
-                onClick={() => setSelectedAuditItem(null)}
-                className="text-xs text-slate-400 hover:text-slate-200 underline cursor-pointer"
+                disabled={isDeletingAuditId === selectedAuditItem.id}
+                onClick={() => handleDeleteAuditItem(selectedAuditItem.id)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-400 hover:text-red-300 bg-red-950/40 hover:bg-red-900/60 border border-red-800/80 rounded-lg transition cursor-pointer disabled:opacity-50"
               >
-                Close
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Analysis</span>
               </button>
 
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSendAuditPushover}
+                  disabled={isSendingAuditPushover}
+                  className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition shadow-md cursor-pointer"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>{isSendingAuditPushover ? 'Sending...' : 'Send to Pushover'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedAuditItem(null)}
+                  className="px-3.5 py-2 text-xs bg-dark-700 hover:bg-dark-600 text-slate-200 rounded-lg transition cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Clear All Confirmation Modal */}
+      {showClearAllAuditModal && (
+        <Modal
+          isOpen={showClearAllAuditModal}
+          onClose={() => setShowClearAllAuditModal(false)}
+          title="Clear AI Audit Log"
+          maxWidth="max-w-md"
+        >
+          <div className="space-y-4 text-xs font-sans">
+            <div className="flex items-start gap-3 p-3 bg-red-950/30 border border-red-800/60 rounded-lg text-slate-200">
+              <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold text-slate-100 text-xs mb-1">
+                  Permanently delete all historical AI analyses?
+                </p>
+                <p className="text-slate-400 leading-relaxed">
+                  This will remove all {auditLogs.length} saved diagnoses, operator context notes, and submitted prompt histories. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={handleSendAuditPushover}
-                disabled={isSendingAuditPushover}
-                className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition shadow-md cursor-pointer"
+                onClick={() => setShowClearAllAuditModal(false)}
+                className="px-3 py-1.5 text-xs bg-dark-800 hover:bg-dark-700 text-slate-300 border border-dark-600 rounded-lg transition cursor-pointer"
               >
-                <Send className="w-3.5 h-3.5" />
-                <span>{isSendingAuditPushover ? 'Sending...' : 'Send to Pushover'}</span>
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isClearingAllAudit}
+                onClick={handleClearAllAudit}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white font-medium rounded-lg shadow transition cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isClearingAllAudit ? 'Clearing...' : 'Delete All'}</span>
               </button>
             </div>
           </div>

@@ -20,7 +20,7 @@ from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
 from app.core.config import get_cors_origins, get_db_path, get_docker_host
 from app.core.migrations import run_migrations
-from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer
+from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer, InternalLogHandler
 from app.core.security import get_or_create_master_key
 from app.services.retention import PruneWorker
 from app.services.storage_metrics import StorageMetricsWorker
@@ -103,14 +103,19 @@ async def lifespan(app: FastAPI):
     try:
         _docker_tailer = DockerTailer(assembler=_assembler)
         _background_tasks.append(asyncio.create_task(_supervise_worker(_docker_tailer.run, "DockerTailer")))
-        logger.info(f"DockerTailer started for {get_docker_host()}.")
     except Exception as e:
         logger.warning(f"DockerTailer could not be started: {e}")
+
+    # 8. Attach internal log handler so application warnings and errors appear in Log Hub
+    internal_handler = InternalLogHandler()
+    internal_handler.setLevel(logging.INFO)
+    logging.getLogger("app").addHandler(internal_handler)
 
     yield
 
     # Shutdown sequence
     logger.info("Shutting down background workers...")
+    logging.getLogger("app").removeHandler(internal_handler)
     if _docker_tailer:
         await _docker_tailer.stop()
     if _syslog_server:
