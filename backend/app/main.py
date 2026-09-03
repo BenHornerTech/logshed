@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import ai, aliases, auth, logs, notifications, settings, system
+from app.api import ai, aliases, auth, logs, settings, system
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
 from app.core.config import get_cors_origins, get_db_path, get_docker_host
@@ -164,7 +164,6 @@ def create_app() -> FastAPI:
     api_router.include_router(settings.router)
     api_router.include_router(aliases.router)
     api_router.include_router(system.router)
-    api_router.include_router(notifications.router)
     api_router.include_router(ai.router)
 
     app.include_router(api_router)

@@ -1,6 +1,6 @@
 """
 System settings API endpoints for LogShed.
-Provides secure storage with encryption at rest for API keys and Pushover tokens.
+Provides secure storage with encryption at rest for API keys.
 """
 
 import datetime
@@ -14,14 +14,14 @@ from app.models import MessageResponse, SettingsResponse, SettingsUpdateRequest
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
-SENSITIVE_KEYS = {"ai_api_key", "pushover_user_key", "pushover_app_token"}
+SENSITIVE_KEYS = {"ai_api_key"}
 
 
 @router.get("", response_model=SettingsResponse)
 async def get_settings(user: dict = Depends(get_current_user)) -> SettingsResponse:
     """
     Retrieve application configuration.
-    Sensitive secrets (API keys, Pushover tokens) are masked with '********' and never returned decrypted.
+    Sensitive secrets (API keys) are masked with '********' and never returned decrypted.
     """
     def _read_settings(conn):
         cursor = conn.cursor()
@@ -45,8 +45,6 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
     stored = await run_db_query(_read_settings)
 
     ai_api_key_val = stored.get("ai_api_key", "")
-    pushover_user_val = stored.get("pushover_user_key", "")
-    pushover_app_val = stored.get("pushover_app_token", "")
 
     retention_raw = stored.get("retention_days", "30")
     try:
@@ -59,12 +57,8 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
         ai_model=stored.get("ai_model") or "gemini-2.5-flash",
         ai_api_key=mask_secret(ai_api_key_val),
         ai_base_url=stored.get("ai_base_url") or None,
-        pushover_user_key=mask_secret(pushover_user_val),
-        pushover_app_token=mask_secret(pushover_app_val),
         retention_days=retention_days,
         has_ai_api_key=bool(ai_api_key_val),
-        has_pushover_user_key=bool(pushover_user_val),
-        has_pushover_app_token=bool(pushover_app_val),
     )
 
 
@@ -97,7 +91,7 @@ async def update_settings(
             updates.append(("retention_days", str(req.retention_days), 0))
 
         # Handle sensitive fields
-        for sensitive_key in ("ai_api_key", "pushover_user_key", "pushover_app_token"):
+        for sensitive_key in ("ai_api_key",):
             val = getattr(req, sensitive_key)
             if val is not None:
                 # If value is masked placeholder ("********"), do not overwrite existing key

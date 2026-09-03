@@ -83,12 +83,8 @@ class SettingsResponse(BaseModel):
     ai_model: str = "gemini-2.5-flash"
     ai_api_key: str = ""
     ai_base_url: Optional[str] = None
-    pushover_user_key: str = ""
-    pushover_app_token: str = ""
     retention_days: int = 30
     has_ai_api_key: bool = False
-    has_pushover_user_key: bool = False
-    has_pushover_app_token: bool = False
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -97,8 +93,6 @@ class SettingsUpdateRequest(BaseModel):
     ai_model: Optional[str] = None
     ai_api_key: Optional[str] = None
     ai_base_url: Optional[str] = None
-    pushover_user_key: Optional[str] = None
-    pushover_app_token: Optional[str] = None
     retention_days: Optional[int] = Field(None, ge=1, le=30)
 
 
@@ -158,21 +152,6 @@ class PruneResponse(BaseModel):
     deleted_metrics: int
     metrics: StorageMetricItem
 
-
-# ---------------------------------------------------------------------------
-# Notification Stub Models
-# ---------------------------------------------------------------------------
-
-class PushoverNotificationRequest(BaseModel):
-    """Payload for dispatching manual Pushover notification."""
-    title: str
-    message: str
-    priority: Optional[int] = 0
-
-
-class NotificationQueuedResponse(BaseModel):
-    """Response for queued notification."""
-    status: str = "queued"
 
 
 # ---------------------------------------------------------------------------

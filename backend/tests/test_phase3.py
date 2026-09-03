@@ -13,7 +13,6 @@ Covers:
   - /api/health: healthcheck metrics (db status, queue depth, dropped count).
   - /api/maintenance/prune: retention pruning, WAL truncate, storage_metrics recording.
   - /api/system/storage: live footprint and 30-day history.
-  - /api/notifications/test & /api/notifications/pushover: mock UI testing endpoints.
 """
 
 import asyncio
@@ -210,8 +209,6 @@ class TestAuthentication:
             ("POST", "/api/aliases"),
             ("POST", "/api/maintenance/prune"),
             ("GET", "/api/system/storage"),
-            ("POST", "/api/notifications/test"),
-            ("POST", "/api/notifications/pushover"),
         ]
 
         for method, endpoint in endpoints:
@@ -321,8 +318,6 @@ class TestEncryptionAndKeyManagement:
             "ai_model": "gpt-4o",
             "ai_api_key": "sk-1234567890abcdef1234567890",
             "ai_base_url": "https://api.openai.com/v1",
-            "pushover_user_key": "u_test_user_key_99999",
-            "pushover_app_token": "a_test_app_token_88888",
             "retention_days": 14,
         }
         res_post = await client.post("/api/settings", json=payload)
@@ -340,10 +335,6 @@ class TestEncryptionAndKeyManagement:
         assert rows["ai_api_key"][0] != "sk-1234567890abcdef1234567890"
         assert decrypt_value(rows["ai_api_key"][0]) == "sk-1234567890abcdef1234567890"
 
-        assert rows["pushover_user_key"][1] is True
-        assert rows["pushover_user_key"][0] != "u_test_user_key_99999"
-        assert decrypt_value(rows["pushover_user_key"][0]) == "u_test_user_key_99999"
-
         assert rows["retention_days"][1] is False
         assert rows["retention_days"][0] == "14"
 
@@ -353,11 +344,7 @@ class TestEncryptionAndKeyManagement:
         data = res_get.json()
 
         assert data["ai_api_key"] == "********"
-        assert data["pushover_user_key"] == "********"
-        assert data["pushover_app_token"] == "********"
         assert data["has_ai_api_key"] is True
-        assert data["has_pushover_user_key"] is True
-        assert data["has_pushover_app_token"] is True
         assert data["retention_days"] == 14
         assert data["ai_provider"] == "openai"
 
@@ -774,43 +761,3 @@ class TestSystemAndMaintenance:
             count = conn.execute("SELECT COUNT(*) FROM logs WHERE message = 'old log pruned by worker'").fetchone()[0]
             assert count == 0
 
-
-# ---------------------------------------------------------------------------
-# 6. Notification Endpoints Tests
-# ---------------------------------------------------------------------------
-
-class TestNotificationStubs:
-    @pytest.mark.asyncio
-    async def test_notifications_test_endpoint(self, client: AsyncClient, auth_cookie: dict, tmp_path: Path):
-        db_file = tmp_path / "logs.db"
-        conn = sqlite3.connect(str(db_file))
-        conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_user_key', 'user-key', '2026-08-29T10:00:00Z', 0)")
-        conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_app_token', 'app-token', '2026-08-29T10:00:00Z', 0)")
-        conn.commit()
-        conn.close()
-
-        with patch("app.api.notifications.send_pushover_message", new_callable=AsyncMock) as mock_send:
-            mock_send.return_value = {"status": 1}
-            client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
-            res = await client.post("/api/notifications/test")
-            assert res.status_code == 200
-            assert res.json()["status"] == "ok"
-
-    @pytest.mark.asyncio
-    async def test_notifications_pushover_stub_endpoint(self, client: AsyncClient, auth_cookie: dict, tmp_path: Path):
-        db_file = tmp_path / "logs.db"
-        conn = sqlite3.connect(str(db_file))
-        conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_user_key', 'user-key', '2026-08-29T10:00:00Z', 0)")
-        conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_app_token', 'app-token', '2026-08-29T10:00:00Z', 0)")
-        conn.commit()
-        conn.close()
-
-        with patch("app.api.notifications.send_pushover_message", new_callable=AsyncMock) as mock_send:
-            mock_send.return_value = {"status": 1}
-            client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
-            res = await client.post(
-                "/api/notifications/pushover",
-                json={"title": "Test Title", "message": "Test Message", "priority": 0},
-            )
-            assert res.status_code == 200
-            assert res.json()["status"] == "sent"

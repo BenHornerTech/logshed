@@ -1,7 +1,7 @@
 """
 Phase 5 Verification Test Suite for LogShed.
 Tests on-demand AI preview & execution (Gemini, OpenAI/compatible), secret redaction,
-audit logging, same-host constraints, and manual Pushover notifications.
+audit logging, and same-host constraints.
 """
 
 import json
@@ -26,7 +26,7 @@ from app.core.security import (
 )
 from app.core.sse import sse_manager
 from app.main import create_app
-from app.services import ai_engine, notifier
+from app.services import ai_engine
 
 
 @pytest.fixture(autouse=True)
@@ -72,14 +72,10 @@ def populated_db(tmp_path: Path):
 
     # Populate system settings with encrypted secrets
     enc_api_key = encrypt_value("test-gemini-key-12345")
-    enc_pushover_user = encrypt_value("test-pushover-user-key")
-    enc_pushover_token = encrypt_value("test-pushover-app-token")
 
     cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_provider', 'gemini', '2026-08-29T10:00:00Z', 0)")
     cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_model', 'gemini-2.5-flash', '2026-08-29T10:00:00Z', 0)")
     cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_api_key', ?, '2026-08-29T10:00:00Z', 1)", (enc_api_key,))
-    cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_user_key', ?, '2026-08-29T10:00:00Z', 1)", (enc_pushover_user,))
-    cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('pushover_app_token', ?, '2026-08-29T10:00:00Z', 1)", (enc_pushover_token,))
 
     # Populate test logs: 1 & 2 on host router (192.168.1.1), 3 on proxmox-01 (192.168.1.50)
     logs = [
@@ -486,64 +482,4 @@ class TestAiAnalyzeWorkflow:
         list_res = await auth_client.get("/api/ai/audit")
         assert list_res.status_code == 200
         assert list_res.json()["total"] == 0
-    @pytest.mark.asyncio
-    async def test_test_notifications_endpoint(self, populated_db, auth_client):
-        """POST /api/notifications/test sends a verification message to Pushover API."""
-        with patch("app.api.notifications.send_pushover_message", new_callable=AsyncMock) as mock_send:
-            mock_send.return_value = {"status": 1, "request": "req-12345"}
 
-            res = await auth_client.post("/api/notifications/test")
-            assert res.status_code == 200
-            assert res.json()["status"] == "ok"
-
-            assert mock_send.called
-            call_kwargs = mock_send.call_args[1]
-            assert call_kwargs["user_key"] == "test-pushover-user-key"
-            assert call_kwargs["app_token"] == "test-pushover-app-token"
-            assert "Test Notification" in call_kwargs["title"]
-            assert call_kwargs["priority"] == 0
-
-    @pytest.mark.asyncio
-    async def test_send_pushover_preserves_title_message_priority(self, populated_db, auth_client):
-        """POST /api/notifications/pushover forwards user-supplied title, message, priority without server classification."""
-        custom_title = "[LogShed Analysis] router: dnsmasq"
-        custom_message = "Summary: DNS error detected.\n\nRemediation:\nRestart container."
-        custom_priority = 1
-
-        with patch("app.api.notifications.send_pushover_message", new_callable=AsyncMock) as mock_send:
-            mock_send.return_value = {"status": 1, "request": "req-999"}
-
-            res = await auth_client.post(
-                "/api/notifications/pushover",
-                json={
-                    "title": custom_title,
-                    "message": custom_message,
-                    "priority": custom_priority,
-                },
-            )
-            assert res.status_code == 200
-            assert res.json()["status"] == "sent"
-
-            assert mock_send.called
-            call_kwargs = mock_send.call_args[1]
-            assert call_kwargs["user_key"] == "test-pushover-user-key"
-            assert call_kwargs["app_token"] == "test-pushover-app-token"
-            assert call_kwargs["title"] == custom_title
-            assert call_kwargs["message"] == custom_message
-            assert call_kwargs["priority"] == 1
-
-    @pytest.mark.asyncio
-    async def test_pushover_missing_credentials_returns_400(self, tmp_path, auth_client):
-        """Pushover requests fail cleanly with 400 when keys are not configured."""
-        db_file = tmp_path / "logs.db"
-        conn = sqlite3.connect(str(db_file))
-        conn.execute("UPDATE system_settings SET value = '' WHERE key IN ('pushover_user_key', 'pushover_app_token')")
-        conn.commit()
-        conn.close()
-
-        res = await auth_client.post(
-            "/api/notifications/pushover",
-            json={"title": "Test", "message": "Test message"},
-        )
-        assert res.status_code == 400
-        assert "must be configured" in res.json()["detail"]

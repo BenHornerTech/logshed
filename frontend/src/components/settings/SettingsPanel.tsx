@@ -2,11 +2,9 @@ import React, { useEffect, useState } from 'react';
 import {
   Settings,
   Brain,
-  Bell,
   Lock,
   History,
   Check,
-  Send,
   Save,
   AlertCircle,
   RefreshCw,
@@ -16,7 +14,6 @@ import {
 import { StorageMetricsResponse, AiAuditEntry } from '../../types.ts';
 import { fetchSettings, updateSettings, SettingsResponseData } from '../../api/settings.ts';
 import { fetchStorageMetrics } from '../../api/system.ts';
-import { testNotifications, sendPushoverNotification } from '../../api/notifications.ts';
 import { fetchAiAudit, deleteAiAuditItem, clearAiAuditLog } from '../../api/ai.ts';
 import { changePassword } from '../../api/auth.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
@@ -40,11 +37,6 @@ export const SettingsPanel: React.FC = () => {
   const [aiApiKey, setAiApiKey] = useState<string>('');
   const [aiBaseUrl, setAiBaseUrl] = useState<string>('');
 
-  const [pushoverUserKey, setPushoverUserKey] = useState<string>('');
-  const [pushoverAppToken, setPushoverAppToken] = useState<string>('');
-  const [isTestingPushover, setIsTestingPushover] = useState<boolean>(false);
-  const [pushoverTestMsg, setPushoverTestMsg] = useState<string | null>(null);
-
   // Password reset state
   const [currentPwd, setCurrentPwd] = useState<string>('');
   const [newPwd, setNewPwd] = useState<string>('');
@@ -55,8 +47,6 @@ export const SettingsPanel: React.FC = () => {
   // AI Audit Inspection modal state
   const [selectedAuditItem, setSelectedAuditItem] = useState<AiAuditEntry | null>(null);
   const [copiedAuditPrompt, setCopiedAuditPrompt] = useState<boolean>(false);
-  const [isSendingAuditPushover, setIsSendingAuditPushover] = useState<boolean>(false);
-  const [auditPushoverMsg, setAuditPushoverMsg] = useState<string | null>(null);
   const [showPromptDetails, setShowPromptDetails] = useState<boolean>(false);
   const [isDeletingAuditId, setIsDeletingAuditId] = useState<number | null>(null);
   const [showClearAllAuditModal, setShowClearAllAuditModal] = useState<boolean>(false);
@@ -82,8 +72,6 @@ export const SettingsPanel: React.FC = () => {
       setAiModel(settRes.ai_model || 'gemini-2.5-flash');
       setAiApiKey(settRes.ai_api_key || '');
       setAiBaseUrl(settRes.ai_base_url || '');
-      setPushoverUserKey(settRes.pushover_user_key || '');
-      setPushoverAppToken(settRes.pushover_app_token || '');
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to load system settings.');
     } finally {
@@ -106,8 +94,6 @@ export const SettingsPanel: React.FC = () => {
         ai_model: aiModel,
         ai_api_key: aiApiKey,
         ai_base_url: aiBaseUrl || null,
-        pushover_user_key: pushoverUserKey,
-        pushover_app_token: pushoverAppToken,
       });
 
       setSaveSuccessMsg('Settings saved successfully and secrets encrypted.');
@@ -122,19 +108,6 @@ export const SettingsPanel: React.FC = () => {
     await updateSettings({ retention_days: retentionDays });
     if (settings) {
       setSettings({ ...settings, retention_days: retentionDays });
-    }
-  };
-
-  const handleTestPushover = async () => {
-    try {
-      setIsTestingPushover(true);
-      setPushoverTestMsg(null);
-      const res = await testNotifications();
-      setPushoverTestMsg(res.detail || 'Pushover test message dispatched successfully.');
-    } catch (err: any) {
-      setPushoverTestMsg(`Error: ${err.message}`);
-    } finally {
-      setIsTestingPushover(false);
     }
   };
 
@@ -172,26 +145,6 @@ export const SettingsPanel: React.FC = () => {
         setCopiedAuditPrompt(true);
         setTimeout(() => setCopiedAuditPrompt(false), 2000);
       }
-    }
-  };
-
-  const handleSendAuditPushover = async () => {
-    if (!selectedAuditItem) return;
-    try {
-      setIsSendingAuditPushover(true);
-      setAuditPushoverMsg(null);
-      const title = `[LogShed Audit] ${selectedAuditItem.source_alias}: ${selectedAuditItem.app_name}`;
-      await sendPushoverNotification({
-        title,
-        message: selectedAuditItem.response_text,
-        priority: 0,
-      });
-      setAuditPushoverMsg('Historical analysis dispatched to Pushover successfully!');
-      setTimeout(() => setAuditPushoverMsg(null), 4000);
-    } catch (err: any) {
-      setAuditPushoverMsg(`Failed to send Pushover notification: ${err.message}`);
-    } finally {
-      setIsSendingAuditPushover(false);
     }
   };
 
@@ -243,7 +196,7 @@ export const SettingsPanel: React.FC = () => {
           <span>System Settings & Storage Dashboard</span>
         </h2>
         <p className="text-xs text-slate-400 mt-0.5">
-          Configure on-demand AI LLM providers, Pushover alert credentials, retention policy, and monitor disk storage.
+          Configure on-demand AI LLM providers, retention policy, and monitor disk storage.
         </p>
       </div>
 
@@ -277,7 +230,7 @@ export const SettingsPanel: React.FC = () => {
         <StorageTrendChart history={storageMetrics?.history || []} />
       </section>
 
-      {/* Settings Form: AI & Notifications */}
+      {/* Settings Form: AI */}
       <form onSubmit={handleSaveSettings} className="space-y-6">
         {/* AI Provider Section */}
         <section className="bg-dark-900 border border-dark-700 rounded-xl p-5 shadow-md space-y-4">
@@ -340,59 +293,6 @@ export const SettingsPanel: React.FC = () => {
                 value={aiBaseUrl}
                 onChange={(e) => setAiBaseUrl(e.target.value)}
                 placeholder="http://host.docker.internal:11434/v1"
-                className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
-              />
-            </div>
-          </div>
-        </section>
-
-        {/* Pushover Notifications Section */}
-        <section className="bg-dark-900 border border-dark-700 rounded-xl p-5 shadow-md space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-              <Bell className="w-4 h-4 text-accent-500" />
-              <span>Pushover Notifications</span>
-            </h3>
-            <button
-              type="button"
-              onClick={handleTestPushover}
-              disabled={isTestingPushover}
-              className="px-3 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded text-xs flex items-center gap-1.5 transition"
-            >
-              <Send className="w-3 h-3 text-accent-400" />
-              <span>{isTestingPushover ? 'Testing...' : 'Send Test Notification'}</span>
-            </button>
-          </div>
-
-          {pushoverTestMsg && (
-            <div className="p-2.5 bg-dark-950 border border-dark-700 rounded text-xs font-mono text-slate-300">
-              {pushoverTestMsg}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                Pushover User Key
-              </label>
-              <input
-                type="password"
-                value={pushoverUserKey}
-                onChange={(e) => setPushoverUserKey(e.target.value)}
-                placeholder="Enter Pushover User Key..."
-                className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                Pushover Application Token
-              </label>
-              <input
-                type="password"
-                value={pushoverAppToken}
-                onChange={(e) => setPushoverAppToken(e.target.value)}
-                placeholder="Enter Pushover App Token..."
                 className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
               />
             </div>
@@ -531,7 +431,6 @@ export const SettingsPanel: React.FC = () => {
                 onClick={() => {
                   setSelectedAuditItem(item);
                   setShowPromptDetails(false);
-                  setAuditPushoverMsg(null);
                 }}
                 className="grid grid-cols-[135px_150px_130px_75px_1fr_95px] px-4 py-2.5 items-center hover:bg-dark-800 transition text-[11px] cursor-pointer group select-none"
               >
@@ -553,7 +452,6 @@ export const SettingsPanel: React.FC = () => {
                     onClick={() => {
                       setSelectedAuditItem(item);
                       setShowPromptDetails(false);
-                      setAuditPushoverMsg(null);
                     }}
                     className="px-2 py-0.5 text-[11px] font-mono text-accent-400 bg-accent-950/50 hover:bg-accent-900/60 border border-accent-800/80 rounded transition cursor-pointer"
                     title="View analysis details"
@@ -681,12 +579,6 @@ export const SettingsPanel: React.FC = () => {
               )}
             </div>
 
-            {auditPushoverMsg && (
-              <div className="p-2.5 bg-dark-800 border border-dark-700 rounded text-xs text-slate-300">
-                {auditPushoverMsg}
-              </div>
-            )}
-
             {/* Footer Buttons */}
             <div className="flex items-center justify-between pt-2 border-t border-dark-800">
               <button
@@ -700,15 +592,6 @@ export const SettingsPanel: React.FC = () => {
               </button>
 
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleSendAuditPushover}
-                  disabled={isSendingAuditPushover}
-                  className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition shadow-md cursor-pointer"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>{isSendingAuditPushover ? 'Sending...' : 'Send to Pushover'}</span>
-                </button>
                 <button
                   type="button"
                   onClick={() => setSelectedAuditItem(null)}

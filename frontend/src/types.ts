@@ -32,8 +32,6 @@ export interface SystemSettings {
   ai_model: string;
   ai_api_key?: string;
   ai_base_url?: string | null;
-  pushover_user_key?: string;
-  pushover_app_token?: string;
   retention_days: number;
 }
 

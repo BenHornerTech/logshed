@@ -3,8 +3,6 @@ import { SystemSettings } from '../types.ts';
 
 export interface SettingsResponseData extends SystemSettings {
   has_ai_api_key: boolean;
-  has_pushover_user_key: boolean;
-  has_pushover_app_token: boolean;
 }
 
 export async function fetchSettings(): Promise<SettingsResponseData> {

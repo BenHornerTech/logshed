@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Sparkles, Send, Copy, Check, Shield, RefreshCw, AlertCircle } from 'lucide-react';
+import { Sparkles, Copy, Check, Shield, RefreshCw, AlertCircle } from 'lucide-react';
 import { LogEntry, AiPreviewResponse, AiAnalysisResponse } from '../../types.ts';
 import { previewAiPrompt, analyzeLogs } from '../../api/ai.ts';
-import { sendPushoverNotification } from '../../api/notifications.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
@@ -30,8 +29,6 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const [analysisResult, setAnalysisResult] = useState<AiAnalysisResponse | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  const [isSendingPushover, setIsSendingPushover] = useState<boolean>(false);
-  const [pushoverStatus, setPushoverStatus] = useState<string | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState<boolean>(false);
 
   useEffect(() => {
@@ -43,7 +40,6 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       setPreviewError(null);
       setAnalysisError(null);
       setUserContext('');
-      setPushoverStatus(null);
     }
   }, [isOpen, selectedLogs]);
 
@@ -97,27 +93,6 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       setAnalysisError(err.message || 'AI analysis request failed.');
     } finally {
       setIsAnalyzing(false);
-    }
-  };
-
-  const handleSendToPushover = async () => {
-    if (!analysisResult || !preview) return;
-    try {
-      setIsSendingPushover(true);
-      setPushoverStatus(null);
-      const title = `[LogShed Analysis] ${preview.source_alias}: ${preview.app_name}`;
-      const message = `${analysisResult.summary}\n\nRoot Cause:\n${analysisResult.root_cause}\n\nRemediation:\n${analysisResult.remediation}`;
-      await sendPushoverNotification({
-        title,
-        message,
-        priority: 0,
-      });
-      setPushoverStatus('Notification sent to Pushover successfully!');
-      setTimeout(() => setPushoverStatus(null), 4000);
-    } catch (err: any) {
-      setPushoverStatus(`Failed to send notification: ${err.message}`);
-    } finally {
-      setIsSendingPushover(false);
     }
   };
 
@@ -355,28 +330,21 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               <MarkdownRenderer content={analysisResult.remediation} />
             </div>
 
-            {pushoverStatus && (
-              <div className="p-2.5 bg-dark-800 border border-dark-700 rounded text-xs text-slate-300">
-                {pushoverStatus}
-              </div>
-            )}
-
             {/* Action Buttons */}
             <div className="flex items-center justify-between pt-2">
               <button
                 onClick={() => setAnalysisResult(null)}
-                className="text-xs text-slate-400 hover:text-slate-200 underline"
+                className="text-xs text-slate-400 hover:text-slate-200 underline cursor-pointer"
               >
                 Back to Preview & Edit
               </button>
 
               <button
-                onClick={handleSendToPushover}
-                disabled={isSendingPushover}
-                className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition shadow-md"
+                type="button"
+                onClick={onClose}
+                className="px-3.5 py-2 text-xs bg-dark-700 hover:bg-dark-600 text-slate-200 rounded-lg transition cursor-pointer"
               >
-                <Send className="w-3.5 h-3.5" />
-                <span>{isSendingPushover ? 'Sending...' : 'Send to Pushover'}</span>
+                Close
               </button>
             </div>
           </div>
