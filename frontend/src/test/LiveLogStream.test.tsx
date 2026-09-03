@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { LiveLogStream, formatLocalTimestamp } from '../components/logs/LiveLogStream.tsx';
 import * as logsApi from '../api/logs.ts';
@@ -131,6 +131,20 @@ describe('LiveLogStream Component', () => {
       total: sampleLogs.length,
       limit: 500,
       offset: 0,
+    });
+    vi.spyOn(logsApi, 'fetchLogFacets').mockResolvedValue({
+      sources: ['tower-unraid', 'opnsense-router'],
+      apps: ['nginx', 'postgres', 'docker', 'filterlog'],
+      host_to_apps: {
+        'tower-unraid': ['docker', 'nginx', 'postgres'],
+        'opnsense-router': ['filterlog'],
+      },
+      app_to_hosts: {
+        docker: ['tower-unraid'],
+        nginx: ['tower-unraid'],
+        postgres: ['tower-unraid'],
+        filterlog: ['opnsense-router'],
+      },
     });
   });
 
@@ -317,5 +331,205 @@ describe('LiveLogStream Component', () => {
       expect(screen.getByText('Auto-Scroll ON')).toBeInTheDocument();
       expect(screen.queryByText(/Auto-scroll paused/i)).toBeNull();
     });
+  });
+
+  it('maintains quick filter buttons even after a filter is applied (Item #32)', async () => {
+    // Initially returns sampleLogs with tower-unraid and opnsense-router
+    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // Quick filter pills for both tower-unraid and opnsense-router exist
+    expect(screen.getByRole('button', { name: 'tower-unraid' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'opnsense-router' })).toBeInTheDocument();
+
+    // Mock fetchLogs to return only tower-unraid logs when filtered
+    vi.spyOn(logsApi, 'fetchLogs').mockResolvedValue({
+      logs: [sampleLogs[0]],
+      total: 1,
+      limit: 500,
+      offset: 0,
+    });
+
+    // Click quick filter pill for tower-unraid
+    fireEvent.click(screen.getByRole('button', { name: 'tower-unraid' }));
+
+    // Verify opnsense-router quick filter pill DOES NOT disappear!
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'tower-unraid' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'opnsense-router' })).toBeInTheDocument();
+    });
+
+    // The tower-unraid pill should now be active (highlighted)
+    const towerBtn = screen.getByRole('button', { name: 'tower-unraid' });
+    expect(towerBtn.className).toContain('text-accent-300');
+  });
+
+  it('scopes app/container dropdown options to only apps belonging to the chosen host', async () => {
+    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // 1. Initially without host filter, open App/Container dropdown
+    const appTrigger = screen.getByText('App / Container:').closest('[role="button"]') as HTMLElement;
+    const appDropdown = appTrigger.parentElement as HTMLElement;
+    fireEvent.click(appTrigger);
+
+    // All apps from both tower-unraid (nginx, postgres, docker) and opnsense-router (filterlog) are present in the dropdown
+    expect(within(appDropdown).getByText('filterlog')).toBeInTheDocument();
+    expect(within(appDropdown).getByText('nginx')).toBeInTheDocument();
+    expect(within(appDropdown).getByText('postgres')).toBeInTheDocument();
+
+    // Close app dropdown
+    fireEvent.click(appTrigger);
+
+    // 2. Select host 'tower-unraid'
+    const hostTrigger = screen.getByText('Host / IP:').closest('[role="button"]') as HTMLElement;
+    const hostDropdown = hostTrigger.parentElement as HTMLElement;
+    act(() => {
+      fireEvent.click(hostTrigger);
+    });
+    act(() => {
+      fireEvent.click(within(hostDropdown).getByText('tower-unraid'));
+      fireEvent.click(hostTrigger); // close host dropdown
+    });
+
+    // 3. Open App/Container dropdown again
+    act(() => {
+      fireEvent.click(appTrigger);
+    });
+
+    // Should contain tower-unraid apps, but NOT opnsense-router's filterlog
+    await waitFor(() => {
+      expect(within(appDropdown).getByText('nginx')).toBeInTheDocument();
+      expect(within(appDropdown).getByText('postgres')).toBeInTheDocument();
+      expect(within(appDropdown).queryByText('filterlog')).toBeNull();
+    });
+  });
+
+  it('scopes host dropdown options when an app is selected first (bidirectional scoping)', async () => {
+    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    const appTrigger = screen.getByText('App / Container:').closest('[role="button"]') as HTMLElement;
+    const appDropdown = appTrigger.parentElement as HTMLElement;
+    const hostTrigger = screen.getByText('Host / IP:').closest('[role="button"]') as HTMLElement;
+    const hostDropdown = hostTrigger.parentElement as HTMLElement;
+
+    // 1. Select app 'filterlog' (which only belongs to opnsense-router)
+    act(() => {
+      fireEvent.click(appTrigger);
+    });
+    act(() => {
+      fireEvent.click(within(appDropdown).getByText('filterlog'));
+      fireEvent.click(appTrigger); // close app dropdown
+    });
+
+    // 2. Open Host dropdown
+    act(() => {
+      fireEvent.click(hostTrigger);
+    });
+
+    // Should contain opnsense-router, but NOT tower-unraid
+    await waitFor(() => {
+      expect(within(hostDropdown).getByText('opnsense-router')).toBeInTheDocument();
+      expect(within(hostDropdown).queryByText('tower-unraid')).toBeNull();
+    });
+  });
+
+  it('captures click away on backdrop so clicking outside closes dropdown without opening log drawer', async () => {
+    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // 1. Open Host dropdown
+    const hostTrigger = screen.getByText('Host / IP:').closest('[role="button"]') as HTMLElement;
+    const hostDropdown = hostTrigger.parentElement as HTMLElement;
+    act(() => {
+      fireEvent.click(hostTrigger);
+    });
+
+    // Dropdown is open and backdrop interceptor exists
+    const backdrop = within(hostDropdown).getByTestId('dropdown-backdrop');
+    expect(backdrop).toBeInTheDocument();
+
+    // 2. Click the backdrop
+    act(() => {
+      fireEvent.click(backdrop);
+    });
+
+    // 3. Dropdown closes, and log modal drawer did NOT open
+    expect(within(hostDropdown).queryByTestId('dropdown-backdrop')).toBeNull();
+    expect(screen.queryByText(/Log Record #/i)).toBeNull();
+  });
+
+  it('preserves full database hosts and apps in dropdowns even after clearing the screen buffer', async () => {
+    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // Clear the screen buffer
+    const clearBtn = screen.getByTitle(/Clear screen buffer/i);
+    act(() => {
+      fireEvent.click(clearBtn);
+    });
+
+    // Buffer is empty: "0 lines"
+    expect(screen.getByText('0')).toBeInTheDocument();
+    expect(screen.getByText(/No logs in stream/i)).toBeInTheDocument();
+
+    // Now open the Host/IP dropdown
+    const hostTrigger = screen.getByText('Host / IP:').closest('[role="button"]') as HTMLElement;
+    const hostDropdown = hostTrigger.parentElement as HTMLElement;
+    act(() => {
+      fireEvent.click(hostTrigger);
+    });
+
+    // Dropdown still contains tower-unraid and opnsense-router from full database facets!
+    expect(within(hostDropdown).getByText('tower-unraid')).toBeInTheDocument();
+    expect(within(hostDropdown).getByText('opnsense-router')).toBeInTheDocument();
+  });
+
+  it('deduplicates aliased hosts and never shows the raw IP when an alias is set', async () => {
+    // Provide knownAliases with 172.22.2.4 -> NPM and 192.168.1.50 -> tower-unraid
+    render(
+      <LiveLogStream
+        onAnalyzeAi={vi.fn()}
+        knownAliases={{
+          '172.22.2.4': 'NPM',
+          '192.168.1.50': 'tower-unraid',
+        }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // Open Host dropdown
+    const hostTrigger = screen.getByText('Host / IP:').closest('[role="button"]') as HTMLElement;
+    const hostDropdown = hostTrigger.parentElement as HTMLElement;
+    act(() => {
+      fireEvent.click(hostTrigger);
+    });
+
+    // NPM and tower-unraid appear in the host dropdown
+    expect(within(hostDropdown).getByText('tower-unraid')).toBeInTheDocument();
+    expect(within(hostDropdown).getByText('NPM')).toBeInTheDocument();
+
+    // Raw IPs that are aliased (172.22.2.4 and 192.168.1.50) MUST NOT appear in the dropdown!
+    expect(within(hostDropdown).queryByText('172.22.2.4')).toBeNull();
+    expect(within(hostDropdown).queryByText('192.168.1.50')).toBeNull();
   });
 });

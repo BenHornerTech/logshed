@@ -122,10 +122,19 @@ export interface AuthStatusResponse {
 export interface LogFilterParams {
   query?: string;
   severity_max?: number;
-  source?: string;
-  app_name?: string;
+  source?: string | string[];
+  sources?: string[];
+  app_name?: string | string[];
+  apps?: string[];
   from?: string;
   to?: string;
   limit?: number;
   offset?: number;
+}
+
+export interface LogFacetsResponse {
+  sources: string[];
+  apps: string[];
+  host_to_apps: Record<string, string[]>;
+  app_to_hosts: Record<string, string[]>;
 }

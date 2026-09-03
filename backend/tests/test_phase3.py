@@ -463,6 +463,35 @@ class TestLogQuerying:
         assert res_time.json()["total"] == 1
         assert res_time.json()["logs"][0]["app_name"] == "kernel"
 
+        # 7. Multi-source filtering: comma-separated and repeated params
+        res_multi_src_comma = await client.get("/api/logs", params={"source": "unraid-main,pve-node1"})
+        assert res_multi_src_comma.status_code == 200
+        assert res_multi_src_comma.json()["total"] == 3
+
+        res_multi_src_repeat = await client.get("/api/logs?source=unraid-main&source=pve-node1")
+        assert res_multi_src_repeat.status_code == 200
+        assert res_multi_src_repeat.json()["total"] == 3
+
+        # 8. Multi-app filtering: comma-separated and repeated params
+        res_multi_app_comma = await client.get("/api/logs", params={"app_name": "nginx,kernel"})
+        assert res_multi_app_comma.status_code == 200
+        assert res_multi_app_comma.json()["total"] == 2
+        app_names = {l["app_name"] for l in res_multi_app_comma.json()["logs"]}
+        assert app_names == {"nginx", "kernel"}
+
+        res_multi_app_repeat = await client.get("/api/logs?app_name=nginx&app_name=nextcloud")
+        assert res_multi_app_repeat.status_code == 200
+        assert res_multi_app_repeat.json()["total"] == 2
+        app_names_repeat = {l["app_name"] for l in res_multi_app_repeat.json()["logs"]}
+        assert app_names_repeat == {"nginx", "nextcloud"}
+
+        # 9. Multi-host and multi-app combined
+        res_combined = await client.get("/api/logs?source=unraid-main&app_name=nginx,kernel")
+        assert res_combined.status_code == 200
+        assert res_combined.json()["total"] == 1
+        assert res_combined.json()["logs"][0]["app_name"] == "nginx"
+        assert res_combined.json()["logs"][0]["source_alias"] == "unraid-main"
+
     @pytest.mark.asyncio
     async def test_log_context_scoped_to_same_source_and_app(
         self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
@@ -549,6 +578,147 @@ class TestLogQuerying:
             assert any("SSE test log message" in l for l in lines)
 
         await broadcast_task
+
+    @pytest.mark.asyncio
+    async def test_log_stream_sse_multi_filter(self, client: AsyncClient, auth_cookie: dict):
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+
+        entry1 = {
+            "id": 1001,
+            "timestamp": "2026-08-29T15:01:00Z",
+            "received_at": "2026-08-29T15:01:01Z",
+            "source_ip": "192.168.1.50",
+            "source_alias": "unraid-main",
+            "app_name": "nginx",
+            "facility": 1,
+            "severity": 3,
+            "message": "Filtered log 1",
+            "raw": "raw 1",
+        }
+        entry2 = {
+            "id": 1002,
+            "timestamp": "2026-08-29T15:01:02Z",
+            "received_at": "2026-08-29T15:01:03Z",
+            "source_ip": "192.168.1.60",
+            "source_alias": "pve-node1",
+            "app_name": "corosync",
+            "facility": 1,
+            "severity": 3,
+            "message": "Filtered log 2",
+            "raw": "raw 2",
+        }
+        entry3 = {
+            "id": 1003,
+            "timestamp": "2026-08-29T15:01:04Z",
+            "received_at": "2026-08-29T15:01:05Z",
+            "source_ip": "192.168.1.70",
+            "source_alias": "other-node",
+            "app_name": "other-app",
+            "facility": 1,
+            "severity": 3,
+            "message": "Ignored log 3",
+            "raw": "raw 3",
+        }
+
+        async def _trigger_broadcast():
+            for _ in range(50):
+                if sse_manager.subscriber_count() > 0:
+                    break
+                await asyncio.sleep(0.01)
+            # Broadcast entry3 (ignored), entry1 (matches), entry2 (matches)
+            await sse_manager.broadcast(entry3)
+            await sse_manager.broadcast(entry1)
+            await sse_manager.broadcast(entry2)
+
+        broadcast_task = asyncio.create_task(_trigger_broadcast())
+
+        async with client.stream("GET", "/api/logs/stream?source=unraid-main,pve-node1&max_events=2") as response:
+            assert response.status_code == 200
+            lines = []
+            async for line in response.aiter_lines():
+                if line.strip():
+                    lines.append(line.strip())
+
+            assert not any("Ignored log 3" in l for l in lines)
+            assert any("Filtered log 1" in l for l in lines)
+            assert any("Filtered log 2" in l for l in lines)
+
+        await broadcast_task
+
+    @pytest.mark.asyncio
+    async def test_log_facets_returns_full_database_distinct_items_and_mappings(self, client: AsyncClient, auth_cookie: dict, tmp_path: Path):
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+
+        test_entries = [
+            {
+                "timestamp": "2026-08-29T10:00:00Z",
+                "received_at": "2026-08-29T10:00:01Z",
+                "source_ip": "192.168.1.50",
+                "source_alias": "unraid-main",
+                "app_name": "nginx",
+                "facility": 1,
+                "severity": 3,
+                "message": "Nginx upstream error",
+                "raw": "<11>1 2026-08-29T10:00:00Z unraid-main nginx - - - error",
+            },
+            {
+                "timestamp": "2026-08-29T11:00:00Z",
+                "received_at": "2026-08-29T11:00:01Z",
+                "source_ip": "192.168.1.60",
+                "source_alias": "pve-node1",
+                "app_name": "corosync",
+                "facility": 0,
+                "severity": 2,
+                "message": "Corosync quorum lost",
+                "raw": "<10>1 2026-08-29T11:00:00Z pve-node1 corosync - - - quorum lost",
+            },
+            {
+                "timestamp": "2026-08-29T12:00:00Z",
+                "received_at": "2026-08-29T12:00:01Z",
+                "source_ip": "172.22.2.4",
+                "source_alias": "NPM",
+                "app_name": "nginx-proxy",
+                "facility": 1,
+                "severity": 6,
+                "message": "GET 200 OK",
+                "raw": "raw npm",
+            },
+        ]
+        _seed_logs(db_file, test_entries)
+
+        # Insert alias for 172.22.2.4 -> NPM
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute("INSERT OR REPLACE INTO host_aliases (ip, alias, created_at) VALUES (?, ?, ?)", ("172.22.2.4", "NPM", "2026-08-29T10:00:00Z"))
+
+        response = await client.get("/api/logs/facets")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert "sources" in data
+        assert "apps" in data
+        assert "host_to_apps" in data
+        assert "app_to_hosts" in data
+
+        assert "unraid-main" in data["sources"]
+        assert "pve-node1" in data["sources"]
+        assert "NPM" in data["sources"]
+        # The aliased IP 172.22.2.4 must NOT be in sources alongside NPM!
+        assert "172.22.2.4" not in data["sources"]
+        assert "nginx" in data["apps"]
+        assert "corosync" in data["apps"]
+        assert "nginx-proxy" in data["apps"]
+
+        # Verify host_to_apps mapping
+        assert "nginx" in data["host_to_apps"]["unraid-main"]
+        assert "corosync" in data["host_to_apps"]["pve-node1"]
+        assert "nginx-proxy" in data["host_to_apps"]["NPM"]
+        assert "172.22.2.4" not in data["host_to_apps"]
+
+        # Verify app_to_hosts reverse mapping
+        assert "unraid-main" in data["app_to_hosts"]["nginx"]
+        assert "pve-node1" in data["app_to_hosts"]["corosync"]
+        assert "NPM" in data["app_to_hosts"]["nginx-proxy"]
 
 
 # ---------------------------------------------------------------------------

@@ -29,11 +29,19 @@ export const SlideOver: React.FC<SlideOverProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden bg-black/60 backdrop-blur-xs">
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="pointer-events-none fixed inset-y-0 right-0 flex max-w-full pl-10">
+    <div className="fixed inset-0 z-50 overflow-hidden">
+      {/* Backdrop overlay */}
+      <div
+        data-testid="slideover-backdrop"
+        className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity cursor-pointer"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="fixed inset-y-0 right-0 flex max-w-full pl-10">
           <div
             className={`pointer-events-auto w-screen ${width} bg-dark-900 border-l border-dark-700 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200`}
+            onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-dark-950">

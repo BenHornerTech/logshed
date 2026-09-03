@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Search, RotateCcw, Filter, Clock, X } from 'lucide-react';
 import { LogFilterParams } from '../../types.ts';
+import { MultiSelectDropdown } from '../common/MultiSelectDropdown.tsx';
 
 interface LogSearchBarProps {
   filters: LogFilterParams;
@@ -21,6 +22,39 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
 }) => {
   const [timePreset, setTimePreset] = useState<string>('all');
   const [showCustomTime, setShowCustomTime] = useState<boolean>(false);
+
+  // Compute active sources as an array
+  const activeSources: string[] = useMemo(() => {
+    if (filters.sources && Array.isArray(filters.sources)) return filters.sources;
+    if (filters.source) {
+      if (Array.isArray(filters.source)) return filters.source;
+      return filters.source.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    return [];
+  }, [filters.sources, filters.source]);
+
+  // Compute active apps as an array
+  const activeApps: string[] = useMemo(() => {
+    if (filters.apps && Array.isArray(filters.apps)) return filters.apps;
+    if (filters.app_name) {
+      if (Array.isArray(filters.app_name)) return filters.app_name;
+      return filters.app_name.split(',').map((a) => a.trim()).filter(Boolean);
+    }
+    return [];
+  }, [filters.apps, filters.app_name]);
+
+  // Count active filters to conditionally show Reset button with badge
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (filters.query && filters.query.trim()) count += 1;
+    if (filters.severity_max !== undefined && filters.severity_max !== null) count += 1;
+    if (activeSources.length > 0) count += activeSources.length;
+    if (activeApps.length > 0) count += activeApps.length;
+    if (timePreset !== 'all' || filters.from || filters.to) count += 1;
+    return count;
+  }, [filters.query, filters.severity_max, filters.from, filters.to, activeSources, activeApps, timePreset]);
+
+  const hasActiveFilters = activeFilterCount > 0;
 
   const handleTimePresetChange = (preset: string) => {
     setTimePreset(preset);
@@ -50,9 +84,15 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
     });
   };
 
+  const handleResetFilters = () => {
+    setTimePreset('all');
+    setShowCustomTime(false);
+    onReset();
+  };
+
   return (
     <div className="bg-dark-950 border-b border-dark-700 p-2.5 flex flex-col gap-2 select-none text-xs">
-      {/* Top Row: Search Input & Action Buttons */}
+      {/* Top Row: Search Input & Primary Search Actions */}
       <div className="flex items-center gap-2">
         {/* FTS Search Input */}
         <div className="relative flex-1">
@@ -69,130 +109,113 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
             <button
               onClick={() => onFilterChange({ ...filters, query: '' })}
               className="absolute right-2 top-1.5 text-slate-500 hover:text-slate-300"
+              title="Clear search query"
+              aria-label="Clear search query"
             >
               <X className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
 
+        {/* Action Button: Filter */}
+        <button
+          onClick={onSearch}
+          className="bg-accent-600 hover:bg-accent-500 text-white font-medium px-3 py-1.5 rounded flex items-center gap-1 transition shadow-xs cursor-pointer"
+        >
+          <Search className="w-3.5 h-3.5" />
+          <span>Filter</span>
+        </button>
+
+        {/* Conditional Prominent Reset Button with Active Filter Count Indicator */}
+        {hasActiveFilters && (
+          <button
+            onClick={handleResetFilters}
+            title="Reset all active filters"
+            aria-label="Reset all active filters"
+            className="bg-amber-950/70 hover:bg-amber-900/90 text-amber-300 border border-amber-600/70 px-2.5 py-1.5 rounded flex items-center gap-1.5 transition shadow-xs font-medium cursor-pointer animate-in fade-in duration-150"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+            <span>Reset</span>
+            <span className="bg-amber-500/30 text-amber-200 border border-amber-500/50 text-[10px] font-mono px-1.5 py-0.5 rounded-full font-bold leading-none">
+              {activeFilterCount}
+            </span>
+          </button>
+        )}
+      </div>
+
+      {/* Second Row: Cohesive Single Filter Dimension Row (Host/IP, App/Container, Severity, Time) */}
+      <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-dark-800">
+        {/* Host / IP Multi-Select */}
+        <MultiSelectDropdown
+          label="Host / IP"
+          options={availableSources}
+          selected={activeSources}
+          onChange={(newSources) => {
+            onFilterChange({
+              ...filters,
+              sources: newSources,
+              source: newSources.length === 1 ? newSources[0] : (newSources.length > 1 ? newSources.join(',') : undefined),
+            });
+          }}
+          placeholder="All Hosts"
+        />
+
+        {/* App / Container Multi-Select */}
+        <MultiSelectDropdown
+          label="App / Container"
+          options={availableApps}
+          selected={activeApps}
+          onChange={(newApps) => {
+            onFilterChange({
+              ...filters,
+              apps: newApps,
+              app_name: newApps.length === 1 ? newApps[0] : (newApps.length > 1 ? newApps.join(',') : undefined),
+            });
+          }}
+          placeholder="All Apps"
+        />
+
         {/* Severity Filter Dropdown */}
-        <div className="flex items-center gap-1.5">
-          <Filter className="w-3.5 h-3.5 text-slate-400" />
+        <div className="flex items-center gap-1.5 bg-dark-900 border border-dark-700 rounded px-2 py-1">
+          <Filter className="w-3 h-3 text-slate-400" />
+          <span className="text-slate-400 text-[11px] font-medium">Severity:</span>
           <select
             value={filters.severity_max !== undefined ? filters.severity_max : ''}
             onChange={(e) => {
               const val = e.target.value === '' ? undefined : parseInt(e.target.value, 10);
               onFilterChange({ ...filters, severity_max: val });
             }}
-            className="bg-dark-900 border border-dark-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+            className="bg-transparent text-[11px] text-slate-200 focus:outline-hidden font-mono"
           >
-            <option value="">All Severities</option>
-            <option value="0">≤ Emerg (0)</option>
-            <option value="1">≤ Alert (1)</option>
-            <option value="2">≤ Crit (2)</option>
-            <option value="3">≤ Error (3)</option>
-            <option value="4">≤ Warn (4)</option>
-            <option value="5">≤ Notice (5)</option>
-            <option value="6">≤ Info (6)</option>
-            <option value="7">≤ Debug (7)</option>
+            <option value="" className="bg-dark-900">All Severities</option>
+            <option value="0" className="bg-dark-900">≤ Emerg (0)</option>
+            <option value="1" className="bg-dark-900">≤ Alert (1)</option>
+            <option value="2" className="bg-dark-900">≤ Crit (2)</option>
+            <option value="3" className="bg-dark-900">≤ Error (3)</option>
+            <option value="4" className="bg-dark-900">≤ Warn (4)</option>
+            <option value="5" className="bg-dark-900">≤ Notice (5)</option>
+            <option value="6" className="bg-dark-900">≤ Info (6)</option>
+            <option value="7" className="bg-dark-900">≤ Debug (7)</option>
           </select>
         </div>
 
         {/* Time Preset Selector */}
-        <div className="flex items-center gap-1.5">
-          <Clock className="w-3.5 h-3.5 text-slate-400" />
+        <div className="flex items-center gap-1.5 bg-dark-900 border border-dark-700 rounded px-2 py-1">
+          <Clock className="w-3 h-3 text-slate-400" />
+          <span className="text-slate-400 text-[11px] font-medium">Time:</span>
           <select
             value={timePreset}
             onChange={(e) => handleTimePresetChange(e.target.value)}
-            className="bg-dark-900 border border-dark-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+            className="bg-transparent text-[11px] text-slate-200 focus:outline-hidden font-mono"
           >
-            <option value="all">All Time</option>
-            <option value="15m">Last 15m</option>
-            <option value="1h">Last 1h</option>
-            <option value="6h">Last 6h</option>
-            <option value="24h">Last 24h</option>
-            <option value="7d">Last 7d</option>
-            <option value="custom">Custom...</option>
+            <option value="all" className="bg-dark-900">All Time</option>
+            <option value="15m" className="bg-dark-900">Last 15m</option>
+            <option value="1h" className="bg-dark-900">Last 1h</option>
+            <option value="6h" className="bg-dark-900">Last 6h</option>
+            <option value="24h" className="bg-dark-900">Last 24h</option>
+            <option value="7d" className="bg-dark-900">Last 7d</option>
+            <option value="custom" className="bg-dark-900">Custom...</option>
           </select>
-        </div>
-
-        {/* Action Buttons */}
-        <button
-          onClick={onSearch}
-          className="bg-accent-600 hover:bg-accent-500 text-white font-medium px-3 py-1.5 rounded flex items-center gap-1 transition shadow-xs"
-        >
-          <Search className="w-3.5 h-3.5" />
-          <span>Filter</span>
-        </button>
-
-        <button
-          onClick={() => {
-            setTimePreset('all');
-            setShowCustomTime(false);
-            onReset();
-          }}
-          title="Reset Filters"
-          className="bg-dark-900 hover:bg-dark-800 border border-dark-700 text-slate-300 px-2.5 py-1.5 rounded flex items-center gap-1 transition"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          <span>Reset</span>
-        </button>
-      </div>
-
-      {/* Second Row: Specific Dimension Filters & Custom Time */}
-      <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-dark-800">
-        {/* Source Filter */}
-        <div className="flex items-center gap-1">
-          <span className="text-slate-400 text-[11px]">Host / IP:</span>
-          {availableSources.length > 0 ? (
-            <select
-              value={filters.source || ''}
-              onChange={(e) => onFilterChange({ ...filters, source: e.target.value || undefined })}
-              className="bg-dark-900 border border-dark-700 rounded px-2 py-1 text-[11px] text-slate-200 font-mono focus:outline-hidden focus:border-accent-500"
-            >
-              <option value="">All Hosts</option>
-              {availableSources.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              type="text"
-              value={filters.source || ''}
-              onChange={(e) => onFilterChange({ ...filters, source: e.target.value || undefined })}
-              placeholder="Filter host/IP..."
-              className="bg-dark-900 border border-dark-700 rounded px-2 py-1 text-[11px] text-slate-200 font-mono w-32 focus:outline-hidden focus:border-accent-500"
-            />
-          )}
-        </div>
-
-        {/* App Filter */}
-        <div className="flex items-center gap-1">
-          <span className="text-slate-400 text-[11px]">App / Container:</span>
-          {availableApps.length > 0 ? (
-            <select
-              value={filters.app_name || ''}
-              onChange={(e) => onFilterChange({ ...filters, app_name: e.target.value || undefined })}
-              className="bg-dark-900 border border-dark-700 rounded px-2 py-1 text-[11px] text-slate-200 font-mono focus:outline-hidden focus:border-accent-500"
-            >
-              <option value="">All Apps</option>
-              {availableApps.map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              type="text"
-              value={filters.app_name || ''}
-              onChange={(e) => onFilterChange({ ...filters, app_name: e.target.value || undefined })}
-              placeholder="Filter container/app..."
-              className="bg-dark-900 border border-dark-700 rounded px-2 py-1 text-[11px] text-slate-200 font-mono w-36 focus:outline-hidden focus:border-accent-500"
-            />
-          )}
         </div>
 
         {/* Custom Datetime Pickers */}
@@ -232,3 +255,4 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
     </div>
   );
 };
+

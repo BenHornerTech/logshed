@@ -14,8 +14,19 @@ export async function fetchLogs(params: LogFilterParams = {}): Promise<LogListRe
   if (params.severity_max !== undefined && params.severity_max !== null) {
     searchParams.set('severity_max', params.severity_max.toString());
   }
-  if (params.source) searchParams.set('source', params.source);
-  if (params.app_name) searchParams.set('app_name', params.app_name);
+  const sources: string[] = params.sources && params.sources.length > 0
+    ? params.sources
+    : (params.source ? (Array.isArray(params.source) ? params.source : [params.source]) : []);
+  if (sources.length > 0) {
+    searchParams.set('source', sources.join(','));
+  }
+
+  const apps: string[] = params.apps && params.apps.length > 0
+    ? params.apps
+    : (params.app_name ? (Array.isArray(params.app_name) ? params.app_name : [params.app_name]) : []);
+  if (apps.length > 0) {
+    searchParams.set('app_name', apps.join(','));
+  }
   if (params.from) searchParams.set('from', params.from);
   if (params.to) searchParams.set('to', params.to);
   if (params.limit !== undefined) searchParams.set('limit', params.limit.toString());
@@ -27,4 +38,8 @@ export async function fetchLogs(params: LogFilterParams = {}): Promise<LogListRe
 
 export async function fetchLogContext(id: number, lines: number = 10): Promise<{ target_id: number; logs: LogEntry[] }> {
   return apiFetch<{ target_id: number; logs: LogEntry[] }>(`/api/logs/${id}/context?lines=${lines}`);
+}
+
+export async function fetchLogFacets(): Promise<import('../types.ts').LogFacetsResponse> {
+  return apiFetch<import('../types.ts').LogFacetsResponse>('/api/logs/facets');
 }

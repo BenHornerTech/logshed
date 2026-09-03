@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user, run_db_query
 from app.core.sse import sse_manager
-from app.models import LogContextResponse, LogEntry, LogListResponse
+from app.models import LogContextResponse, LogEntry, LogFacetsResponse, LogListResponse
 
 import sqlite3
 
@@ -106,11 +106,29 @@ def _sanitize_fts_query(query_str: str) -> str:
     return _escape_fts_tokens(query_str)
 
 
+def _parse_multi_values(values: Optional[list[str]]) -> list[str]:
+    """
+    Parse query parameters that may be passed repeatedly or comma-separated.
+    e.g. ['pve1,pve2', 'pve3'] -> ['pve1', 'pve2', 'pve3']
+    """
+    if not values:
+        return []
+    result: list[str] = []
+    for item in values:
+        if not item:
+            continue
+        for part in item.split(","):
+            part = part.strip()
+            if part and part not in result:
+                result.append(part)
+    return result
+
+
 @router.get("", response_model=LogListResponse)
 async def list_logs(
     query: Optional[str] = Query(None, description="Full-text search query (FTS5)"),
-    source: Optional[str] = Query(None, description="Filter by source_alias or source_ip"),
-    app_name: Optional[str] = Query(None, description="Filter by application name"),
+    source: Optional[list[str]] = Query(None, description="Filter by source_alias or source_ip (multi-value supported)"),
+    app_name: Optional[list[str]] = Query(None, description="Filter by application name (multi-value supported)"),
     severity_max: Optional[int] = Query(None, ge=0, le=7, description="Max severity (0-7, lower is more severe)"),
     from_: Optional[str] = Query(None, alias="from", description="ISO datetime start filter"),
     to: Optional[str] = Query(None, description="ISO datetime end filter"),
@@ -136,13 +154,19 @@ async def list_logs(
             where_clauses.append("logs_fts MATCH :fts_term")
             params["fts_term"] = fts_term
 
-        if source:
-            where_clauses.append("(logs.source_alias = :source OR logs.source_ip = :source)")
-            params["source"] = source
+        parsed_sources = _parse_multi_values(source)
+        if parsed_sources:
+            src_placeholders = ", ".join(f":src_{i}" for i in range(len(parsed_sources)))
+            where_clauses.append(f"(logs.source_alias IN ({src_placeholders}) OR logs.source_ip IN ({src_placeholders}))")
+            for i, s in enumerate(parsed_sources):
+                params[f"src_{i}"] = s
 
-        if app_name:
-            where_clauses.append("logs.app_name = :app_name")
-            params["app_name"] = app_name
+        parsed_apps = _parse_multi_values(app_name)
+        if parsed_apps:
+            app_placeholders = ", ".join(f":app_{i}" for i in range(len(parsed_apps)))
+            where_clauses.append(f"logs.app_name IN ({app_placeholders})")
+            for i, a in enumerate(parsed_apps):
+                params[f"app_{i}"] = a
 
         if severity_max is not None:
             where_clauses.append("logs.severity <= :severity_max")
@@ -217,14 +241,17 @@ async def list_logs(
 async def stream_logs(
     request: Request,
     severity_max: Optional[int] = Query(None, ge=0, le=7),
-    source: Optional[str] = Query(None),
-    app_name: Optional[str] = Query(None),
+    source: Optional[list[str]] = Query(None, description="Filter by source_alias or source_ip (multi-value supported)"),
+    app_name: Optional[list[str]] = Query(None, description="Filter by application name (multi-value supported)"),
     max_events: Optional[int] = Query(None, description="Max events to stream before closing (useful for tests/bounded streams)"),
     user: dict = Depends(get_current_user),
 ):
     """
     Server-Sent Events (SSE) endpoint to stream real-time incoming logs to the browser.
     """
+    parsed_sources = set(_parse_multi_values(source))
+    parsed_apps = set(_parse_multi_values(app_name))
+
     queue = await sse_manager.subscribe()
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -242,9 +269,13 @@ async def stream_logs(
                     # Apply optional stream filters
                     if severity_max is not None and entry.get("severity", 6) > severity_max:
                         continue
-                    if source and entry.get("source_alias") != source and entry.get("source_ip") != source:
+                    if (
+                        parsed_sources
+                        and entry.get("source_alias") not in parsed_sources
+                        and entry.get("source_ip") not in parsed_sources
+                    ):
                         continue
-                    if app_name and entry.get("app_name") != app_name:
+                    if parsed_apps and entry.get("app_name") not in parsed_apps:
                         continue
 
                     data = json.dumps(entry)
@@ -268,6 +299,88 @@ async def stream_logs(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/facets", response_model=LogFacetsResponse)
+async def get_log_facets(
+    user: dict = Depends(get_current_user),
+) -> LogFacetsResponse:
+    """
+    Fetch all distinct sources, apps, and their bidirectional mappings
+    across the entire database, including configured host aliases.
+    """
+    def _fetch_facets(conn):
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT source_alias, source_ip, app_name
+            FROM logs
+            WHERE (source_alias != '' OR source_ip != '') AND app_name != ''
+            """
+        )
+        rows = cursor.fetchall()
+
+        cursor.execute("SELECT ip, alias FROM host_aliases")
+        alias_rows = cursor.fetchall()
+        aliases_map = {r["ip"]: r["alias"] for r in alias_rows if r["alias"]}
+
+        sources_set = set()
+        apps_set = set()
+        host_to_apps: dict[str, set[str]] = {}
+        app_to_hosts: dict[str, set[str]] = {}
+        # Add all configured aliases
+        for alias in aliases_map.values():
+            if alias:
+                sources_set.add(alias)
+                if alias not in host_to_apps:
+                    host_to_apps[alias] = set()
+
+        for r in rows:
+            raw_alias = r["source_alias"]
+            ip = r["source_ip"]
+            app = r["app_name"]
+
+            # Canonical host resolution:
+            # If the IP is aliased, always use the alias.
+            # Otherwise use raw_alias (which is already the IP for unaliased hosts).
+            canonical_host = aliases_map.get(ip) or raw_alias or ip
+            if not canonical_host:
+                continue
+
+            sources_set.add(canonical_host)
+
+            if app:
+                apps_set.add(app)
+                if canonical_host not in host_to_apps:
+                    host_to_apps[canonical_host] = set()
+                host_to_apps[canonical_host].add(app)
+
+                if app not in app_to_hosts:
+                    app_to_hosts[app] = set()
+                app_to_hosts[app].add(canonical_host)
+
+        # Safety: Ensure no IP that has an alias remains in sources_set or host_to_apps
+        for ip, alias in aliases_map.items():
+            if ip in sources_set:
+                sources_set.remove(ip)
+            if ip in host_to_apps:
+                if alias in host_to_apps:
+                    host_to_apps[alias].update(host_to_apps[ip])
+                del host_to_apps[ip]
+            for app, hosts in app_to_hosts.items():
+                if ip in hosts:
+                    hosts.remove(ip)
+                    hosts.add(alias)
+
+        return {
+            "sources": sorted(sources_set),
+            "apps": sorted(apps_set),
+            "host_to_apps": {h: sorted(apps) for h, apps in sorted(host_to_apps.items())},
+            "app_to_hosts": {a: sorted(hosts) for a, hosts in sorted(app_to_hosts.items())},
+        }
+
+    data = await run_db_query(_fetch_facets)
+    return LogFacetsResponse(**data)
 
 
 @router.get("/{id}/context", response_model=LogContextResponse)

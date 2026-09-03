@@ -15,7 +15,7 @@ import { LogEntry, LogFilterParams } from '../../types.ts';
 import { SeverityBadge } from '../common/SeverityBadge.tsx';
 import { LogSearchBar } from './LogSearchBar.tsx';
 import { LogDetailModal } from './LogDetailModal.tsx';
-import { fetchLogs } from '../../api/logs.ts';
+import { fetchLogs, fetchLogFacets } from '../../api/logs.ts';
 
 export function formatLocalTimestamp(ts: string): string {
   if (!ts) return '';
@@ -100,6 +100,16 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     loadInitialLogs();
   }, [loadInitialLogs]);
 
+  const sourcesKey = useMemo(() => {
+    const s = filters.sources || (filters.source ? (Array.isArray(filters.source) ? filters.source : [filters.source]) : []);
+    return s.join(',');
+  }, [filters.sources, filters.source]);
+
+  const appsKey = useMemo(() => {
+    const a = filters.apps || (filters.app_name ? (Array.isArray(filters.app_name) ? filters.app_name : [filters.app_name]) : []);
+    return a.join(',');
+  }, [filters.apps, filters.app_name]);
+
   // Connect to SSE stream
   useEffect(() => {
     if (eventSourceRef.current) {
@@ -108,8 +118,8 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
     const params = new URLSearchParams();
     if (filters.severity_max !== undefined) params.set('severity_max', filters.severity_max.toString());
-    if (filters.source) params.set('source', filters.source);
-    if (filters.app_name) params.set('app_name', filters.app_name);
+    if (sourcesKey) params.set('source', sourcesKey);
+    if (appsKey) params.set('app_name', appsKey);
 
     const streamUrl = `/api/logs/stream${params.toString() ? `?${params.toString()}` : ''}`;
     const es = new EventSource(streamUrl);
@@ -148,7 +158,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       es.close();
       eventSourceRef.current = null;
     };
-  }, [filters.severity_max, filters.source, filters.app_name]);
+  }, [filters.severity_max, sourcesKey, appsKey]);
 
   // Scroll detection to pause auto-scroll when scrolling down
   const handleScroll = () => {
@@ -188,19 +198,299 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     overscan: 25,
   });
 
-  // Extract distinct sources & app names for filter shortcuts
-  const { distinctSources, distinctApps } = useMemo(() => {
-    const sources = new Set<string>();
-    const apps = new Set<string>();
-    for (const log of logs) {
-      if (log.source_alias) sources.add(log.source_alias);
-      if (log.app_name) apps.add(log.app_name);
+  // Accumulate permanent set of known hosts and apps so filter choices never vanish (Item #32 & Fix 2-Click Issue)
+  const [accumulatedSources, setAccumulatedSources] = useState<string[]>([]);
+  const [accumulatedApps, setAccumulatedApps] = useState<string[]>([]);
+
+  useEffect(() => {
+    setAccumulatedSources((prev) => {
+      const aliasedIps = new Set(Object.keys(knownAliases || {}));
+      const set = new Set<string>();
+
+      prev.forEach((s) => {
+        if (knownAliases && knownAliases[s]) {
+          set.add(knownAliases[s]);
+        } else if (!aliasedIps.has(s)) {
+          set.add(s);
+        }
+      });
+
+      if (knownAliases) {
+        Object.values(knownAliases).forEach((alias) => {
+          if (alias && alias.trim()) set.add(alias.trim());
+        });
+      }
+
+      logs.forEach((log) => {
+        const canonical = (log.source_ip && knownAliases && knownAliases[log.source_ip]) || log.source_alias;
+        if (canonical && !aliasedIps.has(canonical)) {
+          set.add(canonical);
+        }
+      });
+
+      const next = Array.from(set).sort();
+      if (next.length === prev.length && next.every((v, i) => v === prev[i])) {
+        return prev;
+      }
+      return next;
+    });
+
+    setAccumulatedApps((prev) => {
+      const set = new Set(prev);
+      logs.forEach((log) => {
+        if (log.app_name) set.add(log.app_name);
+      });
+      const next = Array.from(set).sort();
+      if (next.length === prev.length && next.every((v, i) => v === prev[i])) {
+        return prev;
+      }
+      return next;
+    });
+  }, [logs, knownAliases]);
+
+  // Merge accumulated sources & apps with current logs (ensuring all discovered items remain selectable)
+  const allAvailableSources = useMemo(() => {
+    const aliasedIps = new Set(Object.keys(knownAliases || {}));
+    const set = new Set<string>();
+
+    accumulatedSources.forEach((src) => {
+      if (knownAliases && knownAliases[src]) {
+        set.add(knownAliases[src]);
+      } else if (!aliasedIps.has(src)) {
+        set.add(src);
+      }
+    });
+
+    logs.forEach((log) => {
+      const canonical = (log.source_ip && knownAliases && knownAliases[log.source_ip]) || log.source_alias;
+      if (canonical && !aliasedIps.has(canonical)) {
+        set.add(canonical);
+      }
+    });
+
+    if (knownAliases) {
+      Object.values(knownAliases).forEach((alias) => {
+        if (alias && alias.trim()) set.add(alias.trim());
+      });
     }
-    return {
-      distinctSources: Array.from(sources),
-      distinctApps: Array.from(apps),
-    };
-  }, [logs]);
+
+    return Array.from(set).sort();
+  }, [accumulatedSources, logs, knownAliases]);
+
+  const allAvailableApps = useMemo(() => {
+    const set = new Set(accumulatedApps);
+    logs.forEach((log) => {
+      if (log.app_name) set.add(log.app_name);
+    });
+    return Array.from(set).sort();
+  }, [accumulatedApps, logs]);
+
+  // Accumulate bidirectional mappings: host -> apps AND app -> hosts
+  const [hostToAppsMap, setHostToAppsMap] = useState<Record<string, string[]>>({});
+  const [appToHostsMap, setAppToHostsMap] = useState<Record<string, string[]>>({});
+
+  // Fetch full database facets on mount so all historical hosts and apps are available
+  useEffect(() => {
+    fetchLogFacets()
+      .then((facets) => {
+        if (facets.sources && facets.sources.length > 0) {
+          setAccumulatedSources((prev) => Array.from(new Set([...prev, ...facets.sources])).sort());
+        }
+        if (facets.apps && facets.apps.length > 0) {
+          setAccumulatedApps((prev) => Array.from(new Set([...prev, ...facets.apps])).sort());
+        }
+        if (facets.host_to_apps) {
+          setHostToAppsMap((prev) => {
+            const next = { ...facets.host_to_apps };
+            Object.entries(prev).forEach(([h, apps]) => {
+              if (!next[h]) next[h] = apps;
+              else next[h] = Array.from(new Set([...next[h], ...apps])).sort();
+            });
+            return next;
+          });
+        }
+        if (facets.app_to_hosts) {
+          setAppToHostsMap((prev) => {
+            const next = { ...facets.app_to_hosts };
+            Object.entries(prev).forEach(([a, hosts]) => {
+              if (!next[a]) next[a] = hosts;
+              else next[a] = Array.from(new Set([...next[a], ...hosts])).sort();
+            });
+            return next;
+          });
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load database facets', err);
+      });
+  }, []);
+
+  useEffect(() => {
+    setHostToAppsMap((prev) => {
+      const nextMap: Record<string, Set<string>> = {};
+      Object.entries(prev).forEach(([h, apps]) => {
+        nextMap[h] = new Set(apps);
+      });
+      logs.forEach((l) => {
+        if (l.app_name) {
+          const canonicalHost = (l.source_ip && knownAliases && knownAliases[l.source_ip]) || l.source_alias || l.source_ip;
+          if (canonicalHost) {
+            if (!nextMap[canonicalHost]) nextMap[canonicalHost] = new Set();
+            nextMap[canonicalHost].add(l.app_name);
+          }
+        }
+      });
+      if (knownAliases) {
+        Object.entries(knownAliases).forEach(([ip, alias]) => {
+          if (ip && alias) {
+            if (nextMap[ip]) {
+              if (!nextMap[alias]) nextMap[alias] = new Set();
+              nextMap[ip].forEach((a) => nextMap[alias].add(a));
+              delete nextMap[ip];
+            }
+          }
+        });
+      }
+      const result: Record<string, string[]> = {};
+      let changed = false;
+      const allKeys = Object.keys(nextMap);
+      if (allKeys.length !== Object.keys(prev).length) changed = true;
+      for (const k of allKeys) {
+        result[k] = Array.from(nextMap[k]).sort();
+        if (!prev[k] || prev[k].length !== result[k].length) {
+          changed = true;
+        }
+      }
+      return changed ? result : prev;
+    });
+
+    setAppToHostsMap((prev) => {
+      const nextMap: Record<string, Set<string>> = {};
+      Object.entries(prev).forEach(([app, hosts]) => {
+        nextMap[app] = new Set(hosts);
+      });
+      logs.forEach((l) => {
+        if (l.app_name) {
+          const canonicalHost = (l.source_ip && knownAliases && knownAliases[l.source_ip]) || l.source_alias || l.source_ip;
+          if (canonicalHost) {
+            if (!nextMap[l.app_name]) nextMap[l.app_name] = new Set();
+            nextMap[l.app_name].add(canonicalHost);
+          }
+        }
+      });
+      if (knownAliases) {
+        Object.entries(knownAliases).forEach(([ip, alias]) => {
+          if (ip && alias) {
+            Object.keys(nextMap).forEach((app) => {
+              if (nextMap[app].has(ip)) {
+                nextMap[app].delete(ip);
+                nextMap[app].add(alias);
+              }
+            });
+          }
+        });
+      }
+      const result: Record<string, string[]> = {};
+      let changed = false;
+      const allKeys = Object.keys(nextMap);
+      if (allKeys.length !== Object.keys(prev).length) changed = true;
+      for (const k of allKeys) {
+        result[k] = Array.from(nextMap[k]).sort();
+        if (!prev[k] || prev[k].length !== result[k].length) {
+          changed = true;
+        }
+      }
+      return changed ? result : prev;
+    });
+  }, [logs, knownAliases]);
+
+  const activeSources: string[] = useMemo(() => {
+    if (filters.sources && Array.isArray(filters.sources)) return filters.sources;
+    if (filters.source) {
+      if (Array.isArray(filters.source)) return filters.source;
+      return filters.source.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    return [];
+  }, [filters.sources, filters.source]);
+
+  const activeApps: string[] = useMemo(() => {
+    if (filters.apps && Array.isArray(filters.apps)) return filters.apps;
+    if (filters.app_name) {
+      if (Array.isArray(filters.app_name)) return filters.app_name;
+      return filters.app_name.split(',').map((a) => a.trim()).filter(Boolean);
+    }
+    return [];
+  }, [filters.apps, filters.app_name]);
+
+  const toggleQuickSource = (src: string) => {
+    setFilters((prev) => {
+      const current = prev.sources || (prev.source ? (Array.isArray(prev.source) ? prev.source : [prev.source]) : []);
+      const exists = current.includes(src);
+      const next = exists ? current.filter((s) => s !== src) : [...current, src];
+      return {
+        ...prev,
+        sources: next,
+        source: next.length === 1 ? next[0] : (next.length > 1 ? next.join(',') : undefined),
+      };
+    });
+  };
+
+  const toggleQuickApp = (app: string) => {
+    setFilters((prev) => {
+      const current = prev.apps || (prev.app_name ? (Array.isArray(prev.app_name) ? prev.app_name : [prev.app_name]) : []);
+      const exists = current.includes(app);
+      const next = exists ? current.filter((a) => a !== app) : [...current, app];
+      return {
+        ...prev,
+        apps: next,
+        app_name: next.length === 1 ? next[0] : (next.length > 1 ? next.join(',') : undefined),
+      };
+    });
+  };
+
+  // Scope available apps to only those matching the selected host(s) if host(s) are chosen
+  const availableAppsForSelectedHosts = useMemo(() => {
+    if (activeSources.length === 0) {
+      return allAvailableApps;
+    }
+    const set = new Set<string>();
+    activeSources.forEach((src) => {
+      const apps = hostToAppsMap[src];
+      if (apps) {
+        apps.forEach((a) => set.add(a));
+      }
+    });
+    // Also check current buffer in case logs arrived matching active sources
+    logs.forEach((l) => {
+      if ((activeSources.includes(l.source_alias) || activeSources.includes(l.source_ip)) && l.app_name) {
+        set.add(l.app_name);
+      }
+    });
+    const result = Array.from(set).sort();
+    return result.length > 0 ? result : allAvailableApps;
+  }, [activeSources, allAvailableApps, hostToAppsMap, logs]);
+
+  // Scope available sources to only those hosting the selected app(s) if app(s) are chosen
+  const availableSourcesForSelectedApps = useMemo(() => {
+    if (activeApps.length === 0) {
+      return allAvailableSources;
+    }
+    const set = new Set<string>();
+    activeApps.forEach((app) => {
+      const hosts = appToHostsMap[app];
+      if (hosts) {
+        hosts.forEach((h) => set.add(h));
+      }
+    });
+    // Also check current buffer in case logs arrived matching active apps
+    logs.forEach((l) => {
+      if (activeApps.includes(l.app_name) && l.source_alias) {
+        set.add(l.source_alias);
+      }
+    });
+    const result = Array.from(set).sort();
+    return result.length > 0 ? result : allAvailableSources;
+  }, [activeApps, allAvailableSources, appToHostsMap, logs]);
 
   // Multi-select with strict same-host constraint and Shift-click range support
   const toggleSelectLog = (log: LogEntry, index: number, e: React.MouseEvent) => {
@@ -300,8 +590,8 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
           setFilters({});
           loadInitialLogs();
         }}
-        availableSources={distinctSources}
-        availableApps={distinctApps}
+        availableSources={availableSourcesForSelectedApps}
+        availableApps={availableAppsForSelectedHosts}
       />
 
       {/* Stream Controls & Filter Pills Bar */}
@@ -309,32 +599,38 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         {/* Left: Quick Filter Pills */}
         <div className="flex items-center gap-2 overflow-x-auto py-0.5">
           <span className="text-slate-400 font-medium text-[11px] shrink-0">Quick Filters:</span>
-          {distinctSources.slice(0, 6).map((src) => (
-            <button
-              key={src}
-              onClick={() => setFilters((prev) => ({ ...prev, source: prev.source === src ? undefined : src }))}
-              className={`px-2 py-0.5 rounded text-[11px] font-mono border transition ${
-                filters.source === src
-                  ? 'bg-accent-950 text-accent-300 border-accent-700 font-semibold'
-                  : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
-              }`}
-            >
-              {src}
-            </button>
-          ))}
-          {distinctApps.slice(0, 6).map((app) => (
-            <button
-              key={app}
-              onClick={() => setFilters((prev) => ({ ...prev, app_name: prev.app_name === app ? undefined : app }))}
-              className={`px-2 py-0.5 rounded text-[11px] font-mono border transition ${
-                filters.app_name === app
-                  ? 'bg-indigo-950 text-indigo-300 border-indigo-700 font-semibold'
-                  : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
-              }`}
-            >
-              {app}
-            </button>
-          ))}
+          {availableSourcesForSelectedApps.slice(0, 6).map((src) => {
+            const isSelected = activeSources.includes(src);
+            return (
+              <button
+                key={src}
+                onClick={() => toggleQuickSource(src)}
+                className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer ${
+                  isSelected
+                    ? 'bg-accent-950 text-accent-300 border-accent-700 font-semibold'
+                    : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
+                }`}
+              >
+                {src}
+              </button>
+            );
+          })}
+          {availableAppsForSelectedHosts.slice(0, 6).map((app) => {
+            const isSelected = activeApps.includes(app);
+            return (
+              <button
+                key={app}
+                onClick={() => toggleQuickApp(app)}
+                className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer ${
+                  isSelected
+                    ? 'bg-indigo-950 text-indigo-300 border-indigo-700 font-semibold'
+                    : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
+                }`}
+              >
+                {app}
+              </button>
+            );
+          })}
         </div>
 
         {/* Right: Stream State Controls */}

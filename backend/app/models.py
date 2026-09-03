@@ -73,6 +73,14 @@ class LogContextResponse(BaseModel):
     logs: list[LogEntry]
 
 
+class LogFacetsResponse(BaseModel):
+    """Distinct sources, apps, and bidirectional mappings across the database."""
+    sources: list[str]
+    apps: list[str]
+    host_to_apps: dict[str, list[str]]
+    app_to_hosts: dict[str, list[str]]
+
+
 # ---------------------------------------------------------------------------
 # Settings Models
 # ---------------------------------------------------------------------------
