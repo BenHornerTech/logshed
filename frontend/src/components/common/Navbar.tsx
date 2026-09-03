@@ -8,10 +8,15 @@ import { HealthResponse } from '../../types.ts';
 interface NavbarProps {
   activeTab: 'stream' | 'aliases' | 'settings';
   onTabChange: (tab: 'stream' | 'aliases' | 'settings') => void;
+  onSelectTab?: (tab: string) => void;
   isStreaming?: boolean;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ activeTab, onTabChange, isStreaming = false }) => {
+export const Navbar: React.FC<NavbarProps> = ({
+  activeTab,
+  onTabChange,
+  onSelectTab,
+}) => {
   const { logout } = useAuth();
   const [health, setHealth] = useState<HealthResponse | null>(null);
 
@@ -30,28 +35,37 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, onTabChange, isStream
     return () => clearInterval(interval);
   }, []);
 
+  const handleLogoClick = () => {
+    if (onSelectTab) {
+      onSelectTab('console');
+    }
+    onTabChange('stream');
+  };
+
   return (
     <header className="bg-dark-950 border-b border-dark-700 px-4 py-2 flex items-center justify-between select-none sticky top-0 z-30">
       {/* Brand & Status Indicator */}
       <div className="flex items-center space-x-4">
-        <div className="flex items-center space-x-2">
+        <div
+          onClick={handleLogoClick}
+          className="flex items-center space-x-2 cursor-pointer hover:opacity-80 transition-opacity"
+          title="Go to Console View"
+        >
           <LogShedLogo className="w-5 h-5 text-accent-500" />
           <span className="font-semibold tracking-wide text-slate-100 text-sm">
             LOG<span className="text-accent-500 font-mono">SHED</span>
           </span>
         </div>
 
-        {/* Live SSE Stream Pulse */}
-        <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-dark-900 border border-dark-700 text-xs font-mono">
-          <span className={`w-2 h-2 rounded-full ${isStreaming ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'}`} />
-          <span className="text-slate-300 text-[11px]">
-            {isStreaming ? 'LIVE' : 'IDLE'}
-          </span>
-        </div>
-
         {/* Ingestion & Queue Health */}
         {health && (
-          <div className="hidden md:flex items-center space-x-3 text-xs font-mono text-slate-400 border-l border-dark-700 pl-4">
+          <div className="hidden sm:flex items-center space-x-3 text-xs font-mono text-slate-400 border-l border-dark-700 pl-4">
+            <span title="Ingestion Rate">
+              Rate:{' '}
+              <span className="text-slate-200">
+                {(health.ingest_rate ?? 0).toFixed(1)} logs/s
+              </span>
+            </span>
             <span title="Queue Depth">
               Queue: <span className="text-slate-200">{health.queue_depth}</span>
             </span>

@@ -55,6 +55,7 @@ export interface HealthResponse {
   database: string;
   queue_depth: number;
   dropped_logs: number;
+  ingest_rate: number;
 }
 
 export interface PruneResponse {

@@ -125,6 +125,7 @@ class HealthResponse(BaseModel):
     db: str
     queue_depth: int
     dropped_logs: int
+    ingest_rate: float = 0.0
 
 
 class StorageMetricItem(BaseModel):

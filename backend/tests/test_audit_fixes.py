@@ -19,8 +19,13 @@ from app.core.config import get_cors_origins
 from app.core.migrations import get_connection, run_migrations
 from app.core import pipeline as pipeline_mod
 from app.core.pipeline import (
+    KeyedMultilineAssembler,
+    IngestionRateTracker,
     get_dropped_count,
+    get_ingest_rate,
     increment_dropped_count,
+    record_ingest,
+    reset_ingest_rate,
 )
 from app.core.security import (
     SESSION_COOKIE_NAME,
@@ -285,3 +290,100 @@ class TestL6WorkerBackoff:
             await task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+# ---------------------------------------------------------------------------
+# Ingestion Rate Tracking (Items #2 & #3)
+# ---------------------------------------------------------------------------
+class TestIngestionRateTracking:
+    def test_rate_calculation_rolling_window(self):
+        reset_ingest_rate()
+        assert get_ingest_rate() == 0.0
+
+        # Record 10 logs across window
+        record_ingest(10)
+        # 10 logs over 5s window = 2.0 logs/s
+        assert get_ingest_rate() == 2.0
+
+        record_ingest(15)
+        # 25 logs over 5s window = 5.0 logs/s
+        assert get_ingest_rate() == 5.0
+
+        reset_ingest_rate()
+        assert get_ingest_rate() == 0.0
+
+    def test_rate_tracker_window_pruning(self):
+        tracker = IngestionRateTracker(window_seconds=1.0)
+        tracker.record(10)
+        assert tracker.get_rate() == 10.0
+
+        # Simulate passage of time by manipulating sample timestamps
+        with tracker._lock:
+            old_time, count = tracker._samples.popleft()
+            tracker._samples.append((old_time - 2.0, count))
+
+        # After window has passed, rate should be 0.0
+        assert tracker.get_rate() == 0.0
+
+    def test_concurrent_ingest_recording(self):
+        reset_ingest_rate()
+        tracker = IngestionRateTracker(window_seconds=5.0)
+        num_threads = 10
+        records_per_thread = 20
+
+        def _worker():
+            for _ in range(records_per_thread):
+                tracker.record(5)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = [executor.submit(_worker) for _ in range(num_threads)]
+            concurrent.futures.wait(futures)
+
+        # 10 * 20 * 5 = 1000 logs / 5s = 200.0 logs/s
+        assert tracker.get_rate() == 200.0
+
+
+# ---------------------------------------------------------------------------
+# Graceful Docker Socket Fallback (Item #29)
+# ---------------------------------------------------------------------------
+class TestDockerSocketFallback:
+    @pytest.mark.asyncio
+    async def test_socket_not_found_fallback(self, monkeypatch, caplog):
+        import logging
+        caplog.set_level(logging.INFO)
+
+        # Ensure DOCKER_HOST points to default unix socket
+        monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+
+        # Mock os.path.exists to return False for /var/run/docker.sock
+        orig_exists = os.path.exists
+        def _mock_exists(path):
+            if path == "/var/run/docker.sock":
+                return False
+            return orig_exists(path)
+
+        monkeypatch.setattr(os.path, "exists", _mock_exists)
+
+        from app.collectors.docker_collector import DockerTailer
+        assembler = KeyedMultilineAssembler()
+        tailer = DockerTailer(assembler)
+
+        task = asyncio.create_task(tailer.run())
+        # Give event loop a cycle to run DockerTailer.run()
+        await asyncio.sleep(0.05)
+
+        # Verify informational log message
+        expected_msg = (
+            "Docker socket not found at /var/run/docker.sock. "
+            "Docker container tailing disabled; operating in syslog-only mode."
+        )
+        assert expected_msg in caplog.text
+
+        # Verify it is idling on cancel_event and didn't crash
+        assert not task.done()
+
+        # Stop tailer and ensure it cleans up
+        await tailer.stop()
+        await task
+        assert task.done()
+

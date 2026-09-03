@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, run_db_query
 from app.core.config import get_db_path
-from app.core.pipeline import get_dropped_count, get_queue
+from app.core.pipeline import get_dropped_count, get_ingest_rate, get_queue
 from app.models import HealthResponse, PruneResponse, StorageMetricItem, StorageOverviewResponse
 from app.services.retention import execute_prune_async
 from app.services.storage_metrics import sample_storage_metrics
@@ -18,7 +18,7 @@ router = APIRouter(tags=["System & Maintenance"])
 async def health_check() -> HealthResponse:
     """
     Container healthcheck endpoint.
-    Verifies SQLite connectivity, in-memory queue depth, and dropped log counter.
+    Verifies SQLite connectivity, in-memory queue depth, dropped log counter, and ingest rate.
     """
     def _ping_db(conn):
         cursor = conn.cursor()
@@ -34,6 +34,7 @@ async def health_check() -> HealthResponse:
     queue = get_queue()
     queue_depth = queue.qsize()
     dropped_count = get_dropped_count()
+    ingest_rate = get_ingest_rate()
 
     overall_status = "ok" if db_status == "ok" else "degraded"
 
@@ -42,6 +43,7 @@ async def health_check() -> HealthResponse:
         db=db_status,
         queue_depth=queue_depth,
         dropped_logs=dropped_count,
+        ingest_rate=ingest_rate,
     )
 
 

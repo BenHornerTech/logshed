@@ -288,6 +288,19 @@ class DockerTailer:
         """
         self._running = True
         self._cancel_event.clear()
+
+        base_url, uds_path = _parse_docker_host()
+        if uds_path == "/var/run/docker.sock" and not os.path.exists(uds_path):
+            logger.info(
+                "Docker socket not found at /var/run/docker.sock. "
+                "Docker container tailing disabled; operating in syslog-only mode."
+            )
+            try:
+                await self._cancel_event.wait()
+            except asyncio.CancelledError:
+                pass
+            return
+
         backoff = _INITIAL_BACKOFF
 
         while self._running:

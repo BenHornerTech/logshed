@@ -673,6 +673,9 @@ class TestSystemAndMaintenance:
         assert data["db"] == "ok"
         assert isinstance(data["queue_depth"], int)
         assert isinstance(data["dropped_logs"], int)
+        assert "ingest_rate" in data
+        assert isinstance(data["ingest_rate"], (int, float))
+        assert data["ingest_rate"] >= 0.0
 
     @pytest.mark.asyncio
     async def test_maintenance_prune_and_storage_metrics(

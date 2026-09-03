@@ -11,7 +11,7 @@ import time
 import traceback
 from typing import Optional
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from app.core.migrations import get_connection
 
@@ -105,6 +105,61 @@ def get_dropped_count() -> int:
     """Returns the total number of logs dropped due to queue overflow."""
     with _dropped_logs_lock:
         return _dropped_logs_total
+
+
+class IngestionRateTracker:
+    """
+    Thread-safe throughput counter calculating instantaneous ingestion rate
+    (logs per second) over a rolling window (default 5.0 seconds).
+    """
+    def __init__(self, window_seconds: float = 5.0):
+        self._window = window_seconds
+        self._samples: deque[tuple[float, int]] = deque()
+        self._lock = threading.Lock()
+
+    def record(self, count: int = 1) -> None:
+        """Record ingested log count at current monotonic timestamp."""
+        now = time.monotonic()
+        with self._lock:
+            self._samples.append((now, count))
+            self._prune(now)
+
+    def get_rate(self) -> float:
+        """Calculate logs per second over the rolling window."""
+        now = time.monotonic()
+        with self._lock:
+            self._prune(now)
+            total = sum(c for _, c in self._samples)
+            return round(total / self._window, 2)
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self._window
+        while self._samples and self._samples[0][0] < cutoff:
+            self._samples.popleft()
+
+    def reset(self) -> None:
+        """Clear all recorded samples."""
+        with self._lock:
+            self._samples.clear()
+
+
+_rate_tracker = IngestionRateTracker(window_seconds=5.0)
+
+
+def record_ingest(count: int = 1) -> None:
+    """Thread-safe recording of ingested logs."""
+    _rate_tracker.record(count)
+
+
+def get_ingest_rate() -> float:
+    """Returns the instantaneous ingestion rate (logs/sec) over the rolling 5-second window."""
+    return _rate_tracker.get_rate()
+
+
+def reset_ingest_rate() -> None:
+    """Resets the ingestion rate tracker (useful for tests)."""
+    _rate_tracker.reset()
+
 
 def _is_continuation(line: str) -> bool:
     """
@@ -260,6 +315,7 @@ class QueueConsumer:
             if batch:
                 try:
                     await asyncio.to_thread(self._insert_batch, batch)
+                    record_ingest(len(batch))
                     # Broadcast to SSE subscribers on the event loop thread
                     # (asyncio.Queue is NOT thread-safe, so this must not
                     # happen inside _insert_batch which runs in a worker thread)
