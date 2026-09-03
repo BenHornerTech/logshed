@@ -104,6 +104,6 @@ Thumbs.db
 
 # Logs & temp files
 *.log
-logs/
+/logs/
 tmp/
 temp/

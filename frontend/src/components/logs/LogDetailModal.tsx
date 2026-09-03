@@ -1,0 +1,211 @@
+import React, { useEffect, useState } from 'react';
+import { Sparkles, Copy, Check, Plus, Layers, Terminal } from 'lucide-react';
+import { LogEntry } from '../../types.ts';
+import { fetchLogContext } from '../../api/logs.ts';
+import { SeverityBadge } from '../common/SeverityBadge.tsx';
+import { SlideOver } from '../common/SlideOver.tsx';
+import { copyToClipboard } from '../../utils/clipboard.ts';
+
+interface LogDetailModalProps {
+  log: LogEntry | null;
+  isOpen: boolean;
+  onClose: () => void;
+  onExplainWithAi: (log: LogEntry) => void;
+  onAddAlias?: (ip: string) => void;
+  isHostAliased?: boolean;
+}
+
+export const LogDetailModal: React.FC<LogDetailModalProps> = ({
+  log,
+  isOpen,
+  onClose,
+  onExplainWithAi,
+  onAddAlias,
+  isHostAliased = true,
+}) => {
+  const [copiedRaw, setCopiedRaw] = useState(false);
+  const [copiedMsg, setCopiedMsg] = useState(false);
+  const [contextLogs, setContextLogs] = useState<LogEntry[]>([]);
+  const [isLoadingContext, setIsLoadingContext] = useState(false);
+  const [showContext, setShowContext] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && log && showContext) {
+      loadContext(log.id);
+    }
+  }, [isOpen, log, showContext]);
+
+  const loadContext = async (logId: number) => {
+    try {
+      setIsLoadingContext(true);
+      const res = await fetchLogContext(logId, 10);
+      setContextLogs(res.logs);
+    } catch (err) {
+      console.error('Failed to load log context', err);
+    } finally {
+      setIsLoadingContext(false);
+    }
+  };
+
+  if (!log) return null;
+
+  const handleCopyRaw = async () => {
+    const ok = await copyToClipboard(log.raw);
+    if (ok) {
+      setCopiedRaw(true);
+      setTimeout(() => setCopiedRaw(false), 2000);
+    }
+  };
+
+  const handleCopyMsg = async () => {
+    const ok = await copyToClipboard(log.message);
+    if (ok) {
+      setCopiedMsg(true);
+      setTimeout(() => setCopiedMsg(false), 2000);
+    }
+  };
+
+  return (
+    <SlideOver
+      isOpen={isOpen}
+      onClose={onClose}
+      title={`Log Record #${log.id} - ${log.source_alias}`}
+      width="max-w-4xl"
+    >
+      <div className="space-y-4 text-xs font-sans">
+        {/* Action Header */}
+        <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-dark-950 rounded-lg border border-dark-700">
+          <div className="flex items-center gap-2">
+            <SeverityBadge severity={log.severity} />
+            <span className="font-mono text-slate-300 font-medium">{log.app_name}</span>
+            <span className="text-slate-500">•</span>
+            <span className="font-mono text-slate-400">{log.source_alias}</span>
+            <span className="text-slate-500">({log.source_ip})</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {!isHostAliased && onAddAlias && (
+              <button
+                onClick={() => onAddAlias(log.source_ip)}
+                className="flex items-center gap-1 px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded transition font-medium"
+              >
+                <Plus className="w-3.5 h-3.5 text-accent-400" />
+                <span>Add Host Alias</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => onExplainWithAi(log)}
+              className="flex items-center gap-1.5 px-3 py-1 bg-accent-600 hover:bg-accent-500 text-white rounded font-medium transition shadow-xs"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Explain with AI</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Structured Metadata Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <div className="bg-dark-950 p-2.5 rounded border border-dark-700">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">Timestamp</span>
+            <span className="font-mono text-slate-200">{log.timestamp}</span>
+          </div>
+          <div className="bg-dark-950 p-2.5 rounded border border-dark-700">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">Received At</span>
+            <span className="font-mono text-slate-200">{log.received_at}</span>
+          </div>
+          <div className="bg-dark-950 p-2.5 rounded border border-dark-700">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">Facility</span>
+            <span className="font-mono text-slate-200">{log.facility}</span>
+          </div>
+          <div className="bg-dark-950 p-2.5 rounded border border-dark-700">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">Severity Code</span>
+            <span className="font-mono text-slate-200">{log.severity}</span>
+          </div>
+        </div>
+
+        {/* Formatted Message Box */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1">
+              <Terminal className="w-3.5 h-3.5 text-slate-400" />
+              <span>Message Payload</span>
+            </span>
+            <button
+              onClick={handleCopyMsg}
+              className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition"
+            >
+              {copiedMsg ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+              <span>{copiedMsg ? 'Copied' : 'Copy Message'}</span>
+            </button>
+          </div>
+          <div className="bg-dark-950 border border-dark-700 rounded-lg p-3 font-mono text-slate-200 text-xs whitespace-pre-wrap break-all select-text max-h-60 overflow-y-auto">
+            {/* Raw text element without dangerouslySetInnerHTML */}
+            {log.message}
+          </div>
+        </div>
+
+        {/* Raw Syslog Envelope */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">Raw Syslog Packet</span>
+            <button
+              onClick={handleCopyRaw}
+              className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition"
+            >
+              {copiedRaw ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+              <span>{copiedRaw ? 'Copied' : 'Copy Raw'}</span>
+            </button>
+          </div>
+          <div className="bg-dark-950 border border-dark-700 rounded-lg p-3 font-mono text-slate-400 text-[11px] whitespace-pre-wrap break-all select-text max-h-36 overflow-y-auto">
+            {log.raw}
+          </div>
+        </div>
+
+        {/* Surrounding Context Inspector */}
+        <div className="pt-2 border-t border-dark-800">
+          <div className="flex items-center justify-between mb-2">
+            <button
+              onClick={() => setShowContext(!showContext)}
+              className="flex items-center gap-1.5 font-medium text-slate-300 hover:text-accent-400 transition"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>{showContext ? 'Hide Surrounding Context' : 'Load Surrounding Context (±10 Lines)'}</span>
+            </button>
+          </div>
+
+          {showContext && (
+            <div className="bg-dark-950 border border-dark-700 rounded-lg overflow-hidden">
+              {isLoadingContext ? (
+                <div className="p-4 text-center text-slate-400 font-mono">Loading surrounding context...</div>
+              ) : contextLogs.length === 0 ? (
+                <div className="p-4 text-center text-slate-500 font-mono">No surrounding logs found.</div>
+              ) : (
+                <div className="font-mono text-[11px] divide-y divide-dark-800 max-h-80 overflow-y-auto">
+                  {contextLogs.map((ctxLog) => {
+                    const isTarget = ctxLog.id === log.id;
+                    return (
+                      <div
+                        key={ctxLog.id}
+                        className={`p-2 flex items-start gap-2 ${
+                          isTarget ? 'bg-accent-950/40 border-l-2 border-accent-500' : 'hover:bg-dark-900/50'
+                        }`}
+                      >
+                        <span className="text-slate-500 shrink-0 select-none">#{ctxLog.id}</span>
+                        <span className="text-slate-400 shrink-0 select-none">{ctxLog.timestamp.slice(11, 19)}</span>
+                        <SeverityBadge severity={ctxLog.severity} className="shrink-0" />
+                        <span className={`break-all ${isTarget ? 'text-slate-100 font-semibold' : 'text-slate-300'}`}>
+                          {ctxLog.message}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </SlideOver>
+  );
+};
