@@ -1,5 +1,5 @@
 """
-Pydantic v2 schemas and models for Homelab Log Hub API.
+Pydantic v2 schemas and models for LogShed API.
 """
 
 from datetime import datetime

@@ -1,5 +1,5 @@
 """
-Log querying, streaming (SSE), and context API endpoints for Homelab Log Hub.
+Log querying, streaming (SSE), and context API endpoints for LogShed.
 """
 
 import asyncio

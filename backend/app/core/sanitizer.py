@@ -1,5 +1,5 @@
 """
-On-demand secret sanitizer for Homelab Log Hub.
+On-demand secret sanitizer for LogShed.
 
 This module provides regex-based scrubbing of sensitive tokens, passwords,
 API keys, and credentials from log text before it is dispatched to an

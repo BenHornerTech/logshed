@@ -1,5 +1,5 @@
 """
-Phase 1 verification tests for Homelab Log Hub.
+Phase 1 verification tests for LogShed.
 
 Covers:
   - RFC 3164 / RFC 5424 syslog parsing

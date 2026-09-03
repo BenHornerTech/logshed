@@ -1,5 +1,5 @@
 """
-Authentication API endpoints for Homelab Log Hub.
+Authentication API endpoints for LogShed.
 Provides setup lockout, Argon2id verification, rate-limited login, and session cookies.
 """
 

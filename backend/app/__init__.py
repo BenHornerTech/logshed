@@ -1,1 +1,1 @@
-"""Homelab Log Hub Backend Application Package."""
+"""LogShed Backend Application Package."""

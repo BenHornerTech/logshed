@@ -1,5 +1,5 @@
 """
-Log retention pruning and database optimization service for Homelab Log Hub.
+Log retention pruning and database optimization service for LogShed.
 """
 
 import asyncio

@@ -1,5 +1,5 @@
 """
-Phase 4 Verification Test Suite for Homelab Log Hub.
+Phase 4 Verification Test Suite for LogShed.
 Tests FastAPI SPA static serving, AI preview/analyze/audit endpoints, same-host constraints, and password changing.
 """
 
@@ -40,7 +40,7 @@ def reset_globals(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("DB_PATH", str(db_file))
     monkeypatch.setenv("SECRET_KEY_PATH", str(key_file))
-    monkeypatch.delenv("LOG_HUB_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LOGSHED_SECRET_KEY", raising=False)
 
     run_migrations(db_file)
     get_or_create_master_key(key_file)

@@ -1,5 +1,5 @@
 """
-Phase 3 verification tests for Homelab Log Hub.
+Phase 3 verification tests for LogShed.
 
 Covers:
   - /api/auth/setup: first-run creation, lockout with 403 on subsequent calls, session cookie.
@@ -63,7 +63,7 @@ def reset_globals(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("DB_PATH", str(db_file))
     monkeypatch.setenv("SECRET_KEY_PATH", str(key_file))
-    monkeypatch.delenv("LOG_HUB_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LOGSHED_SECRET_KEY", raising=False)
 
     run_migrations(db_file)
     get_or_create_master_key(key_file)
@@ -300,7 +300,7 @@ class TestEncryptionAndKeyManagement:
     def test_secret_key_environment_variable_override(self, monkeypatch):
         reset_crypto_cache()
         override_key = "custom_super_secret_override_key_12345"
-        monkeypatch.setenv("LOG_HUB_SECRET_KEY", override_key)
+        monkeypatch.setenv("LOGSHED_SECRET_KEY", override_key)
 
         key = get_or_create_master_key()
         assert key is not None

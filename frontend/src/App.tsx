@@ -8,7 +8,7 @@ import { HostAliasManager } from './components/aliases/HostAliasManager.tsx';
 import { SettingsPanel } from './components/settings/SettingsPanel.tsx';
 import { AiAnalysisModal } from './components/ai/AiAnalysisModal.tsx';
 import { LogEntry } from './types.ts';
-import { Activity } from 'lucide-react';
+import { LogShedLogo } from './components/common/LogShedLogo.tsx';
 
 export const App: React.FC = () => {
   const { isAuthenticated, setupRequired, isLoading } = useAuth();
@@ -19,8 +19,8 @@ export const App: React.FC = () => {
   if (isLoading) {
     return (
       <div className="min-h-screen bg-dark-950 flex flex-col items-center justify-center text-slate-400 font-mono text-xs space-y-3">
-        <Activity className="w-8 h-8 text-accent-500 animate-pulse" />
-        <span>Loading Homelab Log Hub...</span>
+        <LogShedLogo className="w-8 h-8 text-accent-500 animate-pulse" />
+        <span>Loading LogShed...</span>
       </div>
     );
   }

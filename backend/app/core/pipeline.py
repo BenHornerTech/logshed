@@ -1,5 +1,5 @@
 """
-Core log ingestion pipeline components for Homelab Log Hub.
+Core log ingestion pipeline components for LogShed.
 Provides the shared queue, multiline assembly, and SQLite batch consumer.
 """
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class InternalLogHandler(logging.Handler):
     """
     Python logging handler that captures internal application warnings and errors
-    and feeds them directly into the Log Hub ingestion pipeline.
+    and feeds them directly into the LogShed ingestion pipeline.
     Ignores noisy HTTP access logs to prevent self-referential loops.
     """
     IGNORED_LOGGERS = {
@@ -57,8 +57,8 @@ class InternalLogHandler(logging.Handler):
             "timestamp": now_iso,
             "received_at": now_iso,
             "source_ip": "127.0.0.1",
-            "source_alias": "homelab-log-hub",
-            "app_name": f"log-hub/{app_subname}",
+            "source_alias": "logshed",
+            "app_name": f"logshed/{app_subname}",
             "facility": 1,
             "severity": severity,
             "message": msg,

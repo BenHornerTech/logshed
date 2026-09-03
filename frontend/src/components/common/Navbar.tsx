@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, Server, Settings, LogOut, Radio, RefreshCw } from 'lucide-react';
+import { Server, Settings, LogOut, Radio, RefreshCw } from 'lucide-react';
+import { LogShedLogo } from './LogShedLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { fetchHealth } from '../../api/system.ts';
 import { HealthResponse } from '../../types.ts';
@@ -34,9 +35,9 @@ export const Navbar: React.FC<NavbarProps> = ({ activeTab, onTabChange, isStream
       {/* Brand & Status Indicator */}
       <div className="flex items-center space-x-4">
         <div className="flex items-center space-x-2">
-          <Activity className="w-5 h-5 text-accent-500" />
+          <LogShedLogo className="w-5 h-5 text-accent-500" />
           <span className="font-semibold tracking-wide text-slate-100 text-sm">
-            HOMELAB <span className="text-accent-500 font-mono">LOG HUB</span>
+            LOG<span className="text-accent-500 font-mono">SHED</span>
           </span>
         </div>
 

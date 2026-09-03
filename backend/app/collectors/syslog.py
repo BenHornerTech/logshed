@@ -1,5 +1,5 @@
 """
-Syslog collector module for Homelab Log Hub.
+Syslog collector module for LogShed.
 Supports UDP and TCP on port 1514, parsing RFC 3164 and RFC 5424.
 """
 

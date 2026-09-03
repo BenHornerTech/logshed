@@ -1,5 +1,5 @@
 """
-Application configuration for Homelab Log Hub.
+Application configuration for LogShed.
 Manages environment variables, filesystem paths, and defaults.
 """
 
@@ -27,7 +27,7 @@ def get_secret_key_path() -> Path:
 
 def get_secret_key_override() -> Optional[str]:
     """Returns the secret key override from environment if provided."""
-    return os.environ.get("LOG_HUB_SECRET_KEY")
+    return os.environ.get("LOGSHED_SECRET_KEY")
 
 def get_port() -> int:
     """Returns the web server listening port."""

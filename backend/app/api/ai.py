@@ -1,5 +1,5 @@
 """
-AI Preview, Analysis, and Audit Log API endpoints for Homelab Log Hub.
+AI Preview, Analysis, and Audit Log API endpoints for LogShed.
 """
 
 import datetime

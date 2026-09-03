@@ -1,5 +1,5 @@
 """
-Lightweight SQLite migration runner for Homelab Log Hub.
+Lightweight SQLite migration runner for LogShed.
 
 This module provides a simple mechanism to manage SQLite database schema versions
 using `PRAGMA user_version`. It ensures that database schemas are initialized

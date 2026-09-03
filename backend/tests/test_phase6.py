@@ -49,7 +49,7 @@ class TestUnraidTemplate:
         root = tree.getroot()
 
         name = root.find("Name")
-        assert name is not None and name.text == "homelab-log-hub"
+        assert name is not None and name.text == "logshed"
 
         network = root.find("Network")
         assert network is not None and network.text == "br0", "Network must be set to br0 for dedicated IP support"
@@ -83,7 +83,7 @@ class TestUnraidTemplate:
 
         data_path = next((p for p in paths if p.attrib.get("Target") == "/data"), None)
         assert data_path is not None, "Path /data mapping missing"
-        assert data_path.attrib.get("Default") == "/mnt/user/appdata/homelab-log-hub"
+        assert data_path.attrib.get("Default") == "/mnt/user/appdata/logshed"
         assert data_path.attrib.get("Mode") == "rw"
 
         sock_path = next((p for p in paths if p.attrib.get("Target") == "/var/run/docker.sock"), None)
@@ -203,7 +203,7 @@ def docker_available():
 
 @pytest.fixture(scope="module")
 def built_image(docker_available):
-    image_name = "homelab-log-hub:phase6-test"
+    image_name = "logshed:phase6-test"
     build_cmd = ["docker", "build", "-t", image_name, str(REPO_ROOT)]
     res = subprocess.run(build_cmd, capture_output=True, text=True, timeout=300)
     assert res.returncode == 0, f"Docker build failed: {res.stderr}\n{res.stdout}"
@@ -216,7 +216,7 @@ class TestDockerLiveContainer:
     """Live Docker image build and container startup tests."""
 
     def test_container_default_port_and_healthcheck(self, built_image):
-        container_name = "test-hub-default-port"
+        container_name = "test-logshed-default-port"
         host_port = "18080"
 
         # Run container
@@ -264,7 +264,7 @@ class TestDockerLiveContainer:
             subprocess.run(["docker", "rm", "-f", container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def test_container_custom_port_override(self, built_image):
-        container_name = "test-hub-custom-port"
+        container_name = "test-logshed-custom-port"
         host_port = "19090"
         target_port = "9090"
 
@@ -297,7 +297,7 @@ class TestDockerLiveContainer:
             subprocess.run(["docker", "rm", "-f", container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def test_container_privilege_drop_and_permissions(self, built_image):
-        container_name = "test-hub-privilege-test"
+        container_name = "test-logshed-privilege-test"
 
         run_cmd = [
             "docker", "run", "-d",

@@ -1,5 +1,5 @@
 """
-Storage metrics collection service for the Homelab Log Hub.
+Storage metrics collection service for LogShed.
 """
 import asyncio
 import datetime

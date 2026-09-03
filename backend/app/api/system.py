@@ -1,5 +1,5 @@
 """
-System health, storage metrics, and retention maintenance API endpoints for Homelab Log Hub.
+System health, storage metrics, and retention maintenance API endpoints for LogShed.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status

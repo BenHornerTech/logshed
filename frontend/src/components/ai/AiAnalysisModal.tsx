@@ -105,7 +105,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
     try {
       setIsSendingPushover(true);
       setPushoverStatus(null);
-      const title = `[Log Hub] ${preview.source_alias}: ${preview.app_name}`;
+      const title = `[LogShed Analysis] ${preview.source_alias}: ${preview.app_name}`;
       const message = `${analysisResult.summary}\n\nRoot Cause:\n${analysisResult.root_cause}\n\nRemediation:\n${analysisResult.remediation}`;
       await sendPushoverNotification({
         title,

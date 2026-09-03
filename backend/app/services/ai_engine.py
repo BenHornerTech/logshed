@@ -1,5 +1,5 @@
 """
-AI Engine Service for Homelab Log Hub.
+AI Engine Service for LogShed.
 Provides unified client abstraction for Google Gemini and OpenAI / OpenAI-compatible
 endpoints with prompt construction, structured parsing, and audit logging.
 

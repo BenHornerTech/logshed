@@ -1,5 +1,5 @@
 """
-Main FastAPI application entry point for Homelab Log Hub.
+Main FastAPI application entry point for LogShed.
 Configures lifespan events, CORS middleware, background ingestion workers, and API routes.
 """
 
@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
     global _queue_consumer, _metrics_worker, _prune_worker, _syslog_server, _docker_tailer, _assembler, _background_tasks
 
     db_path = get_db_path()
-    logger.info(f"Initializing Homelab Log Hub database at {db_path}...")
+    logger.info(f"Initializing LogShed database at {db_path}...")
 
     # 1. Run migrations and initialize master key
     await asyncio.to_thread(run_migrations, db_path)
@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"DockerTailer could not be started: {e}")
 
-    # 8. Attach internal log handler so application warnings and errors appear in Log Hub
+    # 8. Attach internal log handler so application warnings and errors appear in LogShed
     internal_handler = InternalLogHandler()
     internal_handler.setLevel(logging.INFO)
     logging.getLogger("app").addHandler(internal_handler)
@@ -142,7 +142,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """Factory creating and configuring the FastAPI application instance."""
     app = FastAPI(
-        title="Homelab Log Hub",
+        title="LogShed",
         description="Unified syslog and Docker container log aggregator with on-demand AI analysis.",
         version="1.0.0",
         lifespan=lifespan,

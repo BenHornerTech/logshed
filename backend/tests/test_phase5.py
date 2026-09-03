@@ -1,5 +1,5 @@
 """
-Phase 5 Verification Test Suite for Homelab Log Hub.
+Phase 5 Verification Test Suite for LogShed.
 Tests on-demand AI preview & execution (Gemini, OpenAI/compatible), secret redaction,
 audit logging, same-host constraints, and manual Pushover notifications.
 """
@@ -43,7 +43,7 @@ def reset_globals(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("DB_PATH", str(db_file))
     monkeypatch.setenv("SECRET_KEY_PATH", str(key_file))
-    monkeypatch.delenv("LOG_HUB_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LOGSHED_SECRET_KEY", raising=False)
 
     run_migrations(db_file)
     get_or_create_master_key(key_file)
@@ -506,7 +506,7 @@ class TestAiAnalyzeWorkflow:
     @pytest.mark.asyncio
     async def test_send_pushover_preserves_title_message_priority(self, populated_db, auth_client):
         """POST /api/notifications/pushover forwards user-supplied title, message, priority without server classification."""
-        custom_title = "[Log Hub Analysis] router: dnsmasq"
+        custom_title = "[LogShed Analysis] router: dnsmasq"
         custom_message = "Summary: DNS error detected.\n\nRemediation:\nRestart container."
         custom_priority = 1
 

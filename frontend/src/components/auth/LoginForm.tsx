@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Lock, Activity, AlertCircle } from 'lucide-react';
+import { Lock, AlertCircle } from 'lucide-react';
+import { LogShedLogo } from '../common/LogShedLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 
 export const LoginForm: React.FC = () => {
@@ -29,9 +30,9 @@ export const LoginForm: React.FC = () => {
         {/* Brand Header */}
         <div className="flex flex-col items-center mb-6">
           <div className="w-12 h-12 rounded-xl bg-dark-800 border border-dark-700 flex items-center justify-center mb-3">
-            <Activity className="w-6 h-6 text-accent-500" />
+            <LogShedLogo className="w-7 h-7 text-accent-500" />
           </div>
-          <h1 className="text-xl font-bold text-slate-100 tracking-wide">HOMELAB LOG HUB</h1>
+          <h1 className="text-xl font-bold text-slate-100 tracking-wide">LOGSHED</h1>
           <p className="text-xs text-slate-400 mt-1">Single-Process Log Aggregator & Ops Console</p>
         </div>
 

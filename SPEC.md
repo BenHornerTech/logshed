@@ -1,4 +1,4 @@
-# Technical Specification: Homelab Log Hub
+# Technical Specification: LogShed
 
 ## 1. System Architecture & Process Model
 Single Docker container running Python 3.12 (`asyncio`) + FastAPI backend serving a pre-built React SPA, with background ingestion workers managed under isolated supervisors.
@@ -14,7 +14,7 @@ Only the following are true environment variables, supplied at container start a
 - `TZ` — container timezone.
 - `PORT` — web/API port (defaults to `8080` if unset).
 - `PUID` and `PGID` — user and group IDs for the application to run as (defaults to `1000` if unset).
-- `LOG_HUB_SECRET_KEY` — optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
+- `LOGSHED_SECRET_KEY` — optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
 - `COOKIE_SECURE` — optional boolean (`true`/`false`, defaults to `false`). When `false` (the default), session cookies are issued without the `Secure` flag to allow direct HTTP access over local IP addresses in homelabs, or automatically detects HTTPS via `X-Forwarded-Proto` header or request scheme. Set to `true` when running behind an SSL-terminating reverse proxy that does not send `X-Forwarded-Proto`.
 
 All other configuration — AI provider, AI API key, AI base URL, AI model, Pushover user key, Pushover app token, and `retention_days` — is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
@@ -192,7 +192,7 @@ Unified client supporting Google Gemini (`google-genai` SDK) and OpenAI-compatib
 
 ### 4.3 Notification & Export Integration
 - **Pushover Action:** Inside the AI response view, provide a **"Send to Pushover"** button.
-- Clicking dispatches the generated summary and remediation plan to the user's Pushover devices via `https://api.pushover.net/1/messages.json` with `title="[Log Hub Analysis] {source_alias}: {app_name}"`.
+- Clicking dispatches the generated summary and remediation plan to the user's Pushover devices via `https://api.pushover.net/1/messages.json` with `title="[LogShed Analysis] {source_alias}: {app_name}"`.
 
 ---
 
@@ -323,5 +323,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 ### 8.2 Unraid Template Directives
 
-* Map `/data` to cache-pool appdata: `/mnt/user/appdata/homelab-log-hub` (avoids spinning up array parity disks on 2000ms writes).
+* Map `/data` to cache-pool appdata: `/mnt/user/appdata/logshed` (avoids spinning up array parity disks on 2000ms writes).
 * Map host port `1514` (UDP/TCP) to container `1514`.

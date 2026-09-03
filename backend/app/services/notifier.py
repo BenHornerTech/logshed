@@ -1,5 +1,5 @@
 """
-Pushover Notification Service for Homelab Log Hub.
+Pushover Notification Service for LogShed.
 Dispatches user-initiated log summaries and test alerts to Pushover mobile endpoints.
 """
 
@@ -33,7 +33,7 @@ async def send_pushover_message(
     payload = {
         "token": app_token,
         "user": user_key,
-        "title": title or "[Log Hub]",
+        "title": title or "[LogShed]",
         "message": message,
         "priority": priority,
     }

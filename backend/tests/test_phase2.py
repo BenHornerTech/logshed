@@ -1,5 +1,5 @@
 """
-Phase 2 verification tests for Homelab Log Hub.
+Phase 2 verification tests for LogShed.
 
 Covers:
   - Secret redaction (sanitizer.py) — API keys, Bearer tokens, passwords,
@@ -521,9 +521,9 @@ class TestDockerLogParsing:
         from app.collectors.docker_collector import _should_ignore_container
 
         # Default self-container names
-        assert _should_ignore_container("abc123456789", "homelab-logger") is True
-        assert _should_ignore_container("abc123456789", "/homelab_log_hub") is True
-        assert _should_ignore_container("abc123456789", "log-hub") is True
+        assert _should_ignore_container("abc123456789", "logshed") is True
+        assert _should_ignore_container("abc123456789", "/log_shed") is True
+        assert _should_ignore_container("abc123456789", "log-shed") is True
 
         # Non-self container
         assert _should_ignore_container("def987654321", "nginx") is False

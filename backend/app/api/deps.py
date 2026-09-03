@@ -1,5 +1,5 @@
 """
-FastAPI dependency injectors and database execution helpers for Homelab Log Hub.
+FastAPI dependency injectors and database execution helpers for LogShed.
 All SQLite queries are dispatched via asyncio.to_thread() to keep the event loop non-blocking.
 """
 

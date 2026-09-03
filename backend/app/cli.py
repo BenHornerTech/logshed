@@ -1,5 +1,5 @@
 """
-CLI tool for Homelab Log Hub admin operations.
+CLI tool for LogShed admin operations.
 
 Usage:
     python -m app.cli reset-admin --password <new_password>
@@ -65,7 +65,7 @@ def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         prog="app.cli",
-        description="Homelab Log Hub CLI administration tool",
+        description="LogShed CLI administration tool",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 

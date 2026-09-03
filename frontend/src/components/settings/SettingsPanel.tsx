@@ -180,7 +180,7 @@ export const SettingsPanel: React.FC = () => {
     try {
       setIsSendingAuditPushover(true);
       setAuditPushoverMsg(null);
-      const title = `[Log Hub Audit] ${selectedAuditItem.source_alias}: ${selectedAuditItem.app_name}`;
+      const title = `[LogShed Audit] ${selectedAuditItem.source_alias}: ${selectedAuditItem.app_name}`;
       await sendPushoverNotification({
         title,
         message: selectedAuditItem.response_text,

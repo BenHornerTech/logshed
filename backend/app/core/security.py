@@ -1,5 +1,5 @@
 """
-Security and cryptography utilities for Homelab Log Hub.
+Security and cryptography utilities for LogShed.
 Includes Argon2id password hashing, Fernet secret encryption at rest,
 and secure session token generation and verification.
 """
@@ -75,7 +75,7 @@ def get_or_create_master_key(custom_key_path: Optional[Path] = None) -> bytes:
     """
     Retrieves or generates the master Fernet encryption key.
     
-    1. Checks LOG_HUB_SECRET_KEY environment variable.
+    1. Checks LOGSHED_SECRET_KEY environment variable.
     2. Reads from .secret_key file if present.
     3. If neither exists, generates a new Fernet key and writes to file with 0600 permissions.
     """

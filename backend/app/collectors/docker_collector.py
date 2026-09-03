@@ -1,5 +1,5 @@
 """
-Docker container log collector for Homelab Log Hub.
+Docker container log collector for LogShed.
 
 Connects via DOCKER_HOST (unix:///var/run/docker.sock or tcp://proxy:2375)
 using httpx (with HTTPTransport(uds=...) for Unix sockets).
@@ -129,19 +129,16 @@ async def _get_running_containers(client: httpx.AsyncClient) -> list[dict]:
 def _should_ignore_container(container_id: str, container_name: str) -> bool:
     """
     Determine if a container should be excluded from log tailing.
-    Prevents self-tailing loops for Homelab Log Hub itself.
+    Prevents self-tailing loops for LogShed itself.
     """
     # 1. Explicitly configured excluded container names/IDs from env
     exclude_env = os.environ.get("DOCKER_EXCLUDE_CONTAINERS", "")
     excluded_names = {n.strip().lower() for n in exclude_env.split(",") if n.strip()}
     # Always exclude default container names for this app
     excluded_names.update({
-        "homelab-logger",
-        "homelab_logger",
-        "homelab-log-hub",
-        "homelab_log_hub",
-        "log-hub",
-        "log_hub",
+        "logshed",
+        "log-shed",
+        "log_shed",
     })
 
     name_clean = container_name.lower().lstrip("/")

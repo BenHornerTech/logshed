@@ -1,5 +1,5 @@
 """
-Notification API endpoints for Homelab Log Hub.
+Notification API endpoints for LogShed.
 Dispatches test messages and user-initiated AI analysis alerts to Pushover.
 """
 
@@ -56,8 +56,8 @@ async def test_notifications(user: dict = Depends(get_current_user)) -> MessageR
         await send_pushover_message(
             user_key=user_key,
             app_token=app_token,
-            title="[Log Hub] Test Notification",
-            message="Pushover notifications configured successfully for Homelab Log Hub!",
+            title="[LogShed] Test Notification",
+            message="Pushover notifications configured successfully for LogShed!",
             priority=0,
         )
     except ValueError as ve:

@@ -1,4 +1,4 @@
-# Homelab Log Hub - LLM Instructions
+# LogShed - LLM Instructions
 
 ## Build & Test Commands
 - Run backend tests: `.venv/bin/pytest backend/tests/ -v`

@@ -40,7 +40,7 @@ export const SetupModal: React.FC = () => {
           </div>
           <h1 className="text-xl font-bold text-slate-100 tracking-wide">FIRST-RUN ADMIN SETUP</h1>
           <p className="text-xs text-slate-400 mt-1 text-center">
-            Initialize your master administrator password for Homelab Log Hub.
+            Initialize your master administrator password for LogShed.
           </p>
         </div>
 

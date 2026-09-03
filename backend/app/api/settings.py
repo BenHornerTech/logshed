@@ -1,5 +1,5 @@
 """
-System settings API endpoints for Homelab Log Hub.
+System settings API endpoints for LogShed.
 Provides secure storage with encryption at rest for API keys and Pushover tokens.
 """
 
