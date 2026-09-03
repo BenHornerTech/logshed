@@ -125,6 +125,29 @@ class TestAiEngineDirect:
         assert "Firmware recently updated" in prompt
         assert "[dnsmasq] test log line" in prompt
 
+    def test_build_analysis_prompt_with_host_notes(self):
+        prompt = ai_engine.build_analysis_prompt(
+            source_alias="pve1",
+            app_name="pvedaemon",
+            sanitized_logs="[2026-08-29T12:00:01Z] [pvedaemon] test log line",
+            log_count=1,
+            host_notes="Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'",
+        )
+        assert "- Host Notes: Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'" in prompt
+        meta_section = prompt.split("### Sanitized Log Stream")[0]
+        assert "### System Metadata" in meta_section
+        assert "- Host Notes: Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'" in meta_section
+
+    def test_build_analysis_prompt_without_host_notes(self):
+        prompt = ai_engine.build_analysis_prompt(
+            source_alias="pve1",
+            app_name="pvedaemon",
+            sanitized_logs="[2026-08-29T12:00:01Z] [pvedaemon] test log line",
+            log_count=1,
+            host_notes=None,
+        )
+        assert "- Host Notes:" not in prompt
+
     def test_parse_structured_ai_response(self):
         sample = """
 ## Summary
@@ -285,8 +308,59 @@ class TestAiPreviewAndGating:
         assert analyze_res.status_code == 400
         assert "Selected logs must share the same host alias" in analyze_res.json()["detail"]
 
+    @pytest.mark.asyncio
+    async def test_preview_injects_host_alias_notes(self, populated_db, auth_client):
+        """Preview retrieves notes from host_aliases for source_ip and injects into prompt."""
+        conn = sqlite3.connect(populated_db)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO host_aliases (ip, alias, notes, created_at) VALUES (?, ?, ?, datetime('now'))",
+            ("192.168.1.50", "proxmox-01", "Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Log 3 has source_ip 192.168.1.50 (proxmox-01)
+        res = await auth_client.post("/api/ai/preview", json={"log_ids": [3]})
+        assert res.status_code == 200
+        prompt = res.json()["sanitized_prompt"]
+        assert "- Host Notes: Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'" in prompt
+
 
 class TestAiAnalyzeWorkflow:
+    @pytest.mark.asyncio
+    async def test_analyze_passes_host_notes_to_engine(self, populated_db, auth_client):
+        """Analyze retrieves notes from host_aliases and passes host_notes to execute_ai_analysis."""
+        conn = sqlite3.connect(populated_db)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO host_aliases (ip, alias, notes, created_at) VALUES (?, ?, ?, datetime('now'))",
+            ("192.168.1.1", "router", "Edge router running pfSense 2.7.2"),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=(
+                "Summary.",
+                "Root cause.",
+                "Remediation.",
+                "Raw response",
+                "Prompt sent",
+                100,
+                50,
+                0,
+                150,
+            ),
+        ) as mock_exec:
+            res = await auth_client.post("/api/ai/analyze", json={"log_ids": [1]})
+            assert res.status_code == 200
+            assert mock_exec.called
+            _, kwargs = mock_exec.call_args
+            assert kwargs.get("host_notes") == "Edge router running pfSense 2.7.2"
+
     @pytest.mark.asyncio
     async def test_analyze_gemini_provider(self, populated_db, auth_client):
         """Analyze dispatches to Gemini endpoint, parses sections, and writes to audit log."""

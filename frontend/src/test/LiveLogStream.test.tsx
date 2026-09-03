@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor, act, within } from '@testing-librar
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { LiveLogStream, formatLocalTimestamp } from '../components/logs/LiveLogStream.tsx';
 import * as logsApi from '../api/logs.ts';
+import * as aliasesApi from '../api/aliases.ts';
 import { LogEntry } from '../types.ts';
 
 vi.mock('@tanstack/react-virtual', () => ({
@@ -155,6 +156,7 @@ describe('LiveLogStream Component', () => {
         filterlog: ['opnsense-router'],
       },
     });
+    vi.spyOn(aliasesApi, 'fetchAliases').mockResolvedValue([]);
   });
 
   it('displays Screen Buffer label and clear screen buffer tooltip (Item #14)', async () => {

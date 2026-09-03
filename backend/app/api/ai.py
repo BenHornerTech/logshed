@@ -75,7 +75,12 @@ async def preview_ai_prompt(
         provider = settings_map.get("ai_provider") or "gemini"
         model = settings_map.get("ai_model") or "gemini-2.5-flash"
 
-        return (rows, provider, model), None
+        target_ip = rows[0]["source_ip"]
+        cursor.execute("SELECT notes FROM host_aliases WHERE ip = ?", (target_ip,))
+        alias_row = cursor.fetchone()
+        host_notes = alias_row["notes"] if alias_row and alias_row["notes"] else None
+
+        return (rows, provider, model, host_notes), None
 
     result, err = await run_db_query(_fetch)
     if err:
@@ -84,7 +89,7 @@ async def preview_ai_prompt(
             detail=err,
         )
 
-    rows, provider, model = result
+    rows, provider, model, host_notes = result
     source_alias = rows[0]["source_alias"]
     app_name = rows[0]["app_name"]
 
@@ -97,6 +102,7 @@ async def preview_ai_prompt(
         app_name=app_name,
         sanitized_logs=sanitized_logs_text,
         log_count=len(rows),
+        host_notes=host_notes,
     )
 
     # Estimate token count (~4 characters per token + framing overhead)
@@ -144,7 +150,12 @@ async def analyze_logs(
                         v = ""
                 settings[k] = v
 
-            return (rows, settings), None
+            target_ip = rows[0]["source_ip"]
+            cursor.execute("SELECT notes FROM host_aliases WHERE ip = ?", (target_ip,))
+            alias_row = cursor.fetchone()
+            host_notes = alias_row["notes"] if alias_row and alias_row["notes"] else None
+
+            return (rows, settings, host_notes), None
 
         result, err = await run_db_query(_fetch_data_and_settings)
         if err:
@@ -153,7 +164,7 @@ async def analyze_logs(
                 detail=err,
             )
 
-        rows, settings = result
+        rows, settings, host_notes = result
         source_alias = rows[0]["source_alias"]
         app_name = rows[0]["app_name"]
 
@@ -177,6 +188,7 @@ async def analyze_logs(
             sanitized_logs=sanitized_logs,
             log_count=len(rows),
             user_context=req.user_context,
+            host_notes=host_notes,
         )
 
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()

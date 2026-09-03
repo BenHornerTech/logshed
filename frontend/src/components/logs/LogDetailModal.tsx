@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Sparkles, Copy, Check, Plus, Layers, Terminal } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Sparkles, Copy, Check, Plus, Edit2, Layers, Terminal } from 'lucide-react';
 import { LogEntry } from '../../types.ts';
 import { fetchLogContext } from '../../api/logs.ts';
 import { SeverityBadge } from '../common/SeverityBadge.tsx';
@@ -10,7 +10,8 @@ interface LogDetailModalProps {
   log: LogEntry | null;
   isOpen: boolean;
   onClose: () => void;
-  onExplainWithAi: (log: LogEntry) => void;
+  onExplainWithAi: (log: LogEntry, contextLogs?: LogEntry[]) => void;
+  onAnalyzeWithContext?: (logs: LogEntry[]) => void;
   onAddAlias?: (ip: string) => void;
   isHostAliased?: boolean;
 }
@@ -20,31 +21,62 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
   isOpen,
   onClose,
   onExplainWithAi,
+  onAnalyzeWithContext,
   onAddAlias,
-  isHostAliased = true,
+  isHostAliased,
 }) => {
+  const hostIsAliased = Boolean(
+    isHostAliased ?? (log && log.source_alias && log.source_alias !== log.source_ip)
+  );
   const [copiedRaw, setCopiedRaw] = useState(false);
   const [copiedMsg, setCopiedMsg] = useState(false);
   const [contextLogs, setContextLogs] = useState<LogEntry[]>([]);
   const [isLoadingContext, setIsLoadingContext] = useState(false);
   const [showContext, setShowContext] = useState(false);
+  const [sameAppOnly, setSameAppOnly] = useState(false);
 
   useEffect(() => {
     if (isOpen && log && showContext) {
-      loadContext(log.id);
+      loadContext(log.id, sameAppOnly);
     }
-  }, [isOpen, log, showContext]);
+  }, [isOpen, log, showContext, sameAppOnly]);
 
-  const loadContext = async (logId: number) => {
+  const loadContext = async (logId: number, sameApp: boolean = false) => {
     try {
       setIsLoadingContext(true);
-      const res = await fetchLogContext(logId, 10);
+      const res = await fetchLogContext(logId, 10, sameApp);
       setContextLogs(res.logs);
     } catch (err) {
       console.error('Failed to load log context', err);
     } finally {
       setIsLoadingContext(false);
     }
+  };
+
+  // Transfer target log plus loaded surrounding context logs strictly respecting single-host constraint
+  const targetAndContextLogs = useMemo(() => {
+    if (!log) return [];
+    const logMap = new Map<number, LogEntry>();
+    logMap.set(log.id, log);
+    for (const ctxLog of contextLogs) {
+      if (ctxLog.source_alias === log.source_alias) {
+        logMap.set(ctxLog.id, ctxLog);
+      }
+    }
+    return Array.from(logMap.values()).sort((a, b) => {
+      const cmp = a.timestamp.localeCompare(b.timestamp);
+      return cmp !== 0 ? cmp : a.id - b.id;
+    });
+  }, [log, contextLogs]);
+
+  const handleAnalyzeTargetAndContext = () => {
+    if (!log || targetAndContextLogs.length === 0) return;
+    if (onAnalyzeWithContext) {
+      onAnalyzeWithContext(targetAndContextLogs);
+    } else {
+      onExplainWithAi(log, targetAndContextLogs);
+    }
+    onClose();
   };
 
   if (!log) return null;
@@ -84,14 +116,30 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            {!isHostAliased && onAddAlias && (
-              <button
-                onClick={() => onAddAlias(log.source_ip)}
-                className="flex items-center gap-1 px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded transition font-medium"
-              >
-                <Plus className="w-3.5 h-3.5 text-accent-400" />
-                <span>Add Host Alias</span>
-              </button>
+            {onAddAlias && (
+              hostIsAliased ? (
+                <button
+                  onClick={() => {
+                    onAddAlias(log.source_ip);
+                    onClose();
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded transition font-medium"
+                >
+                  <Edit2 className="w-3.5 h-3.5 text-accent-400" />
+                  <span>Modify Host Alias</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    onAddAlias(log.source_ip);
+                    onClose();
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded transition font-medium"
+                >
+                  <Plus className="w-3.5 h-3.5 text-accent-400" />
+                  <span>Add Host Alias</span>
+                </button>
+              )
             )}
 
             <button
@@ -164,14 +212,39 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
 
         {/* Surrounding Context Inspector */}
         <div className="pt-2 border-t border-dark-800">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
             <button
               onClick={() => setShowContext(!showContext)}
               className="flex items-center gap-1.5 font-medium text-slate-300 hover:text-accent-400 transition"
             >
               <Layers className="w-3.5 h-3.5" />
-              <span>{showContext ? 'Hide Surrounding Context' : 'Load Surrounding Context (±10 Lines)'}</span>
+              <span>{showContext ? 'Hide Surrounding Context' : 'Load Surrounding Context (±5 Lines)'}</span>
             </button>
+
+            {showContext && (
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={sameAppOnly}
+                    onChange={(e) => setSameAppOnly(e.target.checked)}
+                    className="rounded bg-dark-900 border-dark-700 text-accent-600 focus:ring-0 focus:ring-offset-0 w-3 h-3"
+                  />
+                  <span>Same App Only ({log.app_name})</span>
+                </label>
+
+                {contextLogs.length > 0 && !isLoadingContext && (
+                  <button
+                    onClick={handleAnalyzeTargetAndContext}
+                    title="Add Context to AI Analysis"
+                    className="flex items-center gap-1.5 px-2.5 py-1 bg-accent-600 hover:bg-accent-500 text-white rounded font-medium transition text-[11px] shadow-xs"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Analyze Target + Context ({targetAndContextLogs.length} logs)</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {showContext && (

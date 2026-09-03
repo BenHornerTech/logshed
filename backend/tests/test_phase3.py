@@ -501,13 +501,19 @@ class TestLogQuerying:
 
         # Seed a sequence of logs with interleaved sources/apps
         entries = [
-            # Host 1, App A
+            # Host 1, App A (web)
             {"timestamp": f"2026-08-29T10:0{i}:00Z", "received_at": f"2026-08-29T10:0{i}:01Z",
              "source_ip": "10.0.0.1", "source_alias": "srv1", "app_name": "web", "facility": 1, "severity": 6,
              "message": f"web line {i}", "raw": f"raw web {i}"}
             for i in range(1, 6)
         ]
-        # Interleaved logs from other host/app
+        # Interleaved log on same host but different app (cron)
+        entries.append({
+            "timestamp": "2026-08-29T10:02:30Z", "received_at": "2026-08-29T10:02:30Z",
+            "source_ip": "10.0.0.1", "source_alias": "srv1", "app_name": "cron", "facility": 1, "severity": 6,
+            "message": "cron job ran", "raw": "raw cron",
+        })
+        # Interleaved logs from different host (srv2)
         entries.append({
             "timestamp": "2026-08-29T10:03:30Z", "received_at": "2026-08-29T10:03:30Z",
             "source_ip": "10.0.0.2", "source_alias": "srv2", "app_name": "database", "facility": 1, "severity": 3,
@@ -515,23 +521,58 @@ class TestLogQuerying:
         })
         _seed_logs(db_file, entries)
 
-        # Query context for line 3 (ID 3 in web app)
+        # Target is web line 3 (ID 3, timestamp 10:03:00)
         target_id = 3
-        res = await client.get(f"/api/logs/{target_id}/context", params={"lines": 2})
+
+        # 1. Symmetric windowing test: lines=10 means exactly lines // 2 = 5 before and 5 after
+        # Default same_app=False: fetches all srv1 logs (web and cron), ignoring other hosts
+        res = await client.get(f"/api/logs/{target_id}/context", params={"lines": 10, "same_app": "false"})
         assert res.status_code == 200
         data = res.json()
         assert data["target_id"] == target_id
-
-        # Must contain ONLY srv1 / web logs
         context_logs = data["logs"]
-        assert len(context_logs) == 5  # 2 before + target + 2 after
+        # All returned logs belong strictly to srv1
         for log in context_logs:
             assert log["source_alias"] == "srv1"
-            assert log["app_name"] == "web"
-
+        # Includes cron log since same_app=False
+        apps = {log["app_name"] for log in context_logs}
+        assert "web" in apps
+        assert "cron" in apps
+        # Excludes srv2
+        assert all(log["source_alias"] != "srv2" for log in context_logs)
         # Chronological order verified
         timestamps = [l["timestamp"] for l in context_logs]
         assert timestamps == sorted(timestamps)
+
+        # 2. same_app=True: restricts strictly to srv1 AND app_name="web"
+        res_app = await client.get(f"/api/logs/{target_id}/context", params={"lines": 4, "same_app": "true"})
+        assert res_app.status_code == 200
+        data_app = res_app.json()
+        app_logs = data_app["logs"]
+        # lines=4 -> 2 before + target + 2 after = 5 web logs
+        assert len(app_logs) == 5
+        for log in app_logs:
+            assert log["source_alias"] == "srv1"
+            assert log["app_name"] == "web"
+
+        # 3. Symmetric windowing test with lines=2 -> lines // 2 = 1 before and 1 after (total 3 logs)
+        res_small = await client.get(f"/api/logs/{target_id}/context", params={"lines": 2, "same_app": "true"})
+        assert res_small.status_code == 200
+        small_logs = res_small.json()["logs"]
+        assert len(small_logs) == 3  # 1 before + target + 1 after
+
+        # 4. Boundary conditions: Earliest log (ID 1)
+        res_first = await client.get("/api/logs/1/context", params={"lines": 10})
+        assert res_first.status_code == 200
+        first_logs = res_first.json()["logs"]
+        assert first_logs[0]["id"] == 1  # Target is earliest; 0 lines before
+
+        # 5. Boundary conditions: Latest log
+        latest_id = max(context_logs, key=lambda l: (l["timestamp"], l["id"]))["id"]
+        res_last = await client.get(f"/api/logs/{latest_id}/context", params={"lines": 10})
+        assert res_last.status_code == 200
+        last_logs = res_last.json()["logs"]
+        assert last_logs[-1]["id"] == latest_id  # Target is latest; 0 lines after
 
     @pytest.mark.asyncio
     async def test_log_context_404_on_missing_id(self, client: AsyncClient, auth_cookie: dict):

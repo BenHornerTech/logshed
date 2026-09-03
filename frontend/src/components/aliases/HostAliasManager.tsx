@@ -25,8 +25,14 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
   useEffect(() => {
     if (initialAddIp) {
       setIp(initialAddIp);
+      const existing = aliases.find((a) => a.ip === initialAddIp);
+      if (existing) {
+        setEditingIp(existing.ip);
+        setAlias(existing.alias);
+        setNotes(existing.notes || '');
+      }
     }
-  }, [initialAddIp]);
+  }, [initialAddIp, aliases]);
 
   const loadAliases = async () => {
     try {

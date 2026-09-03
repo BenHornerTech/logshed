@@ -16,6 +16,7 @@ import { SeverityBadge } from '../common/SeverityBadge.tsx';
 import { LogSearchBar } from './LogSearchBar.tsx';
 import { LogDetailModal } from './LogDetailModal.tsx';
 import { fetchLogs, fetchLogFacets } from '../../api/logs.ts';
+import { fetchAliases } from '../../api/aliases.ts';
 
 function normalizeIsoString(ts: string): string {
   let parseable = ts.trim();
@@ -75,6 +76,27 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   const [activeLogDetail, setActiveLogDetail] = useState<LogEntry | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
   const [filters, setFilters] = useState<LogFilterParams>({});
+  const [activeAliasesMap, setActiveAliasesMap] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    fetchAliases()
+      .then((list) => {
+        const map: Record<string, string> = {};
+        list.forEach((a) => {
+          if (a.ip && a.alias) {
+            map[a.ip] = a.alias;
+          }
+        });
+        setActiveAliasesMap(map);
+      })
+      .catch((err) => {
+        console.error('Failed to load host aliases in stream', err);
+      });
+  }, []);
+
+  const mergedAliases = useMemo(() => {
+    return { ...activeAliasesMap, ...knownAliases };
+  }, [activeAliasesMap, knownAliases]);
 
   const parentRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -219,25 +241,25 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
   useEffect(() => {
     setAccumulatedSources((prev) => {
-      const aliasedIps = new Set(Object.keys(knownAliases || {}));
+      const aliasedIps = new Set(Object.keys(mergedAliases || {}));
       const set = new Set<string>();
 
       prev.forEach((s) => {
-        if (knownAliases && knownAliases[s]) {
-          set.add(knownAliases[s]);
+        if (mergedAliases && mergedAliases[s]) {
+          set.add(mergedAliases[s]);
         } else if (!aliasedIps.has(s)) {
           set.add(s);
         }
       });
 
-      if (knownAliases) {
-        Object.values(knownAliases).forEach((alias) => {
+      if (mergedAliases) {
+        Object.values(mergedAliases).forEach((alias) => {
           if (alias && alias.trim()) set.add(alias.trim());
         });
       }
 
       logs.forEach((log) => {
-        const canonical = (log.source_ip && knownAliases && knownAliases[log.source_ip]) || log.source_alias;
+        const canonical = (log.source_ip && mergedAliases && mergedAliases[log.source_ip]) || log.source_alias;
         if (canonical && !aliasedIps.has(canonical)) {
           set.add(canonical);
         }
@@ -261,36 +283,36 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       }
       return next;
     });
-  }, [logs, knownAliases]);
+  }, [logs, mergedAliases]);
 
   // Merge accumulated sources & apps with current logs (ensuring all discovered items remain selectable)
   const allAvailableSources = useMemo(() => {
-    const aliasedIps = new Set(Object.keys(knownAliases || {}));
+    const aliasedIps = new Set(Object.keys(mergedAliases || {}));
     const set = new Set<string>();
 
     accumulatedSources.forEach((src) => {
-      if (knownAliases && knownAliases[src]) {
-        set.add(knownAliases[src]);
+      if (mergedAliases && mergedAliases[src]) {
+        set.add(mergedAliases[src]);
       } else if (!aliasedIps.has(src)) {
         set.add(src);
       }
     });
 
     logs.forEach((log) => {
-      const canonical = (log.source_ip && knownAliases && knownAliases[log.source_ip]) || log.source_alias;
+      const canonical = (log.source_ip && mergedAliases && mergedAliases[log.source_ip]) || log.source_alias;
       if (canonical && !aliasedIps.has(canonical)) {
         set.add(canonical);
       }
     });
 
-    if (knownAliases) {
-      Object.values(knownAliases).forEach((alias) => {
+    if (mergedAliases) {
+      Object.values(mergedAliases).forEach((alias) => {
         if (alias && alias.trim()) set.add(alias.trim());
       });
     }
 
     return Array.from(set).sort();
-  }, [accumulatedSources, logs, knownAliases]);
+  }, [accumulatedSources, logs, mergedAliases]);
 
   const allAvailableApps = useMemo(() => {
     const set = new Set(accumulatedApps);
@@ -348,15 +370,15 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       });
       logs.forEach((l) => {
         if (l.app_name) {
-          const canonicalHost = (l.source_ip && knownAliases && knownAliases[l.source_ip]) || l.source_alias || l.source_ip;
+          const canonicalHost = (l.source_ip && mergedAliases && mergedAliases[l.source_ip]) || l.source_alias || l.source_ip;
           if (canonicalHost) {
             if (!nextMap[canonicalHost]) nextMap[canonicalHost] = new Set();
             nextMap[canonicalHost].add(l.app_name);
           }
         }
       });
-      if (knownAliases) {
-        Object.entries(knownAliases).forEach(([ip, alias]) => {
+      if (mergedAliases) {
+        Object.entries(mergedAliases).forEach(([ip, alias]) => {
           if (ip && alias) {
             if (nextMap[ip]) {
               if (!nextMap[alias]) nextMap[alias] = new Set();
@@ -386,15 +408,15 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       });
       logs.forEach((l) => {
         if (l.app_name) {
-          const canonicalHost = (l.source_ip && knownAliases && knownAliases[l.source_ip]) || l.source_alias || l.source_ip;
+          const canonicalHost = (l.source_ip && mergedAliases && mergedAliases[l.source_ip]) || l.source_alias || l.source_ip;
           if (canonicalHost) {
             if (!nextMap[l.app_name]) nextMap[l.app_name] = new Set();
             nextMap[l.app_name].add(canonicalHost);
           }
         }
       });
-      if (knownAliases) {
-        Object.entries(knownAliases).forEach(([ip, alias]) => {
+      if (mergedAliases) {
+        Object.entries(mergedAliases).forEach(([ip, alias]) => {
           if (ip && alias) {
             Object.keys(nextMap).forEach((app) => {
               if (nextMap[app].has(ip)) {
@@ -417,7 +439,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       }
       return changed ? result : prev;
     });
-  }, [logs, knownAliases]);
+  }, [logs, mergedAliases]);
 
   const activeSources: string[] = useMemo(() => {
     if (filters.sources && Array.isArray(filters.sources)) return filters.sources;
@@ -862,12 +884,44 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         log={activeLogDetail}
         isOpen={Boolean(activeLogDetail)}
         onClose={() => setActiveLogDetail(null)}
-        onExplainWithAi={(log) => {
+        onExplainWithAi={(log, ctxLogs) => {
           setActiveLogDetail(null);
-          onAnalyzeAi([log]);
+          const logsToAnalyze = ctxLogs && ctxLogs.length > 0 ? ctxLogs : [log];
+          setLogs((prevLogs) => {
+            const existingIds = new Set(prevLogs.map((l) => l.id));
+            const missingLogs = logsToAnalyze.filter((l) => !existingIds.has(l.id));
+            if (missingLogs.length === 0) return prevLogs;
+            return [...missingLogs, ...prevLogs].sort((a, b) => {
+              const cmp = b.timestamp.localeCompare(a.timestamp);
+              return cmp !== 0 ? cmp : b.id - a.id;
+            });
+          });
+          setSelectedLogIds(new Set(logsToAnalyze.map((l) => l.id)));
+          onAnalyzeAi(logsToAnalyze);
+        }}
+        onAnalyzeWithContext={(targetAndCtxLogs) => {
+          setActiveLogDetail(null);
+          setLogs((prevLogs) => {
+            const existingIds = new Set(prevLogs.map((l) => l.id));
+            const missingLogs = targetAndCtxLogs.filter((l) => !existingIds.has(l.id));
+            if (missingLogs.length === 0) return prevLogs;
+            return [...missingLogs, ...prevLogs].sort((a, b) => {
+              const cmp = b.timestamp.localeCompare(a.timestamp);
+              return cmp !== 0 ? cmp : b.id - a.id;
+            });
+          });
+          setSelectedLogIds(new Set(targetAndCtxLogs.map((l) => l.id)));
+          onAnalyzeAi(targetAndCtxLogs);
         }}
         onAddAlias={onAddAlias}
-        isHostAliased={activeLogDetail ? Boolean(knownAliases[activeLogDetail.source_ip]) : true}
+        isHostAliased={
+          activeLogDetail
+            ? Boolean(
+                mergedAliases[activeLogDetail.source_ip] ||
+                (activeLogDetail.source_alias && activeLogDetail.source_alias !== activeLogDetail.source_ip)
+              )
+            : true
+        }
       />
     </div>
   );

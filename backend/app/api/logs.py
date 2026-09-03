@@ -387,10 +387,12 @@ async def get_log_facets(
 async def get_log_context(
     id: int,
     lines: int = Query(10, ge=1, le=100, description="Surrounding lines before and after"),
+    same_app: bool = Query(False, description="Restrict surrounding logs to the same application name"),
     user: dict = Depends(get_current_user),
 ) -> LogContextResponse:
     """
-    Fetch surrounding context lines strictly scoped to the same source_alias and app_name.
+    Fetch surrounding context lines symmetrically before and after target log.
+    Defaults to all host activity (same source_alias). If same_app=True, restricts to the same app_name.
     """
     def _fetch_context(conn):
         cursor = conn.cursor()
@@ -403,29 +405,35 @@ async def get_log_context(
         app_name = target_row["app_name"]
         t_time = target_row["timestamp"]
         t_id = target_row["id"]
+        half = lines // 2
+
+        app_clause = "AND app_name = ? " if same_app else ""
+        app_params = (app_name,) if same_app else ()
 
         # Fetch lines before (chronologically earlier)
-        cursor.execute(
-            """
+        before_sql = f"""
             SELECT * FROM logs 
-            WHERE source_alias = ? AND app_name = ? AND (timestamp < ? OR (timestamp = ? AND id < ?))
+            WHERE source_alias = ? {app_clause}AND (timestamp < ? OR (timestamp = ? AND id < ?))
             ORDER BY timestamp DESC, id DESC
             LIMIT ?
-            """,
-            (source_alias, app_name, t_time, t_time, t_id, lines),
+        """
+        cursor.execute(
+            before_sql,
+            (source_alias, *app_params, t_time, t_time, t_id, half),
         )
         before_rows = cursor.fetchall()
         before_rows.reverse()  # Chronological order
 
         # Fetch lines after (chronologically later)
-        cursor.execute(
-            """
+        after_sql = f"""
             SELECT * FROM logs 
-            WHERE source_alias = ? AND app_name = ? AND (timestamp > ? OR (timestamp = ? AND id > ?))
+            WHERE source_alias = ? {app_clause}AND (timestamp > ? OR (timestamp = ? AND id > ?))
             ORDER BY timestamp ASC, id ASC
             LIMIT ?
-            """,
-            (source_alias, app_name, t_time, t_time, t_id, lines),
+        """
+        cursor.execute(
+            after_sql,
+            (source_alias, *app_params, t_time, t_time, t_id, half),
         )
         after_rows = cursor.fetchall()
 

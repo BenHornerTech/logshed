@@ -39,18 +39,23 @@ def build_analysis_prompt(
     sanitized_logs: str,
     log_count: int,
     user_context: Optional[str] = None,
+    host_notes: Optional[str] = None,
 ) -> str:
     """
     Construct the full prompt payload sent to the LLM.
-    Combines host/container metadata, chronological sanitized logs, and optional operator notes.
+    Combines host/container metadata, optional host notes, chronological sanitized logs, and optional operator notes.
     """
     parts = [
         "### System Metadata",
         f"- Host / Source: {source_alias}",
         f"- Container / Service: {app_name}",
         f"- Total Selected Logs: {log_count}",
-        "",
     ]
+
+    if host_notes and host_notes.strip():
+        parts.append(f"- Host Notes: {host_notes.strip()}")
+
+    parts.append("")
 
     if user_context and user_context.strip():
         parts.extend([
@@ -261,6 +266,7 @@ async def execute_ai_analysis(
     sanitized_logs: str,
     log_count: int,
     user_context: Optional[str] = None,
+    host_notes: Optional[str] = None,
 ) -> tuple[str, str, str, str, str, int, int, int, int]:
     """
     Unified entrypoint to run on-demand AI analysis.
@@ -272,6 +278,7 @@ async def execute_ai_analysis(
         sanitized_logs=sanitized_logs,
         log_count=log_count,
         user_context=user_context,
+        host_notes=host_notes,
     )
 
     norm_provider = (provider or "gemini").lower()
