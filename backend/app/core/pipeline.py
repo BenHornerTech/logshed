@@ -352,6 +352,17 @@ class QueueConsumer:
         try:
             cursor = conn.cursor()
             for entry in batch:
+                # Defensive clamp: ensure no entry is saved with a timestamp in the future compared to received_at
+                try:
+                    ts_val = entry.get("timestamp")
+                    rec_val = entry.get("received_at")
+                    if ts_val and rec_val:
+                        dt_ts = datetime.datetime.fromisoformat(ts_val)
+                        dt_rec = datetime.datetime.fromisoformat(rec_val)
+                        if (dt_ts - dt_rec).total_seconds() > 60:
+                            entry["timestamp"] = rec_val
+                except Exception:
+                    pass
                 cursor.execute(query, entry)
                 entry["id"] = cursor.lastrowid
             conn.commit()

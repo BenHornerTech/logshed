@@ -179,6 +179,20 @@ class TestSyslogParsing:
         # Should not raise; replacement character expected
         assert "\ufffd" in result["raw"] or "world" in result["raw"]
 
+    def test_rfc3164_local_timezone_ahead_of_utc(self):
+        # Simulate an RFC 3164 message whose timestamp is in a local timezone (e.g. UTC+1)
+        # It must not be recorded as a UTC timestamp in the future
+        now = datetime.datetime.now(datetime.timezone.utc)
+        future_hour = now + datetime.timedelta(hours=1)
+        month_str = future_hour.strftime("%b")
+        day_str = f"{future_hour.day:2d}"
+        time_str = future_hour.strftime("%H:%M:%S")
+        raw = f"<14>{month_str} {day_str} {time_str} myhost myapp: test timezone".encode()
+        result = parse_syslog_message(raw, "10.0.0.1")
+        parsed_dt = datetime.datetime.fromisoformat(result["timestamp"])
+        # Parsed timestamp must not be in the future compared to arrival time + 60s
+        assert (parsed_dt - now).total_seconds() <= 60
+
 
 # ===================================================================
 # 2. Multiline assembly
@@ -723,4 +737,22 @@ class TestSchemaIntegrity:
         conn = get_connection(p)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version >= 1
+        assert version >= 3
+
+    def test_migration_v3_fixes_future_timestamps(self, tmp_path: Path):
+        """Migration v3 should clamp timestamps that were recorded in the future."""
+        p = tmp_path / "v3_test.db"
+        run_migrations(p)
+        conn = get_connection(p)
+        # Insert a corrupted row with timestamp 1 hour in the future
+        conn.execute(
+            "INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw) "
+            "VALUES ('2026-09-03T18:14:04+00:00', '2026-09-03T17:14:04+00:00', '192.168.1.1', 'Proxmox', 'pveproxy', 1, 6, 'msg', 'raw')"
+        )
+        conn.commit()
+        from app.core.migrations import migrate_v3
+        migrate_v3(conn)
+        conn.commit()
+        row = conn.execute("SELECT timestamp, received_at FROM logs").fetchone()
+        conn.close()
+        assert row[0] == row[1]

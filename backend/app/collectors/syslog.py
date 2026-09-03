@@ -118,7 +118,23 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
                 # the message likely came from the previous year
                 if parsed_month > now.month:
                     dt = dt.replace(year=now.year - 1)
-                result["timestamp"] = dt.replace(tzinfo=datetime.timezone.utc).isoformat()
+
+                # RFC 3164 timestamps lack timezone information and are emitted in the sender's local time.
+                # First, attempt to localize using the host/container configured local timezone.
+                local_tz = datetime.datetime.now().astimezone().tzinfo
+                dt_utc = dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+                
+                # If the resulting UTC timestamp is in the future compared to arrival time (now),
+                # the sender is in a positive timezone ahead of the container's timezone.
+                # Compensate for the sender timezone offset difference.
+                diff_seconds = (dt_utc - now).total_seconds()
+                if diff_seconds > 60:
+                    offset_hours = round(diff_seconds / 3600)
+                    dt_utc -= datetime.timedelta(hours=offset_hours)
+                
+                # Preserve microsecond arrival precision for proper sub-second ordering
+                dt_utc = dt_utc.replace(microsecond=now.microsecond)
+                result["timestamp"] = dt_utc.isoformat()
             except ValueError:
                 pass
                 

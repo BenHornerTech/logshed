@@ -120,6 +120,15 @@ describe('formatLocalTimestamp Helper (Item #5)', () => {
     expect(formatLocalTimestamp('')).toBe('');
     expect(formatLocalTimestamp('invalid-date')).toBe('invalid-date');
   });
+
+  it('falls back to received_at when timestamp is in the future (>60s ahead of received_at)', () => {
+    const futureTs = '2026-09-03T18:14:04.000Z';
+    const receivedAt = '2026-09-03T17:14:04.053Z';
+    const formatted = formatLocalTimestamp(futureTs, receivedAt);
+    const date = new Date(receivedAt);
+    const expected = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}.053`;
+    expect(formatted).toBe(expected);
+  });
 });
 
 describe('LiveLogStream Component', () => {

@@ -189,10 +189,23 @@ def migrate_v2(conn: sqlite3.Connection) -> None:
     ensure_ai_audit_columns(conn)
 
 
+def migrate_v3(conn: sqlite3.Connection) -> None:
+    """
+    Migration v3: Fix corrupted RFC 3164 timestamps stored with naive timestamps tagged as UTC.
+    Any log timestamp that is in the future compared to received_at (+60s tolerance) is
+    reset to received_at.
+    """
+    logger.info("Running migration v3 (correcting future-dated RFC 3164 timestamps)...")
+    conn.execute(
+        "UPDATE logs SET timestamp = received_at WHERE timestamp > datetime(received_at, '+60 seconds');"
+    )
+
+
 # Registry of migrations to run. Must be ordered by version ascending.
 MIGRATIONS = [
     (1, migrate_v1),
     (2, migrate_v2),
+    (3, migrate_v3),
 ]
 
 def run_migrations(db_path: Union[str, Path]) -> None:

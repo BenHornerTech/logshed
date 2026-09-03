@@ -17,16 +17,31 @@ import { LogSearchBar } from './LogSearchBar.tsx';
 import { LogDetailModal } from './LogDetailModal.tsx';
 import { fetchLogs, fetchLogFacets } from '../../api/logs.ts';
 
-export function formatLocalTimestamp(ts: string): string {
-  if (!ts) return '';
+function normalizeIsoString(ts: string): string {
+  let parseable = ts.trim();
+  if (!parseable.endsWith('Z') && !/[+-]\d{2}(:\d{2})?$/.test(parseable)) {
+    parseable = parseable.replace(' ', 'T') + 'Z';
+  }
+  return parseable;
+}
+
+export function formatLocalTimestamp(ts: string, fallbackTs?: string): string {
+  if (!ts && !fallbackTs) return '';
   try {
-    let parseable = ts;
-    if (!parseable.endsWith('Z') && !/[+-]\d{2}(:\d{2})?$/.test(parseable)) {
-      parseable = parseable.replace(' ', 'T') + 'Z';
+    let target = ts || fallbackTs || '';
+    // If timestamp is clearly in the future compared to received_at (> 60s),
+    // clamp to fallbackTs (received_at) to avoid 1-hour future offsets on legacy RFC 3164 rows
+    if (ts && fallbackTs) {
+      const dTs = new Date(normalizeIsoString(ts));
+      const dFb = new Date(normalizeIsoString(fallbackTs));
+      if (!isNaN(dTs.getTime()) && !isNaN(dFb.getTime()) && dTs.getTime() - dFb.getTime() > 60000) {
+        target = fallbackTs;
+      }
     }
+    const parseable = normalizeIsoString(target);
     const d = new Date(parseable);
     if (isNaN(d.getTime())) {
-      return ts;
+      return target;
     }
     const hours = String(d.getHours()).padStart(2, '0');
     const minutes = String(d.getMinutes()).padStart(2, '0');
@@ -34,7 +49,7 @@ export function formatLocalTimestamp(ts: string): string {
     const millis = String(d.getMilliseconds()).padStart(3, '0');
     return `${hours}:${minutes}:${seconds}.${millis}`;
   } catch {
-    return ts;
+    return ts || fallbackTs || '';
   }
 }
 
@@ -753,7 +768,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
                       className="text-slate-400 truncate pr-2"
                       title={`UTC: ${log.timestamp}\nReceived: ${log.received_at}`}
                     >
-                      {formatLocalTimestamp(log.timestamp)}
+                      {formatLocalTimestamp(log.timestamp, log.received_at)}
                     </div>
 
                     {/* Severity Badge */}
