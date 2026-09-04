@@ -2,7 +2,7 @@
 
 ## Build & Test Commands
 - Run backend tests: `.venv/bin/pytest backend/tests/ -v`
-- Run single test file: `.venv/bin/pytest backend/tests/test_phase1.py -v`
+- Run single test file: `.venv/bin/pytest backend/tests/test_schema.py -v`
 - Run frontend tests: `cd frontend && npm test`
 - Build frontend: `cd frontend && npm run build`
 - Python Environment: Always execute Python tools using `.venv/bin/python` or `.venv/bin/pytest` (or prefix shell commands with `source .venv/bin/activate && ...`). Never use the global system Python.

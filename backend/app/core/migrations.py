@@ -163,64 +163,9 @@ CREATE TABLE system_settings (
 ''')
 
 
-def ensure_ai_audit_columns(conn: sqlite3.Connection) -> None:
-    """
-    Idempotently verifies and adds tokens_in, tokens_out, tokens_thoughts
-    columns to ai_audit_log if they are missing.
-    """
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(ai_audit_log);")
-    existing_cols = {row[1] for row in cursor.fetchall()}
-    if not existing_cols:
-        return
-    for col in ("tokens_in", "tokens_out", "tokens_thoughts"):
-        if col not in existing_cols:
-            try:
-                conn.execute(f"ALTER TABLE ai_audit_log ADD COLUMN {col} INTEGER DEFAULT 0;")
-                logger.info(f"Added missing column '{col}' to ai_audit_log table.")
-            except sqlite3.OperationalError as e:
-                logger.warning(f"Could not add column '{col}' to ai_audit_log: {e}")
-
-
-def migrate_v2(conn: sqlite3.Connection) -> None:
-    """
-    Migration v2: Add tokens_in, tokens_out, and tokens_thoughts columns to ai_audit_log.
-    """
-    logger.info("Running migration v2 (adding tokens_in, tokens_out, tokens_thoughts to ai_audit_log)...")
-    ensure_ai_audit_columns(conn)
-
-
-def migrate_v3(conn: sqlite3.Connection) -> None:
-    """
-    Migration v3: Fix corrupted RFC 3164 timestamps stored with naive timestamps tagged as UTC.
-    Any log timestamp that is in the future compared to received_at (+60s tolerance) is
-    reset to received_at.
-    """
-    logger.info("Running migration v3 (correcting future-dated RFC 3164 timestamps)...")
-    conn.execute(
-        "UPDATE logs SET timestamp = received_at WHERE timestamp > datetime(received_at, '+60 seconds');"
-    )
-
-
-def migrate_v4(conn: sqlite3.Connection) -> None:
-    """
-    Migration v4: Add system_prompt column to ai_audit_log table.
-    Allows audit tracking of the surrounding system instructions envelope sent to the LLM.
-    """
-    logger.info("Running migration v4 (adding system_prompt to ai_audit_log)...")
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(ai_audit_log);")
-    columns = [col[1] for col in cursor.fetchall()]
-    if "system_prompt" not in columns:
-        conn.execute("ALTER TABLE ai_audit_log ADD COLUMN system_prompt TEXT;")
-
-
 # Registry of migrations to run. Must be ordered by version ascending.
 MIGRATIONS = [
     (1, migrate_v1),
-    (2, migrate_v2),
-    (3, migrate_v3),
-    (4, migrate_v4),
 ]
 
 def run_migrations(db_path: Union[str, Path]) -> None:

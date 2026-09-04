@@ -1,10 +1,7 @@
 """
-Phase 5 Verification Test Suite for LogShed.
-Tests on-demand AI preview & execution (Gemini, OpenAI/compatible), secret redaction,
-audit logging, and same-host constraints.
+Tests for AI engine, prompt construction, token estimation, Gemini/OpenAI dispatch, and audit logging.
 """
 
-import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,7 +10,6 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.core import pipeline as pipeline_mod
-from app.core.config import get_secret_key_path
 from app.core.migrations import run_migrations
 from app.core.rate_limiter import login_rate_limiter
 from app.core.security import (
@@ -63,21 +59,17 @@ def populated_db(tmp_path: Path):
     conn = sqlite3.connect(str(db_file))
     cursor = conn.cursor()
 
-    # Populate admin auth
     pwd_hash = hash_password("SuperSecretAdminPassword123!")
     cursor.execute(
         "INSERT INTO admin_auth (id, password_hash, created_at, updated_at) VALUES (1, ?, '2026-08-29T10:00:00Z', '2026-08-29T10:00:00Z')",
         (pwd_hash,),
     )
 
-    # Populate system settings with encrypted secrets
     enc_api_key = encrypt_value("test-gemini-key-12345")
-
     cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_provider', 'gemini', '2026-08-29T10:00:00Z', 0)")
     cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_model', 'gemini-2.5-flash', '2026-08-29T10:00:00Z', 0)")
     cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_api_key', ?, '2026-08-29T10:00:00Z', 1)", (enc_api_key,))
 
-    # Populate test logs: 1 & 2 on host router (192.168.1.1), 3 on proxmox-01 (192.168.1.50)
     logs = [
         ("2026-08-29T12:00:01Z", "2026-08-29T12:00:01Z", "192.168.1.1", "router", "dnsmasq", 1, 3, "failed auth token=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do_not_leak_this_token", "raw1"),
         ("2026-08-29T12:00:02Z", "2026-08-29T12:00:02Z", "192.168.1.1", "router", "dnsmasq", 1, 4, "upstream timeout connecting to 1.1.1.1:53 with api_key=supersecret12345", "raw2"),
@@ -109,8 +101,11 @@ async def auth_client(auth_cookie):
         yield ac
 
 
+# ===================================================================
+# 1. AI Engine Direct Functions
+# ===================================================================
+
 class TestAiEngineDirect:
-    """Direct unit tests for prompt building, response parsing, and provider dispatch functions."""
 
     def test_build_analysis_prompt_structure(self):
         prompt = ai_engine.build_analysis_prompt(
@@ -201,7 +196,6 @@ Multiple transaction queries deadlock on shared index.
             assert tokens_thoughts == 0
             assert tokens == 320
             assert mock_generate.called
-            # Verify API key is passed to the Client constructor
             mock_genai.Client.assert_called_once_with(api_key="test-key")
 
     @pytest.mark.asyncio
@@ -259,7 +253,6 @@ Multiple transaction queries deadlock on shared index.
             assert tokens_thoughts == 0
             assert tokens == 210
             assert mock_create.called
-            # Verify the custom base_url was passed to the client
             mock_openai_cls.assert_called_once_with(
                 api_key="sk-test",
                 base_url="http://localhost:11434/v1",
@@ -304,7 +297,7 @@ Multiple transaction queries deadlock on shared index.
             mock_client_instance.aio.models.generate_content = mock_generate
             mock_genai.Client.return_value = mock_client_instance
 
-            # 1. In production (no DEBUG, no ENVIRONMENT), suppress stack trace (exc_info=False)
+            # 1. In production, suppress stack trace
             monkeypatch.delenv("DEBUG", raising=False)
             monkeypatch.delenv("ENVIRONMENT", raising=False)
             with pytest.raises(RuntimeError):
@@ -326,10 +319,14 @@ Multiple transaction queries deadlock on shared index.
             mock_warn.assert_called_with("AI analysis request failed: API quota exceeded for project 12345", exc_info=True)
 
 
+# ===================================================================
+# 2. AI Preview & Gating Endpoints
+# ===================================================================
+
 class TestAiPreviewAndGating:
+
     @pytest.mark.asyncio
     async def test_preview_returns_redacted_text_and_no_llm_call(self, populated_db, auth_client):
-        """Preview scrubs tokens and never triggers an outbound LLM call."""
         with patch("app.api.ai.execute_ai_analysis", new_callable=AsyncMock) as mock_exec:
             res = await auth_client.post(
                 "/api/ai/preview",
@@ -346,12 +343,10 @@ class TestAiPreviewAndGating:
             assert data["provider"] == "gemini"
             assert data["model"] == "gemini-2.5-flash"
             assert data["estimated_tokens"] > 0
-            # Ensure zero LLM calls were made
             mock_exec.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_preview_and_analyze_reject_multi_host_ids(self, populated_db, auth_client):
-        """Preview and Analyze reject log IDs spanning disparate source_alias / source_ip with 400."""
         # Log 1 is router (192.168.1.1), Log 3 is proxmox-01 (192.168.1.50)
         preview_res = await auth_client.post(
             "/api/ai/preview",
@@ -369,7 +364,6 @@ class TestAiPreviewAndGating:
 
     @pytest.mark.asyncio
     async def test_preview_injects_host_alias_notes(self, populated_db, auth_client):
-        """Preview retrieves notes from host_aliases for source_ip and injects into prompt."""
         conn = sqlite3.connect(populated_db)
         cursor = conn.cursor()
         cursor.execute(
@@ -379,7 +373,6 @@ class TestAiPreviewAndGating:
         conn.commit()
         conn.close()
 
-        # Log 3 has source_ip 192.168.1.50 (proxmox-01)
         res = await auth_client.post("/api/ai/preview", json={"log_ids": [3]})
         assert res.status_code == 200
         prompt = res.json()["sanitized_prompt"]
@@ -387,7 +380,6 @@ class TestAiPreviewAndGating:
 
     @pytest.mark.asyncio
     async def test_preview_token_estimation_includes_system_prompt_and_envelopes(self, populated_db, auth_client):
-        """Token estimation includes SYSTEM_PROMPT (~135 tokens) and message framing (50 tokens)."""
         res = await auth_client.post(
             "/api/ai/preview",
             json={"log_ids": [1, 2]},
@@ -397,14 +389,26 @@ class TestAiPreviewAndGating:
         full_prompt = data["sanitized_prompt"]
         expected_tokens = max(1, int(len(full_prompt) // 3.5 + len(ai_engine.SYSTEM_PROMPT) // 3.5 + 50))
         assert data["estimated_tokens"] == expected_tokens
-        # Discrepancy fix: should be well above old estimate (~160) and realistically represent input
         assert data["estimated_tokens"] >= 250
 
+    @pytest.mark.asyncio
+    async def test_preview_returns_system_prompt_and_tokens(self, populated_db, auth_client):
+        res = await auth_client.post("/api/ai/preview", json={"log_ids": [1, 2]})
+        assert res.status_code == 200
+        data = res.json()
+        assert "system_prompt" in data
+        assert len(data["system_prompt"]) > 0
+        assert data["estimated_tokens"] > 100
+
+
+# ===================================================================
+# 3. AI Analyze Workflow & Audit Logging
+# ===================================================================
 
 class TestAiAnalyzeWorkflow:
+
     @pytest.mark.asyncio
     async def test_analyze_passes_host_notes_to_engine(self, populated_db, auth_client):
-        """Analyze retrieves notes from host_aliases and passes host_notes to execute_ai_analysis."""
         conn = sqlite3.connect(populated_db)
         cursor = conn.cursor()
         cursor.execute(
@@ -437,7 +441,6 @@ class TestAiAnalyzeWorkflow:
 
     @pytest.mark.asyncio
     async def test_analyze_gemini_provider(self, populated_db, auth_client):
-        """Analyze dispatches to Gemini endpoint, parses sections, and writes to audit log."""
         mock_raw_response = (
             "## Summary\n"
             "DNS server encountered authentication failure and upstream connection timeouts.\n\n"
@@ -484,7 +487,6 @@ class TestAiAnalyzeWorkflow:
             assert data["tokens_used"] == 245
             assert data["audit_id"] is not None
 
-            # Verify mock call parameters
             assert mock_exec.called
             call_kwargs = mock_exec.call_args[1]
             assert call_kwargs["provider"] == "gemini"
@@ -499,7 +501,6 @@ class TestAiAnalyzeWorkflow:
 
     @pytest.mark.asyncio
     async def test_analyze_openai_compatible_provider(self, populated_db, auth_client, tmp_path):
-        """Analyze dispatches to OpenAI / OpenAI-compatible endpoint with custom base_url."""
         db_file = tmp_path / "logs.db"
         conn = sqlite3.connect(str(db_file))
         enc_ollama_key = encrypt_value("ollama-key")
@@ -551,7 +552,6 @@ class TestAiAnalyzeWorkflow:
 
     @pytest.mark.asyncio
     async def test_audit_log_persisted_and_queryable(self, populated_db, auth_client):
-        """Every analyze execution records exactly one row to ai_audit_log and is accessible via /api/ai/audit."""
         with patch(
             "app.api.ai.execute_ai_analysis",
             new_callable=AsyncMock,
@@ -578,7 +578,7 @@ class TestAiAnalyzeWorkflow:
         assert audit_res.status_code == 200
         audit_data = audit_res.json()
         assert audit_data["total"] >= 1
-        
+
         matching = [item for item in audit_data["items"] if item["id"] == audit_id]
         assert len(matching) == 1
         entry = matching[0]
@@ -590,8 +590,6 @@ class TestAiAnalyzeWorkflow:
 
     @pytest.mark.asyncio
     async def test_delete_ai_audit_item_and_clear_all(self, populated_db, auth_client):
-        """DELETE /api/ai/audit/{id} deletes a single item, and DELETE /api/ai/audit clears all."""
-        # Create an audit entry
         with patch(
             "app.api.ai.execute_ai_analysis",
             new_callable=AsyncMock,
@@ -604,17 +602,14 @@ class TestAiAnalyzeWorkflow:
             assert res.status_code == 200
             audit_id = res.json()["audit_id"]
 
-        # Delete single item
         del_res = await auth_client.delete(f"/api/ai/audit/{audit_id}")
         assert del_res.status_code == 200
         assert del_res.json()["status"] == "ok"
         assert del_res.json()["deleted_id"] == audit_id
 
-        # Re-deleting returns 404
         del_res_404 = await auth_client.delete(f"/api/ai/audit/{audit_id}")
         assert del_res_404.status_code == 404
 
-        # Create another item and test clear all
         with patch(
             "app.api.ai.execute_ai_analysis",
             new_callable=AsyncMock,
@@ -626,20 +621,17 @@ class TestAiAnalyzeWorkflow:
         assert clear_res.status_code == 200
         assert clear_res.json()["status"] == "ok"
 
-        # Verify audit is empty
         list_res = await auth_client.get("/api/ai/audit")
         assert list_res.status_code == 200
         assert list_res.json()["total"] == 0
 
     @pytest.mark.asyncio
     async def test_analyze_with_prompt_override_dispatches_directly_and_audits(self, populated_db, auth_client):
-        """When prompt_override is provided, dispatch directly to LLM without regenerating and audit it."""
         mock_raw_response = (
             "## Summary\nOverridden prompt summary.\n\n"
             "## Root Cause\nOverridden prompt cause.\n\n"
             "## Actionable Remediation\nOverridden prompt remediation."
         )
-
         custom_prompt = "### System Metadata\n- Host: router\nCustom operator-edited prompt payload: dnsmasq dropped queries on router."
 
         with patch(
@@ -669,12 +661,10 @@ class TestAiAnalyzeWorkflow:
             assert data["summary"] == "Overridden prompt summary."
             audit_id = data["audit_id"]
 
-            # Verify execute_ai_analysis received prompt_override
             assert mock_exec.called
             call_kwargs = mock_exec.call_args[1]
             assert call_kwargs["prompt_override"] == custom_prompt
 
-            # Verify prompt_override is recorded in audit log
             audit_res = await auth_client.get("/api/ai/audit?limit=5")
             assert audit_res.status_code == 200
             matching = [item for item in audit_res.json()["items"] if item["id"] == audit_id]
@@ -683,7 +673,6 @@ class TestAiAnalyzeWorkflow:
 
     @pytest.mark.asyncio
     async def test_analyze_api_failure_logging_concise(self, populated_db, auth_client, monkeypatch):
-        """API exceptions in /api/ai/analyze log concise warnings without stack trace in production."""
         monkeypatch.delenv("DEBUG", raising=False)
         monkeypatch.delenv("ENVIRONMENT", raising=False)
 
@@ -696,7 +685,6 @@ class TestAiAnalyzeWorkflow:
 
     @pytest.mark.asyncio
     async def test_settings_ai_system_prompt_crud(self, populated_db, auth_client):
-        """GET /api/settings returns default system prompt, POST /api/settings updates it."""
         res = await auth_client.get("/api/settings")
         assert res.status_code == 200
         data = res.json()
@@ -711,18 +699,7 @@ class TestAiAnalyzeWorkflow:
         assert res2.json()["ai_system_prompt"] == custom_prompt
 
     @pytest.mark.asyncio
-    async def test_preview_returns_system_prompt_and_tokens(self, populated_db, auth_client):
-        """POST /api/ai/preview includes system_prompt and accounts for its length in token estimate."""
-        res = await auth_client.post("/api/ai/preview", json={"log_ids": [1, 2]})
-        assert res.status_code == 200
-        data = res.json()
-        assert "system_prompt" in data
-        assert len(data["system_prompt"]) > 0
-        assert data["estimated_tokens"] > 100
-
-    @pytest.mark.asyncio
     async def test_analyze_with_system_prompt_override_and_audit(self, populated_db, auth_client):
-        """POST /api/ai/analyze dispatches system_prompt_override and stores it in ai_audit_log."""
         custom_sys = "Custom system instructions for root cause triage."
         mock_raw = "## Summary\nTest summary\n\n## Root Cause\nTest cause\n\n## Actionable Remediation\nTest fix"
         with patch(
@@ -754,43 +731,8 @@ class TestAiAnalyzeWorkflow:
             call_kwargs = mock_exec.call_args[1]
             assert call_kwargs["system_prompt"] == custom_sys
 
-            # Check audit log returns system_prompt
             audit_res = await auth_client.get("/api/ai/audit?limit=5")
             assert audit_res.status_code == 200
             matching = [item for item in audit_res.json()["items"] if item["id"] == audit_id]
             assert len(matching) == 1
             assert matching[0]["system_prompt"] == custom_sys
-
-    @pytest.mark.asyncio
-    async def test_migration_v4_adds_system_prompt_column(self, tmp_path):
-        """Test migration v4 safely adds system_prompt column to existing ai_audit_log table."""
-        from app.core.migrations import migrate_v4, get_connection
-        db_path = tmp_path / "test_migration_v4.db"
-        with get_connection(db_path) as conn:
-            # Create pre-v4 table without system_prompt
-            conn.execute(
-                """
-                CREATE TABLE ai_audit_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME NOT NULL,
-                    source_alias TEXT NOT NULL,
-                    app_name TEXT NOT NULL,
-                    log_count INTEGER NOT NULL,
-                    user_context TEXT,
-                    model TEXT NOT NULL,
-                    prompt_sent TEXT NOT NULL,
-                    response_text TEXT NOT NULL,
-                    tokens_in INTEGER NOT NULL DEFAULT 0,
-                    tokens_out INTEGER NOT NULL DEFAULT 0,
-                    tokens_thoughts INTEGER NOT NULL DEFAULT 0,
-                    tokens_used INTEGER NOT NULL DEFAULT 0
-                );
-                """
-            )
-            # Run migration v4
-            migrate_v4(conn)
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(ai_audit_log);")
-            columns = [col[1] for col in cursor.fetchall()]
-            assert "system_prompt" in columns
-
