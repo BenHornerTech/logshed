@@ -103,7 +103,7 @@ class SettingsUpdateRequest(BaseModel):
     ai_api_key: Optional[str] = None
     ai_base_url: Optional[str] = None
     ai_system_prompt: Optional[str] = None
-    retention_days: Optional[int] = Field(None, ge=1, le=30)
+    retention_days: Optional[int] = Field(None, ge=1, le=365, description="Log retention period in days (1-365, default 30)")
 
 
 # ---------------------------------------------------------------------------

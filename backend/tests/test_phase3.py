@@ -363,9 +363,15 @@ class TestEncryptionAndKeyManagement:
             val = cursor.fetchone()[0]
             assert decrypt_value(val) == "sk-1234567890abcdef1234567890"
 
-        # 5. Verify retention_days > 30 is rejected per SPEC.md (1-30 days)
-        res_invalid = await client.post("/api/settings", json={"retention_days": 31})
+        # 5. Verify retention_days validation (1-365 days)
+        res_valid = await client.post("/api/settings", json={"retention_days": 365})
+        assert res_valid.status_code == 200
+
+        res_invalid = await client.post("/api/settings", json={"retention_days": 366})
         assert res_invalid.status_code == 422
+
+        res_invalid_low = await client.post("/api/settings", json={"retention_days": 0})
+        assert res_invalid_low.status_code == 422
 
         res_invalid2 = await client.post("/api/settings", json={"retention_days": 3650})
         assert res_invalid2.status_code == 422

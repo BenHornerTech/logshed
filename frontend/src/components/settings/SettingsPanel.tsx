@@ -32,7 +32,6 @@ export const SettingsPanel: React.FC = () => {
   const [auditLogs, setAuditLogs] = useState<AiAuditEntry[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
 
   // Form states
   const [aiProvider, setAiProvider] = useState<'gemini' | 'openai' | 'openai_compatible'>('gemini');
@@ -40,6 +39,21 @@ export const SettingsPanel: React.FC = () => {
   const [aiApiKey, setAiApiKey] = useState<string>('');
   const [aiBaseUrl, setAiBaseUrl] = useState<string>('');
   const [aiSystemPrompt, setAiSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
+
+  // Save feedback state
+  const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
+  const [saveInlineSuccess, setSaveInlineSuccess] = useState<boolean>(false);
+  const [saveInlineError, setSaveInlineError] = useState<string | null>(null);
+
+  // Track dirty state against loaded baseline settings
+  const isDirty = Boolean(
+    settings &&
+      (aiProvider !== settings.ai_provider ||
+        aiModel !== (settings.ai_model || 'gemini-2.5-flash') ||
+        aiApiKey !== (settings.ai_api_key || '') ||
+        aiBaseUrl !== (settings.ai_base_url || '') ||
+        aiSystemPrompt !== (settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT))
+  );
 
   // Password reset state
   const [currentPwd, setCurrentPwd] = useState<string>('');
@@ -91,9 +105,13 @@ export const SettingsPanel: React.FC = () => {
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isDirty || isSavingSettings) return;
+
     try {
+      setIsSavingSettings(true);
       setErrorMsg(null);
-      setSaveSuccessMsg(null);
+      setSaveInlineError(null);
+      setSaveInlineSuccess(false);
 
       await updateSettings({
         ai_provider: aiProvider,
@@ -103,11 +121,23 @@ export const SettingsPanel: React.FC = () => {
         ai_system_prompt: aiSystemPrompt,
       });
 
-      setSaveSuccessMsg('Settings saved successfully and secrets encrypted.');
-      setTimeout(() => setSaveSuccessMsg(null), 3500);
-      await loadAllData();
+      // Reload updated settings as baseline
+      const settRes = await fetchSettings();
+      setSettings(settRes);
+      setAiProvider(settRes.ai_provider);
+      setAiModel(settRes.ai_model || 'gemini-2.5-flash');
+      setAiApiKey(settRes.ai_api_key || '');
+      setAiBaseUrl(settRes.ai_base_url || '');
+      setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
+
+      setSaveInlineSuccess(true);
+      setTimeout(() => setSaveInlineSuccess(false), 3000);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to update settings.');
+      const msg = err.message || 'Failed to update settings.';
+      setErrorMsg(msg);
+      setSaveInlineError(msg);
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -218,12 +248,7 @@ export const SettingsPanel: React.FC = () => {
         </div>
       )}
 
-      {saveSuccessMsg && (
-        <div className="p-3 bg-emerald-950/60 border border-emerald-800 rounded-lg flex items-start gap-2 text-xs text-emerald-300">
-          <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-          <span>{saveSuccessMsg}</span>
-        </div>
-      )}
+
 
       {/* Storage & Retention Section */}
       <section className="space-y-4">
@@ -245,12 +270,20 @@ export const SettingsPanel: React.FC = () => {
       <form onSubmit={handleSaveSettings} className="space-y-6">
         {/* AI Provider Section */}
         <section className="bg-dark-900 border border-dark-700 rounded-xl p-5 shadow-md space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-              <Brain className="w-4 h-4 text-accent-500" />
-              <span>On-Demand AI Provider Configuration</span>
-            </h3>
-            <span className="text-[11px] font-mono text-emerald-400">Encrypted at rest</span>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <Brain className="w-4 h-4 text-accent-500" />
+                <span>On-Demand AI Provider Configuration (Keys encrypted at rest)</span>
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Fernet encryption secures API keys against exposure in database exports, disk clones, and backups.
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-950/60 border border-emerald-800 text-[11px] font-mono text-emerald-400 shrink-0 self-start sm:self-auto">
+              <Lock className="w-3 h-3 text-emerald-400" />
+              <span>Keys encrypted at rest</span>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -340,13 +373,43 @@ export const SettingsPanel: React.FC = () => {
           </div>
         </section>
 
-        {/* Submit Button for General Settings */}
-        <div className="flex justify-end">
+        {/* Submit Button for General Settings with Real-Time Inline Feedback */}
+        <div className="flex items-center justify-end gap-3 pt-2">
+          {isSavingSettings && (
+            <div className="flex items-center gap-1.5 text-xs text-slate-400 font-mono">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-accent-500" />
+              <span>Saving settings...</span>
+            </div>
+          )}
+
+          {saveInlineSuccess && (
+            <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-mono animate-in fade-in">
+              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Settings saved successfully!</span>
+            </div>
+          )}
+
+          {saveInlineError && (
+            <div className="flex items-center gap-1.5 text-xs text-red-400 font-mono animate-in fade-in">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              <span>{saveInlineError}</span>
+            </div>
+          )}
+
           <button
             type="submit"
-            className="bg-accent-600 hover:bg-accent-500 text-white font-medium px-5 py-2 rounded-lg text-xs flex items-center gap-2 transition shadow-md"
+            disabled={!isDirty || isSavingSettings}
+            className={`font-medium px-5 py-2 rounded-lg text-xs flex items-center gap-2 transition ${
+              !isDirty || isSavingSettings
+                ? 'opacity-40 cursor-not-allowed bg-dark-800 text-slate-500 border border-dark-700'
+                : 'bg-accent-600 hover:bg-accent-500 text-white cursor-pointer shadow-md'
+            }`}
           >
-            <Save className="w-4 h-4" />
+            {isSavingSettings ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
             <span>Save Application Settings</span>
           </button>
         </div>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Trash2, Clock, Check, RefreshCw, AlertCircle } from 'lucide-react';
+import { Trash2, Clock, Check, RefreshCw, AlertCircle, Info } from 'lucide-react';
 import { triggerManualPrune } from '../../api/system.ts';
 import { formatBytes } from './StorageCard.tsx';
 import { PruneResponse } from '../../types.ts';
@@ -52,6 +52,15 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
     }
   };
 
+  const min = 1;
+  const max = 365;
+  const presets = [7, 14, 30, 90, 180, 365];
+
+  // Sync internal state if prop updates
+  React.useEffect(() => {
+    setDays(retentionDays || 30);
+  }, [retentionDays]);
+
   return (
     <div className="bg-dark-900 border border-dark-700 rounded-xl p-5 shadow-md space-y-4">
       <div className="flex items-center justify-between">
@@ -71,22 +80,61 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
         </div>
       )}
 
+      {/* Preset Quick-Select Buttons */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] text-slate-400 font-medium mr-1">Presets:</span>
+        {presets.map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            onClick={() => setDays(preset)}
+            className={`px-2.5 py-0.5 rounded text-[11px] font-mono transition cursor-pointer ${
+              days === preset
+                ? 'bg-accent-600 text-white font-semibold shadow-xs'
+                : 'bg-dark-950 text-slate-400 hover:text-slate-200 hover:bg-dark-800 border border-dark-700'
+            }`}
+          >
+            {preset} Days
+          </button>
+        ))}
+      </div>
+
       {/* Slider Control */}
-      <div>
+      <div className="relative pt-1 pb-2">
         <input
           type="range"
-          min="1"
-          max="30"
+          min={min}
+          max={max}
           value={days}
           onChange={(e) => setDays(parseInt(e.target.value, 10))}
           className="w-full accent-accent-500 bg-dark-950 h-2 rounded-lg cursor-pointer"
         />
-        <div className="flex justify-between text-[10px] font-mono text-slate-500 mt-1">
-          <span>1 Day</span>
-          <span>7 Days</span>
-          <span>14 Days</span>
-          <span>21 Days</span>
-          <span>30 Days</span>
+        <div className="relative h-6 text-[10px] font-mono text-slate-500 mt-1 select-none">
+          {presets.map((val) => {
+            const leftPercent = ((val - min) / (max - min)) * 100;
+            return (
+              <div
+                key={val}
+                style={{ left: `${leftPercent}%` }}
+                onClick={() => setDays(val)}
+                className="absolute -translate-x-1/2 flex flex-col items-center cursor-pointer group hover:text-accent-400 transition"
+                title={`Set retention to ${val} days`}
+              >
+                <div
+                  className={`w-0.5 h-1.5 mb-0.5 transition ${
+                    days === val ? 'bg-accent-400' : 'bg-slate-600 group-hover:bg-slate-400'
+                  }`}
+                />
+                <span
+                  className={`transition whitespace-nowrap ${
+                    days === val ? 'text-accent-400 font-bold' : 'group-hover:text-slate-300'
+                  }`}
+                >
+                  {val === 365 ? '365d' : `${val}d`}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -95,30 +143,54 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
         <button
           onClick={handleSave}
           disabled={isSaving || days === retentionDays}
-          className="bg-dark-800 hover:bg-dark-700 disabled:opacity-40 text-slate-200 border border-dark-600 font-medium px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition"
+          className={`font-medium px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition ${
+            isSaving || days === retentionDays
+              ? 'opacity-40 cursor-not-allowed bg-dark-800 text-slate-500 border border-dark-700'
+              : 'bg-accent-600 hover:bg-accent-500 text-white cursor-pointer shadow-md'
+          }`}
         >
-          {saveSuccess ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Clock className="w-3.5 h-3.5" />}
+          {saveSuccess ? (
+            <Check className="w-3.5 h-3.5 text-emerald-400" />
+          ) : isSaving ? (
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Clock className="w-3.5 h-3.5" />
+          )}
           <span>{saveSuccess ? 'Saved!' : 'Save Retention Policy'}</span>
         </button>
 
-        <button
-          onClick={handlePruneNow}
-          disabled={isPruning}
-          className="bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800 font-medium px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition shadow-xs"
-        >
-          {isPruning ? (
-            <>
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              <span>Pruning & Truncating WAL...</span>
-            </>
-          ) : (
-            <>
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Prune & Vacuum Now</span>
-            </>
-          )}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handlePruneNow}
+            disabled={isPruning}
+            title="Immediately purge logs older than the configured retention policy, optimize the search index, and truncate the SQLite WAL."
+            className="bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800 font-medium px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition shadow-xs cursor-pointer disabled:cursor-not-allowed"
+          >
+            {isPruning ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>Pruning & Truncating WAL...</span>
+              </>
+            ) : (
+              <>
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Prune & Vacuum Now</span>
+              </>
+            )}
+          </button>
+          <div
+            className="text-slate-500 hover:text-slate-300 transition cursor-help p-0.5"
+            title="Pruning runs automatically once every 24 hours. Click 'Prune & Vacuum Now' if you recently lowered your retention days and want to immediately purge older logs, optimize the search index, and truncate the SQLite WAL to reclaim disk space."
+          >
+            <Info className="w-4 h-4" />
+          </div>
+        </div>
       </div>
+
+      {/* Explanatory Caption */}
+      <p className="text-[11px] text-slate-500 leading-relaxed">
+        Automated retention pruning runs daily every 24 hours. Manual prune purges logs older than the saved policy and reclaims disk space immediately.
+      </p>
 
       {/* Prune Result Banner */}
       {pruneResult && (

@@ -163,4 +163,75 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
     expect(screen.getByText(/=== SYSTEM INSTRUCTIONS ===/)).toBeInTheDocument();
     expect(screen.getByText(/=== USER ANALYSIS PROMPT ===/)).toBeInTheDocument();
   });
+
+  it('keeps Save button disabled/dimmed on initial load with masked API key, activates on edit, and shows inline feedback on save', async () => {
+    const updateSpy = vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({ status: 'ok' });
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({
+      ai_provider: 'gemini',
+      ai_model: 'gemini-3.7-flash',
+      ai_api_key: '********',
+      ai_base_url: null,
+      retention_days: 30,
+      has_ai_api_key: true,
+    });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Save Application Settings/i })).toBeInTheDocument();
+    });
+
+    const saveBtn = screen.getByRole('button', { name: /Save Application Settings/i });
+    // Initial state: not dirty, button is disabled and dimmed
+    expect(saveBtn).toBeDisabled();
+    expect(saveBtn.className).toContain('opacity-40');
+    expect(saveBtn.className).toContain('cursor-not-allowed');
+
+    // Edit Default Model Name
+    const modelInput = screen.getByPlaceholderText('gemini-2.5-flash');
+    fireEvent.change(modelInput, { target: { value: 'gemini-2.5-pro' } });
+
+    // Active state: dirty, button is highlighted and enabled
+    expect(saveBtn).not.toBeDisabled();
+    expect(saveBtn.className).toContain('bg-accent-600');
+    expect(saveBtn.className).toContain('cursor-pointer');
+
+    // Click Save
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ai_model: 'gemini-2.5-pro',
+        })
+      );
+      // Real-time inline feedback displayed adjacent to button
+      expect(screen.getByText('Settings saved successfully!')).toBeInTheDocument();
+    });
+
+    // Baseline reloaded -> button returns to disabled and dimmed state
+    await waitFor(() => {
+      expect(saveBtn).toBeDisabled();
+      expect(saveBtn.className).toContain('opacity-40');
+    });
+  });
+
+  it('renders "Keys encrypted at rest" badge, card title, and explanatory Fernet caption', async () => {
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('On-Demand AI Provider Configuration (Keys encrypted at rest)')).toBeInTheDocument();
+    });
+
+    // Badge
+    expect(screen.getByText('Keys encrypted at rest')).toBeInTheDocument();
+
+    // Explanatory caption
+    expect(
+      screen.getByText(
+        'Fernet encryption secures API keys against exposure in database exports, disk clones, and backups.'
+      )
+    ).toBeInTheDocument();
+  });
 });
+
