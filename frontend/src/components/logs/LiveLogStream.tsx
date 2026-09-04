@@ -10,6 +10,8 @@ import {
   ArrowUp,
   Trash2,
   Info,
+  Clock,
+  Loader2,
 } from 'lucide-react';
 import { LogEntry, LogFilterParams } from '../../types.ts';
 import { SeverityBadge } from '../common/SeverityBadge.tsx';
@@ -25,6 +27,11 @@ function cleanIsoString(ts: string): string {
   }
   return parseable;
 }
+
+const MONTH_NAMES = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
 
 export function formatLocalTimestamp(ts: string, fallbackTs?: string): string {
   if (!ts && !fallbackTs) return '';
@@ -44,11 +51,25 @@ export function formatLocalTimestamp(ts: string, fallbackTs?: string): string {
     if (isNaN(d.getTime())) {
       return target;
     }
+
+    const now = new Date();
+    const isToday =
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
+
     const hours = String(d.getHours()).padStart(2, '0');
     const minutes = String(d.getMinutes()).padStart(2, '0');
     const seconds = String(d.getSeconds()).padStart(2, '0');
-    const millis = String(d.getMilliseconds()).padStart(3, '0');
-    return `${hours}:${minutes}:${seconds}.${millis}`;
+
+    if (isToday) {
+      const millis = String(d.getMilliseconds()).padStart(3, '0');
+      return `${hours}:${minutes}:${seconds}.${millis}`;
+    }
+
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = MONTH_NAMES[d.getMonth()];
+    return `${day} ${month} ${hours}:${minutes}:${seconds}`;
   } catch {
     return ts || fallbackTs || '';
   }
@@ -75,6 +96,10 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   const [selectionHostError, setSelectionHostError] = useState<string | null>(null);
   const [activeLogDetail, setActiveLogDetail] = useState<LogEntry | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
+  const [hasMoreLogs, setHasMoreLogs] = useState<boolean>(true);
+  const historicalOffsetRef = useRef<number>(0);
+  const isLoadingMoreRef = useRef<boolean>(false);
   const [filters, setFilters] = useState<LogFilterParams>({});
   const [activeAliasesMap, setActiveAliasesMap] = useState<Record<string, string>>({});
 
@@ -111,6 +136,8 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   const loadInitialLogs = useCallback(async () => {
     try {
       setIsLoadingHistory(true);
+      historicalOffsetRef.current = 0;
+      setHasMoreLogs(true);
       const res = await fetchLogs({
         ...filters,
         limit: 500,
@@ -118,6 +145,10 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       });
       // Keep newest logs at the top (res.logs is ordered DESC)
       setLogs(res.logs);
+      historicalOffsetRef.current = res.logs.length;
+      if (res.logs.length < 500 || (res.total !== undefined && res.logs.length >= res.total)) {
+        setHasMoreLogs(false);
+      }
       setMissedLogsCount(0);
       setLastSelectedLogIndex(null);
       // Auto-scroll to top after initial load
@@ -132,6 +163,42 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       setIsLoadingHistory(false);
     }
   }, [filters]);
+
+  const loadMoreLogs = useCallback(async () => {
+    if (isLoadingMoreRef.current || !hasMoreLogs || isLoadingHistory) return;
+    isLoadingMoreRef.current = true;
+    setIsLoadingMore(true);
+    try {
+      const currentOffset = historicalOffsetRef.current;
+      const res = await fetchLogs({
+        ...filters,
+        limit: 500,
+        offset: currentOffset,
+      });
+      historicalOffsetRef.current = currentOffset + res.logs.length;
+      if (res.logs.length < 500 || (res.total !== undefined && historicalOffsetRef.current >= res.total)) {
+        setHasMoreLogs(false);
+      }
+      if (res.logs.length > 0) {
+        setLogs((prev) => {
+          const existingIds = new Set(prev.map((l) => l.id));
+          const uniqueIncoming = res.logs.filter((l) => !existingIds.has(l.id));
+          if (uniqueIncoming.length === 0 && res.logs.length > 0) {
+            if (res.logs.length < 500) {
+              setHasMoreLogs(false);
+            }
+            return prev;
+          }
+          return [...prev, ...uniqueIncoming];
+        });
+      }
+    } catch (err) {
+      console.error('Failed to load more historical logs', err);
+    } finally {
+      isLoadingMoreRef.current = false;
+      setIsLoadingMore(false);
+    }
+  }, [filters, hasMoreLogs, isLoadingHistory]);
 
   useEffect(() => {
     loadInitialLogs();
@@ -151,6 +218,12 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   useEffect(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+
+    // If viewing a bounded historical range (to is specified), pause/skip live incoming SSE events
+    if (filters.to) {
+      return;
     }
 
     const params = new URLSearchParams();
@@ -195,12 +268,12 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       es.close();
       eventSourceRef.current = null;
     };
-  }, [filters.severity_max, sourcesKey, appsKey]);
+  }, [filters.severity_max, filters.to, sourcesKey, appsKey]);
 
-  // Scroll detection to pause auto-scroll when scrolling down
+  // Scroll detection to pause auto-scroll when scrolling down, and load more when near bottom
   const handleScroll = () => {
     if (!parentRef.current) return;
-    const { scrollTop } = parentRef.current;
+    const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
     const isAtTop = scrollTop <= 10;
 
     if (isAtTop) {
@@ -211,6 +284,13 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     } else {
       if (autoScroll) {
         setAutoScroll(false);
+      }
+    }
+
+    // If operator scrolled near bottom (< 300px from bottom), load older logs
+    if (scrollHeight - scrollTop - clientHeight < 300) {
+      if (hasMoreLogs && !isLoadingMoreRef.current && !isLoadingHistory) {
+        loadMoreLogs();
       }
     }
   };
@@ -234,6 +314,21 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     estimateSize: () => 28, // Compact row height in px
     overscan: 25,
   });
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const lastVirtualItem = virtualItems.length > 0 ? virtualItems[virtualItems.length - 1] : null;
+
+  useEffect(() => {
+    if (!lastVirtualItem) return;
+    if (
+      lastVirtualItem.index >= logs.length - 15 &&
+      hasMoreLogs &&
+      !isLoadingMoreRef.current &&
+      !isLoadingHistory
+    ) {
+      loadMoreLogs();
+    }
+  }, [lastVirtualItem, logs.length, hasMoreLogs, isLoadingHistory, loadMoreLogs]);
 
   // Accumulate permanent set of known hosts and apps so filter choices never vanish (Item #32 & Fix 2-Click Issue)
   const [accumulatedSources, setAccumulatedSources] = useState<string[]>([]);
@@ -614,6 +709,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     setSelectedLogIds(new Set());
     setLastSelectedLogIndex(null);
     setMissedLogsCount(0);
+    setHasMoreLogs(false);
   };
 
   return (
@@ -676,17 +772,27 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
             Screen Buffer: <span className="text-slate-200">{logs.length.toLocaleString()}</span> lines
           </span>
 
-          <button
-            onClick={() => (autoScroll ? setAutoScroll(false) : resumeAutoScroll())}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium border transition ${
-              autoScroll
-                ? 'bg-dark-800 text-emerald-400 border-emerald-900/60 hover:bg-dark-700'
-                : 'bg-amber-950/60 text-amber-300 border-amber-800 hover:bg-amber-900/60'
-            }`}
-          >
-            {autoScroll ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-            <span>{autoScroll ? 'Auto-Scroll ON' : 'Paused'}</span>
-          </button>
+          {filters.to ? (
+            <span
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-amber-950/50 text-amber-300 border border-amber-800/70 font-mono select-none"
+              title="A historical end-time (To) is set. Live stream is paused to preserve historical boundaries."
+            >
+              <Clock className="w-3.5 h-3.5 text-amber-400" />
+              <span>Historical Range (Stream Paused)</span>
+            </span>
+          ) : (
+            <button
+              onClick={() => (autoScroll ? setAutoScroll(false) : resumeAutoScroll())}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium border transition ${
+                autoScroll
+                  ? 'bg-dark-800 text-emerald-400 border-emerald-900/60 hover:bg-dark-700'
+                  : 'bg-amber-950/60 text-amber-300 border-amber-800 hover:bg-amber-900/60'
+              }`}
+            >
+              {autoScroll ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+              <span>{autoScroll ? 'Auto-Scroll ON' : 'Paused'}</span>
+            </button>
+          )}
 
           <button
             onClick={clearLogsBuffer}
@@ -715,7 +821,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       {/* Virtualized Table View */}
       <div className="flex-1 relative overflow-hidden flex flex-col">
         {/* Table Header */}
-        <div className="bg-dark-950 border-b border-dark-700 text-slate-400 text-[11px] font-mono font-semibold grid grid-cols-[36px_140px_65px_130px_130px_1fr_60px] px-3 py-1.5 select-none items-center">
+        <div className="bg-dark-950 border-b border-dark-700 text-slate-400 text-[11px] font-mono font-semibold grid grid-cols-[36px_165px_65px_130px_130px_1fr_60px] px-3 py-1.5 select-none items-center">
           <div className="text-center">#</div>
           <div>TIMESTAMP</div>
           <div>SEV</div>
@@ -766,7 +872,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
-                    className={`log-row grid grid-cols-[36px_140px_65px_130px_130px_1fr_60px] px-3 items-center border-b border-dark-900 cursor-pointer text-[11px] leading-tight ${
+                    className={`log-row grid grid-cols-[36px_165px_65px_130px_130px_1fr_60px] px-3 items-center border-b border-dark-900 cursor-pointer text-[11px] leading-tight ${
                       isSelected ? 'bg-accent-950/40 border-l-2 border-accent-500' : ''
                     }`}
                   >
@@ -828,6 +934,20 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Infinite Scroll Footer: Loading Spinner or End of Range */}
+          {logs.length > 0 && isLoadingMore && (
+            <div className="py-2.5 flex items-center justify-center gap-2 text-slate-400 font-mono text-xs bg-dark-950/90 border-t border-dark-900">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-accent-400" />
+              <span>Loading older logs...</span>
+            </div>
+          )}
+
+          {logs.length > 0 && !hasMoreLogs && !isLoadingHistory && (
+            <div className="py-2.5 flex items-center justify-center text-slate-500 font-mono text-[11px] bg-dark-950 border-t border-dark-900 select-none">
+              — Reached beginning of log history ({logs.length.toLocaleString()} log{logs.length === 1 ? '' : 's'} loaded) —
             </div>
           )}
         </div>

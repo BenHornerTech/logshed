@@ -109,12 +109,28 @@ const sampleLogs: LogEntry[] = [
 ];
 
 describe('formatLocalTimestamp Helper (Item #5)', () => {
-  it('formats UTC ISO timestamp into local HH:mm:ss.SSS', () => {
-    const utcString = '2026-09-03T14:30:15.123Z';
+  it("formats today's timestamps as HH:mm:ss.SSS", () => {
+    const now = new Date();
+    const utcString = now.toISOString();
     const formatted = formatLocalTimestamp(utcString);
-    const date = new Date(utcString);
-    const expected = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}.123`;
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    const millis = String(now.getMilliseconds()).padStart(3, '0');
+    const expected = `${hours}:${minutes}:${seconds}.${millis}`;
     expect(formatted).toBe(expected);
+  });
+
+  it('formats historical timestamps (e.g. from yesterday or a past month) with date as DD MMM HH:mm:ss', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-01T12:00:00Z'));
+    try {
+      const past = new Date(2026, 8, 3, 14, 22, 1, 0); // 03 Sep 14:22:01 in local time
+      const formatted = formatLocalTimestamp(past.toISOString());
+      expect(formatted).toBe('03 Sep 14:22:01');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('handles empty and invalid timestamp strings gracefully', () => {
@@ -123,12 +139,29 @@ describe('formatLocalTimestamp Helper (Item #5)', () => {
   });
 
   it('falls back to received_at when timestamp is in the future (>60s ahead of received_at)', () => {
-    const futureTs = '2026-09-03T18:14:04.000Z';
-    const receivedAt = '2026-09-03T17:14:04.053Z';
+    const now = new Date();
+    const receivedAt = new Date(now.getTime() - 65000).toISOString();
+    const futureTs = new Date(now.getTime() + 100000).toISOString();
     const formatted = formatLocalTimestamp(futureTs, receivedAt);
-    const date = new Date(receivedAt);
-    const expected = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}.053`;
-    expect(formatted).toBe(expected);
+    const d = new Date(receivedAt);
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const seconds = String(d.getSeconds()).padStart(2, '0');
+    const millis = String(d.getMilliseconds()).padStart(3, '0');
+    expect(formatted).toBe(`${hours}:${minutes}:${seconds}.${millis}`);
+  });
+
+  it('falls back to received_at with historical format if received_at is from a prior day', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-01T12:00:00Z'));
+    try {
+      const pastReceived = new Date(2026, 8, 3, 14, 22, 1, 0);
+      const pastFuture = new Date(2026, 8, 3, 15, 22, 1, 0); // 1 hour ahead
+      const formatted = formatLocalTimestamp(pastFuture.toISOString(), pastReceived.toISOString());
+      expect(formatted).toBe('03 Sep 14:22:01');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -542,5 +575,89 @@ describe('LiveLogStream Component', () => {
     // Raw IPs that are aliased (172.22.2.4 and 192.168.1.50) MUST NOT appear in the dropdown!
     expect(within(hostDropdown).queryByText('172.22.2.4')).toBeNull();
     expect(within(hostDropdown).queryByText('192.168.1.50')).toBeNull();
+  });
+
+  it('automatically fetches older logs with offset pagination on infinite scroll (Item #33)', async () => {
+    // Generate 500 initial logs
+    const batch1: LogEntry[] = Array.from({ length: 500 }, (_, i) => ({
+      id: 1000 - i,
+      timestamp: new Date(Date.now() - i * 1000).toISOString(),
+      received_at: new Date(Date.now() - i * 1000).toISOString(),
+      source_ip: '192.168.1.50',
+      source_alias: 'tower-unraid',
+      app_name: 'nginx',
+      facility: 1,
+      severity: 3,
+      message: `Batch 1 Log item #${1000 - i}`,
+      raw: `Log ${1000 - i}`,
+    }));
+
+    const batch2: LogEntry[] = Array.from({ length: 250 }, (_, i) => ({
+      id: 500 - i,
+      timestamp: new Date(Date.now() - (500 + i) * 1000).toISOString(),
+      received_at: new Date(Date.now() - (500 + i) * 1000).toISOString(),
+      source_ip: '192.168.1.50',
+      source_alias: 'tower-unraid',
+      app_name: 'nginx',
+      facility: 1,
+      severity: 3,
+      message: `Batch 2 Log item #${500 - i}`,
+      raw: `Log ${500 - i}`,
+    }));
+
+    const fetchLogsSpy = vi.spyOn(logsApi, 'fetchLogs').mockImplementation(async (params: any) => {
+      if (!params.offset || params.offset === 0) {
+        return { logs: batch1, total: 750, limit: 500, offset: 0 };
+      }
+      return { logs: batch2, total: 750, limit: 500, offset: 500 };
+    });
+
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    // Wait for initial batch of 500 logs to load
+    await waitFor(() => {
+      expect(screen.getByText('Batch 1 Log item #1000')).toBeInTheDocument();
+    });
+
+    // Virtualizer and scroll observer trigger loadMoreLogs for batch 2
+    await waitFor(() => {
+      expect(screen.getByText('Batch 2 Log item #500')).toBeInTheDocument();
+    });
+
+    // Total of 750 logs loaded, and end-of-history banner appears
+    await waitFor(() => {
+      expect(screen.getByText(/Reached beginning of log history \(750 logs loaded\)/i)).toBeInTheDocument();
+    });
+
+    // Verify fetchLogs was called with offset 0 and then offset 500
+    expect(fetchLogsSpy).toHaveBeenCalledWith(expect.objectContaining({ offset: 0, limit: 500 }));
+    expect(fetchLogsSpy).toHaveBeenCalledWith(expect.objectContaining({ offset: 500, limit: 500 }));
+  });
+
+  it('pauses live SSE stream and displays indicator when a historical time ceiling (To) is set', async () => {
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // Initially with no 'to' filter, Auto-Scroll ON button is shown
+    expect(screen.getByText('Auto-Scroll ON')).toBeInTheDocument();
+    expect(screen.queryByText(/Historical Range \(Stream Paused\)/i)).toBeNull();
+
+    // Select Custom time preset to reveal From and To inputs
+    const timeSelect = screen.getByDisplayValue('All Time');
+    fireEvent.change(timeSelect, { target: { value: 'custom' } });
+
+    // Enter a past date into the "To:" input
+    const datetimeInputs = document.querySelectorAll('input[type="datetime-local"]');
+    const toInput = datetimeInputs[1] as HTMLInputElement;
+    fireEvent.change(toInput, { target: { value: '2026-09-01T12:00' } });
+
+    // The toolbar now displays the Historical Range (Stream Paused) badge instead of Auto-Scroll
+    await waitFor(() => {
+      expect(screen.getByText(/Historical Range \(Stream Paused\)/i)).toBeInTheDocument();
+      expect(screen.queryByText('Auto-Scroll ON')).toBeNull();
+    });
   });
 });
