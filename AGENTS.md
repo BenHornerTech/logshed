@@ -20,9 +20,7 @@
 
 ## Workflow Protocol
 1. Consult `SPEC.md` for technical schemas, endpoints, and exact trigger definitions.
-2. Read `PROGRESS.md` before starting any task to understand current implementation state.
-3. At the end of every phase, run the phase verification test suite.
-4. Update `PROGRESS.md` with: completed items, test results, and next steps before concluding.
+2. At the end of every phase, run the phase verification test suite.
 
 ## Dependency & Performance Guardrails
 - **Zero Unapproved Dependencies:** Any package explicitly required by the core backend/frontend specs (`fastapi`, `uvicorn`, `httpx`, `argon2-cffi`, `cryptography`, `google-genai`, `openai`, `pydantic`, `@tanstack/react-virtual`, `recharts`) is pre-approved. Do not add `aiosqlite`. Do not add the `docker` or `aiodocker` SDKs — talk to the Docker Engine API (both `unix:///var/run/docker.sock` and `tcp://proxy:2375`) using `httpx`, with `httpx.HTTPTransport(uds=...)` for the Unix socket case.
