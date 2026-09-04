@@ -15,11 +15,12 @@ from google import genai
 from google.genai import types as genai_types
 from openai import AsyncOpenAI
 
+from app.core.config import is_debug_or_dev
 from app.core.sanitizer import sanitize
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an expert systems engineer, site reliability engineer (SRE), and Linux/Docker administrator.
+DEFAULT_SYSTEM_PROMPT = """You are an expert systems engineer, site reliability engineer (SRE), and Linux/Docker administrator.
 Analyze the following sanitized server/container logs and provide a structured diagnosis in Markdown format.
 
 Your response MUST include the following three sections with exact headers:
@@ -31,6 +32,8 @@ A detailed explanation of why the event or failure occurred based on the log evi
 
 ## Actionable Remediation
 Step-by-step commands, configuration fixes, or debugging steps to resolve the issue."""
+
+SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
 
 
 def build_analysis_prompt(
@@ -135,6 +138,7 @@ async def dispatch_gemini_request(
     api_key: str,
     model: str,
     prompt: str,
+    system_prompt: Optional[str] = None,
     timeout: float = 60.0,
 ) -> tuple[str, int, int, int, int]:
     """
@@ -144,6 +148,8 @@ async def dispatch_gemini_request(
     if not api_key:
         raise ValueError("Google Gemini API key is not configured in settings.")
 
+    effective_system_prompt = (system_prompt and system_prompt.strip()) or DEFAULT_SYSTEM_PROMPT
+
     try:
         client = genai.Client(api_key=api_key)
 
@@ -151,7 +157,7 @@ async def dispatch_gemini_request(
             model=model,
             contents=prompt,
             config=genai_types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=effective_system_prompt,
                 temperature=0.2,
             ),
         )
@@ -187,7 +193,10 @@ async def dispatch_gemini_request(
     except Exception as e:
         clean_err = str(sanitize(str(e)[:500]))
         err_msg = f"Gemini API error: {clean_err}"
-        logger.error(err_msg)
+        if is_debug_or_dev():
+            logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
+        else:
+            logger.warning(f"AI analysis request failed: {clean_err}")
         raise RuntimeError(err_msg)
 
 
@@ -196,6 +205,7 @@ async def dispatch_openai_request(
     model: str,
     prompt: str,
     base_url: Optional[str] = None,
+    system_prompt: Optional[str] = None,
     timeout: float = 60.0,
 ) -> tuple[str, int, int, int, int]:
     """
@@ -203,6 +213,7 @@ async def dispatch_openai_request(
     via the openai SDK with configurable base_url.
     """
     effective_base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+    effective_system_prompt = (system_prompt and system_prompt.strip()) or DEFAULT_SYSTEM_PROMPT
 
     try:
         client = AsyncOpenAI(
@@ -214,7 +225,7 @@ async def dispatch_openai_request(
         response = await client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": effective_system_prompt},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
@@ -252,7 +263,10 @@ async def dispatch_openai_request(
     except Exception as e:
         clean_err = str(sanitize(str(e)[:500]))
         err_msg = f"OpenAI endpoint error: {clean_err}"
-        logger.error(err_msg)
+        if is_debug_or_dev():
+            logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
+        else:
+            logger.warning(f"AI analysis request failed: {clean_err}")
         raise RuntimeError(err_msg)
 
 
@@ -267,19 +281,24 @@ async def execute_ai_analysis(
     log_count: int,
     user_context: Optional[str] = None,
     host_notes: Optional[str] = None,
+    prompt_override: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> tuple[str, str, str, str, str, int, int, int, int]:
     """
     Unified entrypoint to run on-demand AI analysis.
     Returns (summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used).
     """
-    prompt = build_analysis_prompt(
-        source_alias=source_alias,
-        app_name=app_name,
-        sanitized_logs=sanitized_logs,
-        log_count=log_count,
-        user_context=user_context,
-        host_notes=host_notes,
-    )
+    if prompt_override and prompt_override.strip():
+        prompt = prompt_override.strip()
+    else:
+        prompt = build_analysis_prompt(
+            source_alias=source_alias,
+            app_name=app_name,
+            sanitized_logs=sanitized_logs,
+            log_count=log_count,
+            user_context=user_context,
+            host_notes=host_notes,
+        )
 
     norm_provider = (provider or "gemini").lower()
 
@@ -288,6 +307,7 @@ async def execute_ai_analysis(
             api_key=api_key,
             model=model or "gemini-2.5-flash",
             prompt=prompt,
+            system_prompt=system_prompt,
         )
     elif norm_provider in ("openai", "openai_compatible"):
         raw_text, tokens_in, tokens_out, tokens_thoughts, tokens_used = await dispatch_openai_request(
@@ -295,6 +315,7 @@ async def execute_ai_analysis(
             model=model or ("gpt-4o" if norm_provider == "openai" else "llama3.2"),
             prompt=prompt,
             base_url=base_url,
+            system_prompt=system_prompt,
         )
     else:
         raise ValueError(f"Unsupported AI provider: {provider}")

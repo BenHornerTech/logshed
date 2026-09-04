@@ -40,6 +40,14 @@ def get_docker_host() -> str:
     """Returns the Docker host socket or proxy address."""
     return os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
 
+def is_debug_or_dev() -> bool:
+    """Returns True if running in development mode or debug is enabled."""
+    return (
+        os.environ.get("ENVIRONMENT", "").lower() == "development"
+        or os.environ.get("DEBUG", "").lower() in ("true", "1", "yes")
+    )
+
+
 def get_cors_origins() -> list[str]:
     """
     Returns the list of allowed CORS origins.
@@ -51,11 +59,7 @@ def get_cors_origins() -> list[str]:
     if env_origins is not None:
         return [origin.strip() for origin in env_origins.split(",") if origin.strip()]
 
-    is_dev = (
-        os.environ.get("ENVIRONMENT", "").lower() == "development"
-        or os.environ.get("DEBUG", "").lower() in ("true", "1", "yes")
-    )
-    if is_dev:
+    if is_debug_or_dev():
         return [
             "http://localhost:5173",
             "http://127.0.0.1:5173",

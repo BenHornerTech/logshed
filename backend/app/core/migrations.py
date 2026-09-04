@@ -143,7 +143,8 @@ CREATE TABLE ai_audit_log (
     tokens_in INTEGER NOT NULL DEFAULT 0,
     tokens_out INTEGER NOT NULL DEFAULT 0,
     tokens_thoughts INTEGER NOT NULL DEFAULT 0,
-    tokens_used INTEGER NOT NULL DEFAULT 0
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    system_prompt TEXT
 );
 
 CREATE TABLE admin_auth (
@@ -201,11 +202,25 @@ def migrate_v3(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_v4(conn: sqlite3.Connection) -> None:
+    """
+    Migration v4: Add system_prompt column to ai_audit_log table.
+    Allows audit tracking of the surrounding system instructions envelope sent to the LLM.
+    """
+    logger.info("Running migration v4 (adding system_prompt to ai_audit_log)...")
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(ai_audit_log);")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "system_prompt" not in columns:
+        conn.execute("ALTER TABLE ai_audit_log ADD COLUMN system_prompt TEXT;")
+
+
 # Registry of migrations to run. Must be ordered by version ascending.
 MIGRATIONS = [
     (1, migrate_v1),
     (2, migrate_v2),
     (3, migrate_v3),
+    (4, migrate_v4),
 ]
 
 def run_migrations(db_path: Union[str, Path]) -> None:

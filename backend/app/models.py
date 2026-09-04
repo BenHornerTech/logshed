@@ -91,6 +91,7 @@ class SettingsResponse(BaseModel):
     ai_model: str = "gemini-2.5-flash"
     ai_api_key: str = ""
     ai_base_url: Optional[str] = None
+    ai_system_prompt: str = ""
     retention_days: int = 30
     has_ai_api_key: bool = False
 
@@ -101,6 +102,7 @@ class SettingsUpdateRequest(BaseModel):
     ai_model: Optional[str] = None
     ai_api_key: Optional[str] = None
     ai_base_url: Optional[str] = None
+    ai_system_prompt: Optional[str] = None
     retention_days: Optional[int] = Field(None, ge=1, le=30)
 
 
@@ -181,12 +183,15 @@ class AiPreviewResponse(BaseModel):
     log_count: int
     source_alias: str
     app_name: str
+    system_prompt: str = ""
 
 
 class AiAnalyzeRequest(BaseModel):
     """Payload for triggering on-demand AI analysis."""
     log_ids: list[int] = Field(..., min_length=1)
     user_context: Optional[str] = None
+    prompt_override: Optional[str] = None
+    system_prompt_override: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
 
@@ -219,6 +224,7 @@ class AiAuditItem(BaseModel):
     tokens_out: int = 0
     tokens_thoughts: int = 0
     tokens_used: int
+    system_prompt: Optional[str] = None
 
 
 class AiAuditListResponse(BaseModel):

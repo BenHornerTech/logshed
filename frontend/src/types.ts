@@ -32,6 +32,7 @@ export interface SystemSettings {
   ai_model: string;
   ai_api_key?: string;
   ai_base_url?: string | null;
+  ai_system_prompt?: string;
   retention_days: number;
 }
 
@@ -77,11 +78,14 @@ export interface AiPreviewResponse {
   log_count: number;
   source_alias: string;
   app_name: string;
+  system_prompt: string;
 }
 
 export interface AiAnalysisRequest {
   log_ids: number[];
   user_context?: string;
+  prompt_override?: string;
+  system_prompt_override?: string;
   provider?: string;
   model?: string;
 }
@@ -112,6 +116,7 @@ export interface AiAuditEntry {
   tokens_out?: number;
   tokens_thoughts?: number;
   tokens_used: number;
+  system_prompt?: string | null;
 }
 
 export interface AuthStatusResponse {

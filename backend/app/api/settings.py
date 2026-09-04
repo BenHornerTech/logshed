@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import get_current_user, run_db_query
 from app.core.security import decrypt_value, encrypt_value, mask_secret
 from app.models import MessageResponse, SettingsResponse, SettingsUpdateRequest
+from app.services.ai_engine import DEFAULT_SYSTEM_PROMPT
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
@@ -57,6 +58,7 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
         ai_model=stored.get("ai_model") or "gemini-2.5-flash",
         ai_api_key=mask_secret(ai_api_key_val),
         ai_base_url=stored.get("ai_base_url") or None,
+        ai_system_prompt=stored.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT,
         retention_days=retention_days,
         has_ai_api_key=bool(ai_api_key_val),
     )
@@ -86,6 +88,9 @@ async def update_settings(
 
         if req.ai_base_url is not None:
             updates.append(("ai_base_url", req.ai_base_url, 0))
+
+        if req.ai_system_prompt is not None:
+            updates.append(("ai_system_prompt", req.ai_system_prompt, 0))
 
         if req.retention_days is not None:
             updates.append(("retention_days", str(req.retention_days), 0))

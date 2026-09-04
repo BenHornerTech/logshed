@@ -266,6 +266,65 @@ Multiple transaction queries deadlock on shared index.
                 timeout=60.0,
             )
 
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_with_prompt_override(self):
+        with patch("app.services.ai_engine.dispatch_gemini_request", new_callable=AsyncMock) as mock_dispatch:
+            mock_dispatch.return_value = (
+                "## Summary\nCustom summary\n\n## Root Cause\nCustom cause\n\n## Actionable Remediation\nCustom fix",
+                100,
+                50,
+                0,
+                150,
+            )
+            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
+                provider="gemini",
+                model="gemini-2.5-flash",
+                api_key="key",
+                base_url=None,
+                source_alias="router",
+                app_name="dnsmasq",
+                sanitized_logs="raw logs",
+                log_count=1,
+                prompt_override="Operator explicitly edited prompt payload",
+            )
+            assert prompt_sent == "Operator explicitly edited prompt payload"
+            mock_dispatch.assert_called_once_with(
+                api_key="key",
+                model="gemini-2.5-flash",
+                prompt="Operator explicitly edited prompt payload",
+                system_prompt=None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_gemini_error_logging_concise_warning(self, monkeypatch):
+        mock_generate = AsyncMock(side_effect=Exception("API quota exceeded for project 12345"))
+        with patch("app.services.ai_engine.genai") as mock_genai, \
+             patch("app.services.ai_engine.logger.warning") as mock_warn:
+            mock_client_instance = MagicMock()
+            mock_client_instance.aio.models.generate_content = mock_generate
+            mock_genai.Client.return_value = mock_client_instance
+
+            # 1. In production (no DEBUG, no ENVIRONMENT), suppress stack trace (exc_info=False)
+            monkeypatch.delenv("DEBUG", raising=False)
+            monkeypatch.delenv("ENVIRONMENT", raising=False)
+            with pytest.raises(RuntimeError):
+                await ai_engine.dispatch_gemini_request(
+                    api_key="test-key",
+                    model="gemini-2.5-flash",
+                    prompt="test prompt",
+                )
+            mock_warn.assert_called_with("AI analysis request failed: API quota exceeded for project 12345")
+
+            # 2. In development (DEBUG=True), include stack trace
+            monkeypatch.setenv("DEBUG", "True")
+            with pytest.raises(RuntimeError):
+                await ai_engine.dispatch_gemini_request(
+                    api_key="test-key",
+                    model="gemini-2.5-flash",
+                    prompt="test prompt",
+                )
+            mock_warn.assert_called_with("AI analysis request failed: API quota exceeded for project 12345", exc_info=True)
+
 
 class TestAiPreviewAndGating:
     @pytest.mark.asyncio
@@ -325,6 +384,21 @@ class TestAiPreviewAndGating:
         assert res.status_code == 200
         prompt = res.json()["sanitized_prompt"]
         assert "- Host Notes: Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'" in prompt
+
+    @pytest.mark.asyncio
+    async def test_preview_token_estimation_includes_system_prompt_and_envelopes(self, populated_db, auth_client):
+        """Token estimation includes SYSTEM_PROMPT (~135 tokens) and message framing (50 tokens)."""
+        res = await auth_client.post(
+            "/api/ai/preview",
+            json={"log_ids": [1, 2]},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        full_prompt = data["sanitized_prompt"]
+        expected_tokens = max(1, int(len(full_prompt) // 3.5 + len(ai_engine.SYSTEM_PROMPT) // 3.5 + 50))
+        assert data["estimated_tokens"] == expected_tokens
+        # Discrepancy fix: should be well above old estimate (~160) and realistically represent input
+        assert data["estimated_tokens"] >= 250
 
 
 class TestAiAnalyzeWorkflow:
@@ -556,4 +630,167 @@ class TestAiAnalyzeWorkflow:
         list_res = await auth_client.get("/api/ai/audit")
         assert list_res.status_code == 200
         assert list_res.json()["total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_analyze_with_prompt_override_dispatches_directly_and_audits(self, populated_db, auth_client):
+        """When prompt_override is provided, dispatch directly to LLM without regenerating and audit it."""
+        mock_raw_response = (
+            "## Summary\nOverridden prompt summary.\n\n"
+            "## Root Cause\nOverridden prompt cause.\n\n"
+            "## Actionable Remediation\nOverridden prompt remediation."
+        )
+
+        custom_prompt = "### System Metadata\n- Host: router\nCustom operator-edited prompt payload: dnsmasq dropped queries on router."
+
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=(
+                "Overridden prompt summary.",
+                "Overridden prompt cause.",
+                "Overridden prompt remediation.",
+                mock_raw_response,
+                custom_prompt,
+                120,
+                40,
+                0,
+                160,
+            ),
+        ) as mock_exec:
+            res = await auth_client.post(
+                "/api/ai/analyze",
+                json={
+                    "log_ids": [1, 2],
+                    "prompt_override": custom_prompt,
+                },
+            )
+            assert res.status_code == 200
+            data = res.json()
+            assert data["summary"] == "Overridden prompt summary."
+            audit_id = data["audit_id"]
+
+            # Verify execute_ai_analysis received prompt_override
+            assert mock_exec.called
+            call_kwargs = mock_exec.call_args[1]
+            assert call_kwargs["prompt_override"] == custom_prompt
+
+            # Verify prompt_override is recorded in audit log
+            audit_res = await auth_client.get("/api/ai/audit?limit=5")
+            assert audit_res.status_code == 200
+            matching = [item for item in audit_res.json()["items"] if item["id"] == audit_id]
+            assert len(matching) == 1
+            assert matching[0]["prompt_sent"] == custom_prompt
+
+    @pytest.mark.asyncio
+    async def test_analyze_api_failure_logging_concise(self, populated_db, auth_client, monkeypatch):
+        """API exceptions in /api/ai/analyze log concise warnings without stack trace in production."""
+        monkeypatch.delenv("DEBUG", raising=False)
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+        with patch("app.api.ai.execute_ai_analysis", side_effect=Exception("Connection timeout to LLM provider")), \
+             patch("app.api.ai.logger.warning") as mock_warn:
+            res = await auth_client.post("/api/ai/analyze", json={"log_ids": [1, 2]})
+            assert res.status_code == 502
+            assert "Connection timeout to LLM provider" in res.json()["detail"]
+            mock_warn.assert_called_with("AI analysis request failed: Connection timeout to LLM provider")
+
+    @pytest.mark.asyncio
+    async def test_settings_ai_system_prompt_crud(self, populated_db, auth_client):
+        """GET /api/settings returns default system prompt, POST /api/settings updates it."""
+        res = await auth_client.get("/api/settings")
+        assert res.status_code == 200
+        data = res.json()
+        assert "expert systems engineer" in data["ai_system_prompt"]
+
+        custom_prompt = "You are a custom AI diagnostic specialist for Docker containers."
+        post_res = await auth_client.post("/api/settings", json={"ai_system_prompt": custom_prompt})
+        assert post_res.status_code == 200
+
+        res2 = await auth_client.get("/api/settings")
+        assert res2.status_code == 200
+        assert res2.json()["ai_system_prompt"] == custom_prompt
+
+    @pytest.mark.asyncio
+    async def test_preview_returns_system_prompt_and_tokens(self, populated_db, auth_client):
+        """POST /api/ai/preview includes system_prompt and accounts for its length in token estimate."""
+        res = await auth_client.post("/api/ai/preview", json={"log_ids": [1, 2]})
+        assert res.status_code == 200
+        data = res.json()
+        assert "system_prompt" in data
+        assert len(data["system_prompt"]) > 0
+        assert data["estimated_tokens"] > 100
+
+    @pytest.mark.asyncio
+    async def test_analyze_with_system_prompt_override_and_audit(self, populated_db, auth_client):
+        """POST /api/ai/analyze dispatches system_prompt_override and stores it in ai_audit_log."""
+        custom_sys = "Custom system instructions for root cause triage."
+        mock_raw = "## Summary\nTest summary\n\n## Root Cause\nTest cause\n\n## Actionable Remediation\nTest fix"
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=(
+                "Test summary",
+                "Test cause",
+                "Test fix",
+                mock_raw,
+                "Prompt text",
+                100,
+                50,
+                0,
+                150,
+            ),
+        ) as mock_exec:
+            res = await auth_client.post(
+                "/api/ai/analyze",
+                json={
+                    "log_ids": [1, 2],
+                    "system_prompt_override": custom_sys,
+                },
+            )
+            assert res.status_code == 200
+            data = res.json()
+            audit_id = data["audit_id"]
+
+            call_kwargs = mock_exec.call_args[1]
+            assert call_kwargs["system_prompt"] == custom_sys
+
+            # Check audit log returns system_prompt
+            audit_res = await auth_client.get("/api/ai/audit?limit=5")
+            assert audit_res.status_code == 200
+            matching = [item for item in audit_res.json()["items"] if item["id"] == audit_id]
+            assert len(matching) == 1
+            assert matching[0]["system_prompt"] == custom_sys
+
+    @pytest.mark.asyncio
+    async def test_migration_v4_adds_system_prompt_column(self, tmp_path):
+        """Test migration v4 safely adds system_prompt column to existing ai_audit_log table."""
+        from app.core.migrations import migrate_v4, get_connection
+        db_path = tmp_path / "test_migration_v4.db"
+        with get_connection(db_path) as conn:
+            # Create pre-v4 table without system_prompt
+            conn.execute(
+                """
+                CREATE TABLE ai_audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME NOT NULL,
+                    source_alias TEXT NOT NULL,
+                    app_name TEXT NOT NULL,
+                    log_count INTEGER NOT NULL,
+                    user_context TEXT,
+                    model TEXT NOT NULL,
+                    prompt_sent TEXT NOT NULL,
+                    response_text TEXT NOT NULL,
+                    tokens_in INTEGER NOT NULL DEFAULT 0,
+                    tokens_out INTEGER NOT NULL DEFAULT 0,
+                    tokens_thoughts INTEGER NOT NULL DEFAULT 0,
+                    tokens_used INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            # Run migration v4
+            migrate_v4(conn)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(ai_audit_log);")
+            columns = [col[1] for col in cursor.fetchall()]
+            assert "system_prompt" in columns
 

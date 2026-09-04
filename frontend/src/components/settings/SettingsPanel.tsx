@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Copy,
   Trash2,
+  RotateCcw,
 } from 'lucide-react';
 import { StorageMetricsResponse, AiAuditEntry } from '../../types.ts';
 import { fetchSettings, updateSettings, SettingsResponseData } from '../../api/settings.ts';
@@ -17,6 +18,8 @@ import { fetchStorageMetrics } from '../../api/system.ts';
 import { fetchAiAudit, deleteAiAuditItem, clearAiAuditLog } from '../../api/ai.ts';
 import { changePassword } from '../../api/auth.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
+import { extractCleanSummary } from '../../utils/summary.ts';
+import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 import { StorageCard } from './StorageCard.tsx';
@@ -36,6 +39,7 @@ export const SettingsPanel: React.FC = () => {
   const [aiModel, setAiModel] = useState<string>('gemini-2.5-flash');
   const [aiApiKey, setAiApiKey] = useState<string>('');
   const [aiBaseUrl, setAiBaseUrl] = useState<string>('');
+  const [aiSystemPrompt, setAiSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
 
   // Password reset state
   const [currentPwd, setCurrentPwd] = useState<string>('');
@@ -48,6 +52,7 @@ export const SettingsPanel: React.FC = () => {
   const [selectedAuditItem, setSelectedAuditItem] = useState<AiAuditEntry | null>(null);
   const [copiedAuditPrompt, setCopiedAuditPrompt] = useState<boolean>(false);
   const [showPromptDetails, setShowPromptDetails] = useState<boolean>(false);
+  const [auditPromptViewMode, setAuditPromptViewMode] = useState<'analysis' | 'full'>('analysis');
   const [isDeletingAuditId, setIsDeletingAuditId] = useState<number | null>(null);
   const [showClearAllAuditModal, setShowClearAllAuditModal] = useState<boolean>(false);
   const [isClearingAllAudit, setIsClearingAllAudit] = useState<boolean>(false);
@@ -72,6 +77,7 @@ export const SettingsPanel: React.FC = () => {
       setAiModel(settRes.ai_model || 'gemini-2.5-flash');
       setAiApiKey(settRes.ai_api_key || '');
       setAiBaseUrl(settRes.ai_base_url || '');
+      setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to load system settings.');
     } finally {
@@ -94,6 +100,7 @@ export const SettingsPanel: React.FC = () => {
         ai_model: aiModel,
         ai_api_key: aiApiKey,
         ai_base_url: aiBaseUrl || null,
+        ai_system_prompt: aiSystemPrompt,
       });
 
       setSaveSuccessMsg('Settings saved successfully and secrets encrypted.');
@@ -140,7 +147,11 @@ export const SettingsPanel: React.FC = () => {
 
   const handleCopyAuditPrompt = async () => {
     if (selectedAuditItem?.prompt_sent) {
-      const ok = await copyToClipboard(selectedAuditItem.prompt_sent);
+      const textToCopy =
+        auditPromptViewMode === 'full'
+          ? buildFullEnvelope(selectedAuditItem.system_prompt || DEFAULT_SYSTEM_PROMPT, selectedAuditItem.prompt_sent)
+          : selectedAuditItem.prompt_sent;
+      const ok = await copyToClipboard(textToCopy);
       if (ok) {
         setCopiedAuditPrompt(true);
         setTimeout(() => setCopiedAuditPrompt(false), 2000);
@@ -296,6 +307,36 @@ export const SettingsPanel: React.FC = () => {
                 className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
               />
             </div>
+
+            {/* AI System Instructions Card */}
+            <div className="sm:col-span-2 pt-3 border-t border-dark-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
+                    AI System Instructions (LLM Persona)
+                  </label>
+                  <p className="text-[11px] text-slate-500">
+                    System instructions that establish the LLM's diagnostic persona, reasoning guidelines, and response structure.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAiSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
+                  className="flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 transition cursor-pointer"
+                  title="Reset instructions to system default"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset to Default</span>
+                </button>
+              </div>
+              <textarea
+                value={aiSystemPrompt}
+                onChange={(e) => setAiSystemPrompt(e.target.value)}
+                rows={7}
+                placeholder="Enter system instructions..."
+                className="w-full bg-dark-950 border border-dark-700 rounded-lg p-3 text-xs text-slate-200 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono leading-relaxed resize-y"
+              />
+            </div>
           </div>
         </section>
 
@@ -431,6 +472,7 @@ export const SettingsPanel: React.FC = () => {
                 onClick={() => {
                   setSelectedAuditItem(item);
                   setShowPromptDetails(false);
+                  setAuditPromptViewMode('analysis');
                 }}
                 className="grid grid-cols-[135px_150px_130px_75px_1fr_95px] px-4 py-2.5 items-center hover:bg-dark-800 transition text-[11px] cursor-pointer group select-none"
               >
@@ -443,8 +485,11 @@ export const SettingsPanel: React.FC = () => {
                 </div>
                 <div className="text-slate-400 truncate">{item.model}</div>
                 <div className="text-slate-300">{item.tokens_used.toLocaleString()}</div>
-                <div className="text-slate-200 font-sans text-xs truncate pr-2 group-hover:text-white">
-                  {item.response_text.slice(0, 100)}...
+                <div
+                  className="text-slate-200 font-sans text-xs truncate pr-2 group-hover:text-white"
+                  title={extractCleanSummary(item.response_text)}
+                >
+                  {extractCleanSummary(item.response_text)}
                 </div>
                 <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
                   <button
@@ -452,6 +497,7 @@ export const SettingsPanel: React.FC = () => {
                     onClick={() => {
                       setSelectedAuditItem(item);
                       setShowPromptDetails(false);
+                      setAuditPromptViewMode('analysis');
                     }}
                     className="px-2 py-0.5 text-[11px] font-mono text-accent-400 bg-accent-950/50 hover:bg-accent-900/60 border border-accent-800/80 rounded transition cursor-pointer"
                     title="View analysis details"
@@ -562,21 +608,60 @@ export const SettingsPanel: React.FC = () => {
                   {showPromptDetails ? '▼ Hide Submitted Logs & Prompt' : '▶ View Submitted Logs & Prompt'}
                 </button>
                 {showPromptDetails && (
-                  <button
-                    type="button"
-                    onClick={handleCopyAuditPrompt}
-                    className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition cursor-pointer"
-                  >
-                    {copiedAuditPrompt ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                    <span>{copiedAuditPrompt ? 'Copied' : 'Copy Prompt'}</span>
-                  </button>
+                  <div className="flex items-center gap-2.5">
+                    {/* View mode toggle pill */}
+                    <div className="flex items-center bg-dark-950 border border-dark-700 rounded p-0.5 text-[10px] font-mono">
+                      <button
+                        type="button"
+                        onClick={() => setAuditPromptViewMode('analysis')}
+                        className={`px-2 py-0.5 rounded transition cursor-pointer ${
+                          auditPromptViewMode === 'analysis'
+                            ? 'bg-accent-600 text-white font-medium shadow-xs'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Analysis Prompt
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAuditPromptViewMode('full')}
+                        className={`px-2 py-0.5 rounded transition cursor-pointer ${
+                          auditPromptViewMode === 'full'
+                            ? 'bg-accent-600 text-white font-medium shadow-xs'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Full LLM Prompt
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCopyAuditPrompt}
+                      className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition cursor-pointer"
+                    >
+                      {copiedAuditPrompt ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedAuditPrompt ? 'Copied' : 'Copy Prompt'}</span>
+                    </button>
+                  </div>
                 )}
               </div>
               {showPromptDetails && (
-                <pre className="p-3 overflow-x-auto text-xs font-mono text-slate-300 max-h-48 overflow-y-auto leading-relaxed select-text">
-                  <code>{selectedAuditItem.prompt_sent}</code>
+                <pre className="p-3 overflow-x-auto text-xs font-mono text-slate-300 max-h-56 overflow-y-auto leading-relaxed select-text whitespace-pre-wrap">
+                  <code>
+                    {auditPromptViewMode === 'full'
+                      ? buildFullEnvelope(selectedAuditItem.system_prompt || DEFAULT_SYSTEM_PROMPT, selectedAuditItem.prompt_sent)
+                      : selectedAuditItem.prompt_sent}
+                  </code>
                 </pre>
               )}
+            </div>
+
+            {/* AI Advisory Disclaimer */}
+            <div className="p-3 bg-dark-950/80 border border-dark-700/80 rounded-lg flex items-start gap-2.5 text-slate-400 text-[11px] leading-relaxed">
+              <AlertCircle className="w-4 h-4 text-amber-400/90 shrink-0 mt-0.5" />
+              <span>
+                AI root-cause analyses and remediation commands are advisory only. Always verify proposed commands and configurations before executing on systems. API calls consume tokens billed to your provider.
+              </span>
             </div>
 
             {/* Footer Buttons */}

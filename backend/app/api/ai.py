@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_current_user, run_db_query
+from app.core.config import is_debug_or_dev
 from app.core.sanitizer import sanitize
 from app.core.security import decrypt_value
 from app.models import (
@@ -19,7 +20,12 @@ from app.models import (
     AiPreviewRequest,
     AiPreviewResponse,
 )
-from app.services.ai_engine import build_analysis_prompt, execute_ai_analysis
+from app.services.ai_engine import (
+    DEFAULT_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    build_analysis_prompt,
+    execute_ai_analysis,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,17 +76,20 @@ async def preview_ai_prompt(
             return None, err
 
         cursor = conn.cursor()
-        cursor.execute("SELECT key, value FROM system_settings WHERE key IN ('ai_provider', 'ai_model')")
+        cursor.execute(
+            "SELECT key, value FROM system_settings WHERE key IN ('ai_provider', 'ai_model', 'ai_system_prompt')"
+        )
         settings_map = {r["key"]: r["value"] for r in cursor.fetchall()}
         provider = settings_map.get("ai_provider") or "gemini"
         model = settings_map.get("ai_model") or "gemini-2.5-flash"
+        system_prompt = settings_map.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT
 
         target_ip = rows[0]["source_ip"]
         cursor.execute("SELECT notes FROM host_aliases WHERE ip = ?", (target_ip,))
         alias_row = cursor.fetchone()
         host_notes = alias_row["notes"] if alias_row and alias_row["notes"] else None
 
-        return (rows, provider, model, host_notes), None
+        return (rows, provider, model, system_prompt, host_notes), None
 
     result, err = await run_db_query(_fetch)
     if err:
@@ -89,7 +98,7 @@ async def preview_ai_prompt(
             detail=err,
         )
 
-    rows, provider, model, host_notes = result
+    rows, provider, model, system_prompt, host_notes = result
     source_alias = rows[0]["source_alias"]
     app_name = rows[0]["app_name"]
 
@@ -105,8 +114,8 @@ async def preview_ai_prompt(
         host_notes=host_notes,
     )
 
-    # Estimate token count (~4 characters per token + framing overhead)
-    estimated_tokens = max(1, len(full_prompt) // 4 + 50)
+    # Estimate token count (~3.5 characters per token including system prompt and framing overhead)
+    estimated_tokens = max(1, int(len(full_prompt) // 3.5 + len(system_prompt) // 3.5 + 50))
 
     return AiPreviewResponse(
         sanitized_prompt=full_prompt,
@@ -116,6 +125,7 @@ async def preview_ai_prompt(
         log_count=len(rows),
         source_alias=source_alias,
         app_name=app_name,
+        system_prompt=system_prompt,
     )
 
 
@@ -136,7 +146,7 @@ async def analyze_logs(
 
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT key, value, is_encrypted FROM system_settings WHERE key IN ('ai_provider', 'ai_model', 'ai_api_key', 'ai_base_url')"
+                "SELECT key, value, is_encrypted FROM system_settings WHERE key IN ('ai_provider', 'ai_model', 'ai_api_key', 'ai_base_url', 'ai_system_prompt')"
             )
             settings_rows = cursor.fetchall()
             settings = {}
@@ -177,6 +187,11 @@ async def analyze_logs(
         model = req.model or settings.get("ai_model") or default_model
         api_key = settings.get("ai_api_key", "")
         base_url = settings.get("ai_base_url") or None
+        system_prompt = (
+            req.system_prompt_override.strip()
+            if (req.system_prompt_override and req.system_prompt_override.strip())
+            else (settings.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT)
+        )
 
         summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await execute_ai_analysis(
             provider=provider,
@@ -189,6 +204,8 @@ async def analyze_logs(
             log_count=len(rows),
             user_context=req.user_context,
             host_notes=host_notes,
+            prompt_override=req.prompt_override,
+            system_prompt=system_prompt,
         )
 
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -198,8 +215,8 @@ async def analyze_logs(
             cursor.execute(
                 """
                 INSERT INTO ai_audit_log
-                (timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text, tokens_in, tokens_out, tokens_thoughts, tokens_used)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text, tokens_in, tokens_out, tokens_thoughts, tokens_used, system_prompt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     now,
@@ -214,6 +231,7 @@ async def analyze_logs(
                     tokens_out,
                     tokens_thoughts,
                     tokens_used,
+                    system_prompt,
                 ),
             )
             audit_id = cursor.lastrowid
@@ -236,13 +254,21 @@ async def analyze_logs(
     except HTTPException:
         raise
     except ValueError as ve:
-        logger.warning(f"AI analysis validation error: {ve}")
+        clean_err = str(sanitize(str(ve)[:500]))
+        if is_debug_or_dev():
+            logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
+        else:
+            logger.warning(f"AI analysis request failed: {clean_err}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     except Exception as exc:
-        logger.error(f"AI analysis execution failed: {exc}", exc_info=True)
+        clean_err = str(sanitize(str(exc)[:500]))
+        if is_debug_or_dev():
+            logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
+        else:
+            logger.warning(f"AI analysis request failed: {clean_err}")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"AI analysis failed: {exc}",
+            detail=f"AI analysis failed: {clean_err}",
         )
 
 
@@ -266,7 +292,8 @@ async def list_ai_audit(
                    COALESCE(tokens_in, 0) AS tokens_in,
                    COALESCE(tokens_out, 0) AS tokens_out,
                    COALESCE(tokens_thoughts, MAX(0, tokens_used - (COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0)))) AS tokens_thoughts,
-                   tokens_used
+                   tokens_used,
+                   system_prompt
             FROM ai_audit_log
             ORDER BY timestamp DESC, id DESC
             LIMIT ? OFFSET ?
@@ -302,6 +329,7 @@ async def list_ai_audit(
                     tokens_out=r["tokens_out"],
                     tokens_thoughts=r["tokens_thoughts"],
                     tokens_used=r["tokens_used"],
+                    system_prompt=r["system_prompt"] or DEFAULT_SYSTEM_PROMPT,
                 )
             )
         return items, total
