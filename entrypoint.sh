@@ -23,9 +23,19 @@ else
     useradd -o -u "$PUID" -g "$PGID" -d /app -s /bin/sh appuser
 fi
 
-# Dynamically detect /var/run/docker.sock GID and grant appuser access
-if [ -S /var/run/docker.sock ] || [ -e /var/run/docker.sock ]; then
-    DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || stat -f '%g' /var/run/docker.sock 2>/dev/null)
+# Dynamically detect Docker socket path from DOCKER_HOST (fallback to /var/run/docker.sock)
+DOCKER_SOCKET_PATH="/var/run/docker.sock"
+if [ -n "$DOCKER_HOST" ]; then
+    case "$DOCKER_HOST" in
+        unix://*)
+            DOCKER_SOCKET_PATH="${DOCKER_HOST#unix://}"
+            ;;
+    esac
+fi
+
+# Detect socket GID and grant appuser access
+if [ -S "$DOCKER_SOCKET_PATH" ] || [ -e "$DOCKER_SOCKET_PATH" ]; then
+    DOCKER_GID=$(stat -c '%g' "$DOCKER_SOCKET_PATH" 2>/dev/null || stat -f '%g' "$DOCKER_SOCKET_PATH" 2>/dev/null)
     if [ -n "$DOCKER_GID" ] && [ "$DOCKER_GID" != "0" ]; then
         if ! getent group "$DOCKER_GID" >/dev/null 2>&1; then
             groupadd -o -g "$DOCKER_GID" docker-sock-group 2>/dev/null || true

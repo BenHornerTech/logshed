@@ -52,7 +52,7 @@ describe('LogSearchBar Component (Items #6, #22, #31)', () => {
         onFilterChange={vi.fn()}
         onSearch={vi.fn()}
         onReset={vi.fn()}
-        availableSources={['pve-node1', 'pve-node2', 'unraid']}
+        availableSources={['pve-node1', 'pve-node2', 'docker']}
         availableApps={['corosync', 'pvedaemon', 'kernel', 'nginx']}
       />
     );
@@ -91,7 +91,7 @@ describe('LogSearchBar Component (Items #6, #22, #31)', () => {
         onFilterChange={vi.fn()}
         onSearch={vi.fn()}
         onReset={vi.fn()}
-        availableSources={['pve-node1', 'unraid-srv']}
+        availableSources={['pve-node1', 'homelab-srv']}
         availableApps={['pveproxy', 'pvedaemon']}
       />
     );
@@ -113,7 +113,7 @@ describe('LogSearchBar Component (Items #6, #22, #31)', () => {
         onFilterChange={handleFilterChange}
         onSearch={vi.fn()}
         onReset={vi.fn()}
-        availableSources={['pve-node1', 'pve-node2', 'unraid-nas']}
+        availableSources={['pve-node1', 'pve-node2', 'homelab-nas']}
         availableApps={['pvedaemon', 'corosync']}
       />
     );
@@ -125,7 +125,7 @@ describe('LogSearchBar Component (Items #6, #22, #31)', () => {
     // Popover should be visible with options
     expect(screen.getByText('pve-node1')).toBeInTheDocument();
     expect(screen.getByText('pve-node2')).toBeInTheDocument();
-    expect(screen.getByText('unraid-nas')).toBeInTheDocument();
+    expect(screen.getByText('homelab-nas')).toBeInTheDocument();
 
     // Select pve-node1
     fireEvent.click(screen.getByText('pve-node1'));

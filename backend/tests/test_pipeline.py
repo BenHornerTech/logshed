@@ -269,7 +269,7 @@ class TestDockerMultilineAssembly:
 
     def test_docker_source_alias(self):
         entry = _make_log_entry("my-nginx", "abc123", "Started server")
-        assert entry["source_alias"] == "unraid-docker"
+        assert entry["source_alias"] == "docker"
         assert entry["app_name"] == "my-nginx"
         assert entry["source_ip"] == "docker"
 

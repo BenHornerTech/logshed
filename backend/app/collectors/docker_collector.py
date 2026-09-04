@@ -37,10 +37,10 @@ def _parse_docker_host() -> tuple[str, Optional[str]]:
 
     Returns:
         (base_url, uds_path):
-            - For unix sockets: ("http://localhost", "/var/run/docker.sock")
-            - For tcp: ("http://proxy:2375", None)
+            - For unix sockets: ("http://localhost/v1.43", "/var/run/docker.sock")
+            - For tcp: ("http://proxy:2375/v1.43", None)
     """
-    docker_host = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
+    docker_host = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock").strip()
 
     if docker_host.startswith("unix://"):
         socket_path = docker_host[len("unix://"):]
@@ -51,6 +51,13 @@ def _parse_docker_host() -> tuple[str, Optional[str]]:
         host = parsed.hostname or "localhost"
         port = parsed.port or 2375
         return f"http://{host}:{port}/{DOCKER_API_VERSION}", None
+
+    if docker_host.startswith("http://") or docker_host.startswith("https://"):
+        parsed = urlparse(docker_host)
+        scheme = parsed.scheme
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if scheme == "https" else 2375)
+        return f"{scheme}://{host}:{port}/{DOCKER_API_VERSION}", None
 
     # Fallback: treat as TCP address
     return f"http://{docker_host}/{DOCKER_API_VERSION}", None
@@ -102,11 +109,12 @@ def _make_log_entry(
 ) -> dict:
     """Build a log entry dict compatible with the shared pipeline."""
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    source_alias = os.environ.get("DOCKER_SOURCE_ALIAS", "docker")
     return {
         "timestamp": now,
         "received_at": now,
         "source_ip": "docker",
-        "source_alias": "unraid-docker",
+        "source_alias": source_alias,
         "app_name": container_name,
         "facility": 1,
         "severity": severity,
@@ -123,7 +131,7 @@ async def _get_running_containers(client: httpx.AsyncClient) -> list[dict]:
         return resp.json()
     except Exception as e:
         logger.error(f"Failed to list Docker containers: {e}")
-        return []
+        raise
 
 
 def _should_ignore_container(container_id: str, container_name: str) -> bool:
@@ -290,9 +298,9 @@ class DockerTailer:
         self._cancel_event.clear()
 
         base_url, uds_path = _parse_docker_host()
-        if uds_path == "/var/run/docker.sock" and not os.path.exists(uds_path):
+        if uds_path and not os.path.exists(uds_path):
             logger.info(
-                "Docker socket not found at /var/run/docker.sock. "
+                f"Docker socket not found at {uds_path}. "
                 "Docker container tailing disabled; operating in syslog-only mode."
             )
             try:
@@ -304,14 +312,15 @@ class DockerTailer:
         backoff = _INITIAL_BACKOFF
 
         while self._running:
+            target_desc = uds_path if uds_path else base_url
             try:
                 base_url, uds_path = _parse_docker_host()
+                target_desc = uds_path if uds_path else base_url
                 async with _build_client(base_url, uds_path) as client:
-                    logger.info("Connected to Docker daemon")
-                    backoff = _INITIAL_BACKOFF  # Reset on successful connect
-
                     # Start tailing all currently running containers
                     await self._attach_running_containers(client)
+                    logger.info(f"Connected to Docker daemon at {target_desc}")
+                    backoff = _INITIAL_BACKOFF  # Reset on successful connect
 
                     # Stream Docker events for start/die
                     await self._watch_events(client)
@@ -322,7 +331,7 @@ class DockerTailer:
                 if not self._running:
                     break
                 logger.warning(
-                    f"Docker connection lost: {e}. Reconnecting in {backoff:.0f}s..."
+                    f"Docker connection error at {target_desc}: {e}. Reconnecting in {backoff:.0f}s..."
                 )
                 await self._cleanup_tailers()
                 await asyncio.sleep(backoff)

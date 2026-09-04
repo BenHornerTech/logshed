@@ -10,7 +10,7 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
     {
       id: 1,
       timestamp: '2026-09-04T08:20:45Z',
-      source_alias: 'unraid-docker',
+      source_alias: 'docker',
       app_name: 'technitium-sync',
       log_count: 5,
       user_context: null,

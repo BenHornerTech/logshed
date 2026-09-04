@@ -10,7 +10,9 @@ Single Docker container running Python 3.12 (`asyncio`) + FastAPI backend servin
 
 ### 1.1 Environment Variables vs. Runtime Settings
 Only the following are true environment variables, supplied at container start and never stored in the database:
-- `DOCKER_HOST` — Docker endpoint (socket path or `tcp://` proxy address). Defaults to `unix:///var/run/docker.sock` if unset. Not exposed as an Unraid template `Config` entry (see §8.2) — the socket path is fixed by the `/var/run/docker.sock` volume mount; only set `DOCKER_HOST` explicitly when using a `tcp://` socket-proxy instead of a direct mount.
+- `DOCKER_HOST` — Docker endpoint (socket path or `tcp://` proxy address, e.g. `unix:///var/run/docker.sock` or `tcp://192.168.1.50:2375`). Defaults to `unix:///var/run/docker.sock` if unset. Not exposed as an Unraid template `Config` entry (see §8.2) — the socket path is fixed by the `/var/run/docker.sock` volume mount; only set `DOCKER_HOST` explicitly when using a `tcp://` socket-proxy instead of a direct mount.
+- `DOCKER_SOURCE_ALIAS` — Source attribution alias for Docker logs ingested via `DOCKER_HOST` (defaults to `docker` if unset).
+- `DOCKER_EXCLUDE_CONTAINERS` — Optional comma-separated list of container names or IDs to exclude from log tailing (e.g. `logshed,custom_redis`).
 - `TZ` — container timezone.
 - `PORT` — web/API port (defaults to `8080` if unset).
 - `PUID` and `PGID` — user and group IDs for the application to run as (defaults to `1000` if unset).
@@ -149,7 +151,7 @@ Daily task runs iterative batch pruning to prevent WAL expansion and lock conten
 ```
 
 * **Syslog Ingestion:** Async UDP and TCP on port `1514`. RFC 3164 and RFC 5424 parsing. Unparseable messages default to severity 6 (Info) preserving raw content.
-* **Docker Ingestion:** Connects via `DOCKER_HOST`. Tails running containers and listens for Docker lifecycle events (`start`/`die`). Sets `source_alias="unraid-docker"` and `app_name=container_name`.
+* **Docker Ingestion:** Connects via `DOCKER_HOST`. Tails running containers and listens for Docker lifecycle events (`start`/`die`). Sets `source_alias="docker"` (or value of `DOCKER_SOURCE_ALIAS`) and `app_name=container_name`.
 * **Keyed Multiline Assembler:** Buffers continuation lines (e.g., lines starting with whitespace, `\t`, `Caused by:`, `Traceback`) mapped by stream key:
   * Syslog streams: `stream_key = f"{source_ip}:{app_name}"`
   * Docker streams: `stream_key = f"docker:{container_id}"`
@@ -325,3 +327,41 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 * Map `/data` to cache-pool appdata: `/mnt/user/appdata/logshed` (avoids spinning up array parity disks on 2000ms writes).
 * Map host port `1514` (UDP/TCP) to container `1514`.
+
+### 8.3 Multi-Host & Remote Docker Deployment Architecture
+
+LogShed supports heterogeneous, multi-host homelab configurations across bare metal, virtual machines, and multiple Docker hosts:
+
+1. **Local Host (Direct Socket Mount):**
+   Mount `/var/run/docker.sock:/var/run/docker.sock:ro` into the LogShed container. Default `DOCKER_HOST=unix:///var/run/docker.sock` and `DOCKER_SOURCE_ALIAS=docker`.
+
+2. **Single Remote Docker Host (Socket Proxy):**
+   Connect directly to a remote Docker daemon or Docker socket proxy (such as `tecnativa/docker-socket-proxy`) without mounting any local socket:
+   ```env
+   DOCKER_HOST=tcp://192.168.1.50:2375
+   DOCKER_SOURCE_ALIAS=remote-docker
+   ```
+
+3. **Multi-Host Docker Environments (Syslog Forwarding):**
+   For environments running containers across multiple nodes (e.g. Proxmox LXC/VMs, multiple physical servers), configure each remote Docker daemon's native syslog log driver in `/etc/docker/daemon.json` to forward container logs to LogShed on port `1514`:
+   ```json
+   {
+     "log-driver": "syslog",
+     "log-opts": {
+       "syslog-address": "udp://<logshed-ip>:1514",
+       "tag": "{{.Name}}"
+     }
+   }
+   ```
+   Or via TCP:
+   ```json
+   {
+     "log-driver": "syslog",
+     "log-opts": {
+       "syslog-address": "tcp://<logshed-ip>:1514",
+       "tag": "{{.Name}}"
+     }
+   }
+   ```
+   The remote host's IP or hostname is automatically attributed by LogShed's Syslog collector, and the container name is mapped to `app_name` via the tag.
+

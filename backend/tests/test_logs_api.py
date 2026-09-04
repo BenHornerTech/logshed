@@ -93,12 +93,12 @@ class TestLogQuerying:
                 "timestamp": "2026-08-29T10:00:00Z",
                 "received_at": "2026-08-29T10:00:01Z",
                 "source_ip": "192.168.1.50",
-                "source_alias": "unraid-main",
+                "source_alias": "homelab-host",
                 "app_name": "nginx",
                 "facility": 1,
                 "severity": 3,
                 "message": "Connection refused upstream failure on backend pool",
-                "raw": "<11>1 2026-08-29T10:00:00Z unraid-main nginx - - - Connection refused upstream failure",
+                "raw": "<11>1 2026-08-29T10:00:00Z homelab-host nginx - - - Connection refused upstream failure",
             },
             {
                 "timestamp": "2026-08-29T11:00:00Z",
@@ -115,12 +115,12 @@ class TestLogQuerying:
                 "timestamp": "2026-08-29T12:00:00Z",
                 "received_at": "2026-08-29T12:00:01Z",
                 "source_ip": "192.168.1.50",
-                "source_alias": "unraid-main",
+                "source_alias": "homelab-host",
                 "app_name": "nextcloud",
                 "facility": 1,
                 "severity": 6,
                 "message": "User admin logged in successfully from 192.168.1.100",
-                "raw": "<14>1 2026-08-29T12:00:00Z unraid-main nextcloud - - - User admin logged in",
+                "raw": "<14>1 2026-08-29T12:00:00Z homelab-host nextcloud - - - User admin logged in",
             },
         ]
         _seed_logs(db_file, test_entries)
@@ -141,7 +141,7 @@ class TestLogQuerying:
         assert data_fts["logs"][0]["app_name"] == "nginx"
 
         # 3. Source filter (matches alias or IP)
-        res_src = await client.get("/api/logs", params={"source": "unraid-main"})
+        res_src = await client.get("/api/logs", params={"source": "homelab-host"})
         assert res_src.json()["total"] == 2
 
         res_src_ip = await client.get("/api/logs", params={"source": "192.168.1.60"})
@@ -170,11 +170,11 @@ class TestLogQuerying:
         assert res_time.json()["logs"][0]["app_name"] == "kernel"
 
         # 7. Multi-source filtering: comma-separated and repeated params
-        res_multi_src_comma = await client.get("/api/logs", params={"source": "unraid-main,pve-node1"})
+        res_multi_src_comma = await client.get("/api/logs", params={"source": "homelab-host,pve-node1"})
         assert res_multi_src_comma.status_code == 200
         assert res_multi_src_comma.json()["total"] == 3
 
-        res_multi_src_repeat = await client.get("/api/logs?source=unraid-main&source=pve-node1")
+        res_multi_src_repeat = await client.get("/api/logs?source=homelab-host&source=pve-node1")
         assert res_multi_src_repeat.status_code == 200
         assert res_multi_src_repeat.json()["total"] == 3
 
@@ -192,11 +192,11 @@ class TestLogQuerying:
         assert app_names_repeat == {"nginx", "nextcloud"}
 
         # 9. Multi-host and multi-app combined
-        res_combined = await client.get("/api/logs?source=unraid-main&app_name=nginx,kernel")
+        res_combined = await client.get("/api/logs?source=homelab-host&app_name=nginx,kernel")
         assert res_combined.status_code == 200
         assert res_combined.json()["total"] == 1
         assert res_combined.json()["logs"][0]["app_name"] == "nginx"
-        assert res_combined.json()["logs"][0]["source_alias"] == "unraid-main"
+        assert res_combined.json()["logs"][0]["source_alias"] == "homelab-host"
 
     @pytest.mark.asyncio
     async def test_native_fts5_syntax_and_syntax_error_fallback(
@@ -342,7 +342,7 @@ class TestLogStreamAndFacets:
             "timestamp": "2026-08-29T15:00:00Z",
             "received_at": "2026-08-29T15:00:01Z",
             "source_ip": "192.168.1.50",
-            "source_alias": "unraid-main",
+            "source_alias": "homelab-host",
             "app_name": "nginx",
             "facility": 1,
             "severity": 3,
@@ -381,7 +381,7 @@ class TestLogStreamAndFacets:
             "timestamp": "2026-08-29T15:01:00Z",
             "received_at": "2026-08-29T15:01:01Z",
             "source_ip": "192.168.1.50",
-            "source_alias": "unraid-main",
+            "source_alias": "homelab-host",
             "app_name": "nginx",
             "facility": 1,
             "severity": 3,
@@ -424,7 +424,7 @@ class TestLogStreamAndFacets:
 
         broadcast_task = asyncio.create_task(_trigger_broadcast())
 
-        async with client.stream("GET", "/api/logs/stream?source=unraid-main,pve-node1&max_events=2") as response:
+        async with client.stream("GET", "/api/logs/stream?source=homelab-host,pve-node1&max_events=2") as response:
             assert response.status_code == 200
             lines = []
             async for line in response.aiter_lines():
@@ -449,12 +449,12 @@ class TestLogStreamAndFacets:
                 "timestamp": "2026-08-29T10:00:00Z",
                 "received_at": "2026-08-29T10:00:01Z",
                 "source_ip": "192.168.1.50",
-                "source_alias": "unraid-main",
+                "source_alias": "homelab-host",
                 "app_name": "nginx",
                 "facility": 1,
                 "severity": 3,
                 "message": "Nginx upstream error",
-                "raw": "<11>1 2026-08-29T10:00:00Z unraid-main nginx - - - error",
+                "raw": "<11>1 2026-08-29T10:00:00Z homelab-host nginx - - - error",
             },
             {
                 "timestamp": "2026-08-29T11:00:00Z",
@@ -496,7 +496,7 @@ class TestLogStreamAndFacets:
         assert "host_to_apps" in data
         assert "app_to_hosts" in data
 
-        assert "unraid-main" in data["sources"]
+        assert "homelab-host" in data["sources"]
         assert "pve-node1" in data["sources"]
         assert "NPM" in data["sources"]
         assert "172.22.2.4" not in data["sources"]
@@ -504,11 +504,11 @@ class TestLogStreamAndFacets:
         assert "corosync" in data["apps"]
         assert "nginx-proxy" in data["apps"]
 
-        assert "nginx" in data["host_to_apps"]["unraid-main"]
+        assert "nginx" in data["host_to_apps"]["homelab-host"]
         assert "corosync" in data["host_to_apps"]["pve-node1"]
         assert "nginx-proxy" in data["host_to_apps"]["NPM"]
         assert "172.22.2.4" not in data["host_to_apps"]
 
-        assert "unraid-main" in data["app_to_hosts"]["nginx"]
+        assert "homelab-host" in data["app_to_hosts"]["nginx"]
         assert "pve-node1" in data["app_to_hosts"]["corosync"]
         assert "NPM" in data["app_to_hosts"]["nginx-proxy"]

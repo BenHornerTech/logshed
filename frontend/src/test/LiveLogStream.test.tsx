@@ -63,24 +63,24 @@ const sampleLogs: LogEntry[] = [
     timestamp: '2026-09-03T14:30:15.123Z',
     received_at: '2026-09-03T14:30:15.150Z',
     source_ip: '192.168.1.50',
-    source_alias: 'tower-unraid',
+    source_alias: 'homelab-host',
     app_name: 'nginx',
     facility: 1,
     severity: 3,
     message: 'Nginx upstream connection timeout',
-    raw: '<11>1 2026-09-03T14:30:15.123Z tower-unraid nginx - - - Nginx upstream connection timeout',
+    raw: '<11>1 2026-09-03T14:30:15.123Z homelab-host nginx - - - Nginx upstream connection timeout',
   },
   {
     id: 102,
     timestamp: '2026-09-03T14:30:10.456Z',
     received_at: '2026-09-03T14:30:10.460Z',
     source_ip: '192.168.1.50',
-    source_alias: 'tower-unraid',
+    source_alias: 'homelab-host',
     app_name: 'postgres',
     facility: 1,
     severity: 4,
     message: 'Postgres slow query detected',
-    raw: '<12>1 2026-09-03T14:30:10.456Z tower-unraid postgres - - - Postgres slow query detected',
+    raw: '<12>1 2026-09-03T14:30:10.456Z homelab-host postgres - - - Postgres slow query detected',
   },
   {
     id: 103,
@@ -99,12 +99,12 @@ const sampleLogs: LogEntry[] = [
     timestamp: '2026-09-03T14:30:00.000Z',
     received_at: '2026-09-03T14:30:00.020Z',
     source_ip: '192.168.1.50',
-    source_alias: 'tower-unraid',
+    source_alias: 'homelab-host',
     app_name: 'docker',
     facility: 1,
     severity: 6,
     message: 'Container started cleanly',
-    raw: '<14>1 2026-09-03T14:30:00.000Z tower-unraid docker - - - Container started cleanly',
+    raw: '<14>1 2026-09-03T14:30:00.000Z homelab-host docker - - - Container started cleanly',
   },
 ];
 
@@ -176,16 +176,16 @@ describe('LiveLogStream Component', () => {
       offset: 0,
     });
     vi.spyOn(logsApi, 'fetchLogFacets').mockResolvedValue({
-      sources: ['tower-unraid', 'opnsense-router'],
+      sources: ['homelab-host', 'opnsense-router'],
       apps: ['nginx', 'postgres', 'docker', 'filterlog'],
       host_to_apps: {
-        'tower-unraid': ['docker', 'nginx', 'postgres'],
+        'homelab-host': ['docker', 'nginx', 'postgres'],
         'opnsense-router': ['filterlog'],
       },
       app_to_hosts: {
-        docker: ['tower-unraid'],
-        nginx: ['tower-unraid'],
-        postgres: ['tower-unraid'],
+        docker: ['homelab-host'],
+        nginx: ['homelab-host'],
+        postgres: ['homelab-host'],
         filterlog: ['opnsense-router'],
       },
     });
@@ -250,12 +250,12 @@ describe('LiveLogStream Component', () => {
       timestamp: '2026-09-03T14:35:00.000Z',
       received_at: '2026-09-03T14:35:00.010Z',
       source_ip: '192.168.1.50',
-      source_alias: 'tower-unraid',
+      source_alias: 'homelab-host',
       app_name: 'kernel',
       facility: 0,
       severity: 2,
       message: 'Hardware error corrected by ECC',
-      raw: '<10>1 2026-09-03T14:35:00.000Z tower-unraid kernel - - - Hardware error corrected by ECC',
+      raw: '<10>1 2026-09-03T14:35:00.000Z homelab-host kernel - - - Hardware error corrected by ECC',
     };
 
     expect(MockEventSource.instances.length).toBeGreaterThan(0);
@@ -308,8 +308,8 @@ describe('LiveLogStream Component', () => {
     });
 
     const logRows = document.querySelectorAll('.log-row');
-    const row0Checkbox = logRows[0].firstElementChild as HTMLElement; // id 101, host: tower-unraid
-    const row1Checkbox = logRows[1].firstElementChild as HTMLElement; // id 102, host: tower-unraid
+    const row0Checkbox = logRows[0].firstElementChild as HTMLElement; // id 101, host: homelab-host
+    const row1Checkbox = logRows[1].firstElementChild as HTMLElement; // id 102, host: homelab-host
 
     // Click row 0 (index 0)
     fireEvent.click(row0Checkbox);
@@ -320,7 +320,7 @@ describe('LiveLogStream Component', () => {
     expect(screen.getByText('2 logs selected')).toBeInTheDocument();
 
     // Now shift-click row 3 (index 3) - row 2 is opnsense-router (disparate host)
-    const row3Checkbox = logRows[3].firstElementChild as HTMLElement; // id 104, host: tower-unraid
+    const row3Checkbox = logRows[3].firstElementChild as HTMLElement; // id 104, host: homelab-host
     fireEvent.click(row3Checkbox, { shiftKey: true });
 
     // Should select row 3 as well (total 3 logs: 101, 102, 104) while skipping row 2 (103)
@@ -349,12 +349,12 @@ describe('LiveLogStream Component', () => {
       timestamp: '2026-09-03T14:40:00.000Z',
       received_at: '2026-09-03T14:40:00.010Z',
       source_ip: '192.168.1.50',
-      source_alias: 'tower-unraid',
+      source_alias: 'homelab-host',
       app_name: 'test',
       facility: 1,
       severity: 6,
       message: 'New incoming background log',
-      raw: '<14>1 2026-09-03T14:40:00.000Z tower-unraid test - - - New incoming background log',
+      raw: '<14>1 2026-09-03T14:40:00.000Z homelab-host test - - - New incoming background log',
     };
 
     const es = MockEventSource.instances[0];
@@ -378,18 +378,18 @@ describe('LiveLogStream Component', () => {
   });
 
   it('maintains quick filter buttons even after a filter is applied (Item #32)', async () => {
-    // Initially returns sampleLogs with tower-unraid and opnsense-router
+    // Initially returns sampleLogs with homelab-host and opnsense-router
     render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
     });
 
-    // Quick filter pills for both tower-unraid and opnsense-router exist
-    expect(screen.getByRole('button', { name: 'tower-unraid' })).toBeInTheDocument();
+    // Quick filter pills for both homelab-host and opnsense-router exist
+    expect(screen.getByRole('button', { name: 'homelab-host' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'opnsense-router' })).toBeInTheDocument();
 
-    // Mock fetchLogs to return only tower-unraid logs when filtered
+    // Mock fetchLogs to return only homelab-host logs when filtered
     vi.spyOn(logsApi, 'fetchLogs').mockResolvedValue({
       logs: [sampleLogs[0]],
       total: 1,
@@ -397,17 +397,17 @@ describe('LiveLogStream Component', () => {
       offset: 0,
     });
 
-    // Click quick filter pill for tower-unraid
-    fireEvent.click(screen.getByRole('button', { name: 'tower-unraid' }));
+    // Click quick filter pill for homelab-host
+    fireEvent.click(screen.getByRole('button', { name: 'homelab-host' }));
 
     // Verify opnsense-router quick filter pill DOES NOT disappear!
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'tower-unraid' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'homelab-host' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'opnsense-router' })).toBeInTheDocument();
     });
 
-    // The tower-unraid pill should now be active (highlighted)
-    const towerBtn = screen.getByRole('button', { name: 'tower-unraid' });
+    // The homelab-host pill should now be active (highlighted)
+    const towerBtn = screen.getByRole('button', { name: 'homelab-host' });
     expect(towerBtn.className).toContain('text-accent-300');
   });
 
@@ -423,7 +423,7 @@ describe('LiveLogStream Component', () => {
     const appDropdown = appTrigger.parentElement as HTMLElement;
     fireEvent.click(appTrigger);
 
-    // All apps from both tower-unraid (nginx, postgres, docker) and opnsense-router (filterlog) are present in the dropdown
+    // All apps from both homelab-host (nginx, postgres, docker) and opnsense-router (filterlog) are present in the dropdown
     expect(within(appDropdown).getByText('filterlog')).toBeInTheDocument();
     expect(within(appDropdown).getByText('nginx')).toBeInTheDocument();
     expect(within(appDropdown).getByText('postgres')).toBeInTheDocument();
@@ -431,14 +431,14 @@ describe('LiveLogStream Component', () => {
     // Close app dropdown
     fireEvent.click(appTrigger);
 
-    // 2. Select host 'tower-unraid'
+    // 2. Select host 'homelab-host'
     const hostTrigger = screen.getByText('Host / IP:').closest('[role="button"]') as HTMLElement;
     const hostDropdown = hostTrigger.parentElement as HTMLElement;
     act(() => {
       fireEvent.click(hostTrigger);
     });
     act(() => {
-      fireEvent.click(within(hostDropdown).getByText('tower-unraid'));
+      fireEvent.click(within(hostDropdown).getByText('homelab-host'));
       fireEvent.click(hostTrigger); // close host dropdown
     });
 
@@ -447,7 +447,7 @@ describe('LiveLogStream Component', () => {
       fireEvent.click(appTrigger);
     });
 
-    // Should contain tower-unraid apps, but NOT opnsense-router's filterlog
+    // Should contain homelab-host apps, but NOT opnsense-router's filterlog
     await waitFor(() => {
       expect(within(appDropdown).getByText('nginx')).toBeInTheDocument();
       expect(within(appDropdown).getByText('postgres')).toBeInTheDocument();
@@ -481,10 +481,10 @@ describe('LiveLogStream Component', () => {
       fireEvent.click(hostTrigger);
     });
 
-    // Should contain opnsense-router, but NOT tower-unraid
+    // Should contain opnsense-router, but NOT homelab-host
     await waitFor(() => {
       expect(within(hostDropdown).getByText('opnsense-router')).toBeInTheDocument();
-      expect(within(hostDropdown).queryByText('tower-unraid')).toBeNull();
+      expect(within(hostDropdown).queryByText('homelab-host')).toBeNull();
     });
   });
 
@@ -540,19 +540,19 @@ describe('LiveLogStream Component', () => {
       fireEvent.click(hostTrigger);
     });
 
-    // Dropdown still contains tower-unraid and opnsense-router from full database facets!
-    expect(within(hostDropdown).getByText('tower-unraid')).toBeInTheDocument();
+    // Dropdown still contains homelab-host and opnsense-router from full database facets!
+    expect(within(hostDropdown).getByText('homelab-host')).toBeInTheDocument();
     expect(within(hostDropdown).getByText('opnsense-router')).toBeInTheDocument();
   });
 
   it('deduplicates aliased hosts and never shows the raw IP when an alias is set', async () => {
-    // Provide knownAliases with 172.22.2.4 -> NPM and 192.168.1.50 -> tower-unraid
+    // Provide knownAliases with 172.22.2.4 -> NPM and 192.168.1.50 -> homelab-host
     render(
       <LiveLogStream
         onDiagnoseAi={vi.fn()}
         knownAliases={{
           '172.22.2.4': 'NPM',
-          '192.168.1.50': 'tower-unraid',
+          '192.168.1.50': 'homelab-host',
         }}
       />
     );
@@ -568,8 +568,8 @@ describe('LiveLogStream Component', () => {
       fireEvent.click(hostTrigger);
     });
 
-    // NPM and tower-unraid appear in the host dropdown
-    expect(within(hostDropdown).getByText('tower-unraid')).toBeInTheDocument();
+    // NPM and homelab-host appear in the host dropdown
+    expect(within(hostDropdown).getByText('homelab-host')).toBeInTheDocument();
     expect(within(hostDropdown).getByText('NPM')).toBeInTheDocument();
 
     // Raw IPs that are aliased (172.22.2.4 and 192.168.1.50) MUST NOT appear in the dropdown!
@@ -584,7 +584,7 @@ describe('LiveLogStream Component', () => {
       timestamp: new Date(Date.now() - i * 1000).toISOString(),
       received_at: new Date(Date.now() - i * 1000).toISOString(),
       source_ip: '192.168.1.50',
-      source_alias: 'tower-unraid',
+      source_alias: 'homelab-host',
       app_name: 'nginx',
       facility: 1,
       severity: 3,
@@ -597,7 +597,7 @@ describe('LiveLogStream Component', () => {
       timestamp: new Date(Date.now() - (500 + i) * 1000).toISOString(),
       received_at: new Date(Date.now() - (500 + i) * 1000).toISOString(),
       source_ip: '192.168.1.50',
-      source_alias: 'tower-unraid',
+      source_alias: 'homelab-host',
       app_name: 'nginx',
       facility: 1,
       severity: 3,
