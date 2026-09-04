@@ -14,7 +14,7 @@
 - **Docker Access:** Respect `DOCKER_HOST` (supports socket or `tecnativa/docker-socket-proxy`).
 - **Security Baseline:**
   * App drops privileges via `gosu` to run as a non-root user defined by `PUID` and `PGID` environment variables (defaults to 1000:1000).
-  * On-demand redaction of all sensitive tokens/passwords via `sanitizer.py` before LLM dispatch.
+  * On-demand redaction of all sensitive tokens/passwords via `redactor.py` before LLM dispatch.
   * Native Auth: Argon2id password hashing + HTTP-only SameSite=Lax session cookies.
   * No external database servers; use SQLite migrations via `PRAGMA user_version`.
 

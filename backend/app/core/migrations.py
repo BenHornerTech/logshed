@@ -2,7 +2,7 @@
 Lightweight SQLite migration runner for LogShed.
 
 This module provides a simple mechanism to manage SQLite database schema versions
-using `PRAGMA user_version`. It ensures that database schemas are initialized
+using `PRAGMA user_version`. It ensures that database schemas are set up
 and upgraded sequentially during application startup.
 
 It uses the standard library `sqlite3` module exclusively and is designed to

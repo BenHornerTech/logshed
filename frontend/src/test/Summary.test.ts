@@ -4,7 +4,7 @@ import { extractCleanSummary } from '../utils/summary.ts';
 describe('extractCleanSummary Utility', () => {
   it('extracts ## Summary section and strips markdown backticks, bold, headers', () => {
     const rawResponse = `## Summary
-The \`technitium-sync\` service completed its synchronization **successfully**.
+The \`technitium-sync\` service completed its sync **successfully**.
 
 ## Root Cause
 No issues found.
@@ -13,7 +13,7 @@ No issues found.
 Continue monitoring.`;
 
     const summary = extractCleanSummary(rawResponse);
-    expect(summary).toBe('The technitium-sync service completed its synchronization successfully.');
+    expect(summary).toBe('The technitium-sync service completed its sync successfully.');
     expect(summary).not.toContain('## Summary');
     expect(summary).not.toContain('`');
     expect(summary).not.toContain('**');

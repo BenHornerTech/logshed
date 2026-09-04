@@ -185,13 +185,13 @@ describe('LogDetailModal Component (Items #8, #9, #11)', () => {
     });
   });
 
-  it('renders "Analyze Target + Context (N logs)" and transfers logs to AI analysis (Item #8)', async () => {
+  it('renders "Inspect Target + Context (N logs)" and transfers logs to AI analysis (Item #8)', async () => {
     vi.spyOn(logsApi, 'fetchLogContext').mockResolvedValue({
       target_id: sampleLog.id,
       logs: contextLogs,
     });
 
-    const handleAnalyzeWithContext = vi.fn();
+    const handleInspectWithContext = vi.fn();
     const handleClose = vi.fn();
 
     render(
@@ -200,7 +200,7 @@ describe('LogDetailModal Component (Items #8, #9, #11)', () => {
         isOpen={true}
         onClose={handleClose}
         onExplainWithAi={vi.fn()}
-        onAnalyzeWithContext={handleAnalyzeWithContext}
+        onInspectWithContext={handleInspectWithContext}
         isHostAliased={true}
       />
     );
@@ -209,17 +209,17 @@ describe('LogDetailModal Component (Items #8, #9, #11)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Load Surrounding Context/i }));
 
     // Wait for context logs to load and the action button to appear
-    const analyzeContextBtn = await screen.findByRole('button', {
-      name: /Analyze Target \+ Context \(4 logs\)/i,
+    const inspectContextBtn = await screen.findByRole('button', {
+      name: /Inspect Target \+ Context \(4 logs\)/i,
     });
-    expect(analyzeContextBtn).toBeInTheDocument();
-    expect(analyzeContextBtn).toHaveAttribute('title', 'Add Context to AI Analysis');
+    expect(inspectContextBtn).toBeInTheDocument();
+    expect(inspectContextBtn).toHaveAttribute('title', 'Add Context to AI Analysis');
 
     // Clicking it should transfer all 4 logs (sorted chronologically) and close modal
-    fireEvent.click(analyzeContextBtn);
+    fireEvent.click(inspectContextBtn);
 
-    expect(handleAnalyzeWithContext).toHaveBeenCalledTimes(1);
-    const transferredLogs = handleAnalyzeWithContext.mock.calls[0][0];
+    expect(handleInspectWithContext).toHaveBeenCalledTimes(1);
+    const transferredLogs = handleInspectWithContext.mock.calls[0][0];
     expect(transferredLogs).toHaveLength(4);
     expect(transferredLogs.map((l: LogEntry) => l.id)).toEqual([98, 99, 100, 101]);
     expect(handleClose).toHaveBeenCalledTimes(1);
@@ -247,7 +247,7 @@ describe('LogDetailModal Component (Items #8, #9, #11)', () => {
       logs: mixedHostLogs,
     });
 
-    const handleAnalyzeWithContext = vi.fn();
+    const handleInspectWithContext = vi.fn();
 
     render(
       <LogDetailModal
@@ -255,21 +255,21 @@ describe('LogDetailModal Component (Items #8, #9, #11)', () => {
         isOpen={true}
         onClose={vi.fn()}
         onExplainWithAi={vi.fn()}
-        onAnalyzeWithContext={handleAnalyzeWithContext}
+        onInspectWithContext={handleInspectWithContext}
         isHostAliased={true}
       />
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Load Surrounding Context/i }));
 
-    const analyzeContextBtn = await screen.findByRole('button', {
-      name: /Analyze Target \+ Context \(4 logs\)/i,
+    const inspectContextBtn = await screen.findByRole('button', {
+      name: /Inspect Target \+ Context \(4 logs\)/i,
     });
 
-    fireEvent.click(analyzeContextBtn);
+    fireEvent.click(inspectContextBtn);
 
-    expect(handleAnalyzeWithContext).toHaveBeenCalledTimes(1);
-    const transferredLogs = handleAnalyzeWithContext.mock.calls[0][0];
+    expect(handleInspectWithContext).toHaveBeenCalledTimes(1);
+    const transferredLogs = handleInspectWithContext.mock.calls[0][0];
     // other-host (id 102) was strictly excluded
     expect(transferredLogs).toHaveLength(4);
     expect(transferredLogs.every((l: LogEntry) => l.source_alias === 'proxmox-01')).toBe(true);

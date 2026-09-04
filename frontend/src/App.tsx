@@ -55,7 +55,7 @@ export const App: React.FC = () => {
       <main className="flex-1">
         {activeTab === 'stream' && (
           <LiveLogStream
-            onAnalyzeAi={handleOpenAiModal}
+            onDiagnoseAi={handleOpenAiModal}
             onAddAlias={handleAddAliasFromLog}
           />
         )}

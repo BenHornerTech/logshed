@@ -60,7 +60,7 @@ describe('MarkdownRenderer Component', () => {
   it('correctly handles complex YAML code blocks with dashes inside numbered list items', () => {
     const markdown = `1. **Verify Document Metadata:** Log into your Paperless-ngx web interface and inspect Document #33 (\`Worm City Composting Guide\`). Remove the incorrectly generated tags (\`paperless-gpt-failed\`, \`finance\`, \`insurance\`, \`water\`).
 
-2. **Refine Container Environment / LLM Settings:** If using local models (e.g., via Ollama), upgrade to a higher-parameter model (e.g., moving from a 3B/7B model to a 13B/70B model or an optimized instruct model). Adjust container environment variables (in your Docker compose file or Unraid template) to lower temperature and restrict tag hallucination:
+2. **Refine Container Environment / LLM Settings:** If using local models (e.g., via Ollama), upgrade to a higher-parameter model (e.g., moving from a 3B/7B model to a 13B/70B model or a fine-tuned instruct model). Adjust container environment variables (in your Docker compose file or Unraid template) to lower temperature and restrict tag hallucination:
 
    \`\`\`yaml
    environment:

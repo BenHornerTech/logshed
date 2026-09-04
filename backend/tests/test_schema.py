@@ -214,7 +214,7 @@ class TestMigrationRunner:
 
 
 # ===================================================================
-# 3. FTS5 External Content Synchronization Triggers
+# 3. FTS5 External Content Sync Triggers
 # ===================================================================
 
 class TestFTS5Sync:

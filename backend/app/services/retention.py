@@ -1,5 +1,5 @@
 """
-Log retention pruning and database optimization service for LogShed.
+Log retention pruning and database cleanup service for LogShed.
 """
 
 import asyncio
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def execute_prune(db_path: str | Path, retention_days: int = 30) -> dict:
     """
-    Executes iterative batch pruning, FTS5 optimization, WAL checkpointing,
+    Executes iterative batch pruning, FTS5 index compaction, WAL checkpointing,
     and updates storage metrics.
     
     Returns a dict with:
@@ -45,12 +45,12 @@ def execute_prune(db_path: str | Path, retention_days: int = 30) -> dict:
             if count == 0:
                 break
 
-        # 2. Optimize FTS5 virtual table
+        # 2. Compact FTS5 virtual table segments
         try:
             cursor.execute("INSERT INTO logs_fts(logs_fts) VALUES('optimize');")
             conn.commit()
         except sqlite3.Error as e:
-            logger.warning(f"FTS5 optimize warning: {e}")
+            logger.warning(f"FTS5 compaction warning: {e}")
 
         # 3. Checkpoint and truncate WAL
         try:

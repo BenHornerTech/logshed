@@ -660,7 +660,7 @@ export const SettingsPanel: React.FC = () => {
               <MarkdownRenderer content={selectedAuditItem.response_text} />
             </div>
 
-            {/* Collapsible Sanitized Prompt / Logs */}
+            {/* Collapsible Redacted Prompt / Logs */}
             <div className="border border-dark-700 rounded-lg overflow-hidden bg-dark-950">
               <div className="flex items-center justify-between px-3 py-2 bg-dark-900 border-b border-dark-700">
                 <button

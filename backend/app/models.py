@@ -170,13 +170,13 @@ class PruneResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AiPreviewRequest(BaseModel):
-    """Payload for generating sanitized AI prompt preview."""
+    """Payload for generating redacted AI prompt preview."""
     log_ids: list[int] = Field(..., min_length=1)
 
 
 class AiPreviewResponse(BaseModel):
-    """Preview of sanitized prompt and token estimate."""
-    sanitized_prompt: str
+    """Preview of redacted prompt and token estimate."""
+    redacted_prompt: str
     estimated_tokens: int
     provider: str
     model: str
@@ -186,8 +186,8 @@ class AiPreviewResponse(BaseModel):
     system_prompt: str = ""
 
 
-class AiAnalyzeRequest(BaseModel):
-    """Payload for triggering on-demand AI analysis."""
+class AiDiagnosisRequest(BaseModel):
+    """Payload for triggering on-demand AI diagnosis."""
     log_ids: list[int] = Field(..., min_length=1)
     user_context: Optional[str] = None
     prompt_override: Optional[str] = None
@@ -196,7 +196,7 @@ class AiAnalyzeRequest(BaseModel):
     model: Optional[str] = None
 
 
-class AiAnalyzeResponse(BaseModel):
+class AiDiagnosisResponse(BaseModel):
     """Structured root-cause diagnosis returned from LLM."""
     summary: str
     root_cause: str

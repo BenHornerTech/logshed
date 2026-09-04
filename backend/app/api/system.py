@@ -50,7 +50,7 @@ async def health_check() -> HealthResponse:
 @router.post("/maintenance/prune", response_model=PruneResponse)
 async def trigger_prune(user: dict = Depends(get_current_user)) -> PruneResponse:
     """
-    Manually triggers log retention pruning, FTS5 index optimization,
+    Manually triggers log retention pruning, FTS5 index compaction,
     WAL truncation, and takes a fresh storage metrics snapshot.
     """
     def _get_retention_days(conn):

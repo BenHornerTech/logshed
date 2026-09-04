@@ -41,4 +41,10 @@ describe('aiPrompt utilities', () => {
     expect(parsed.systemPrompt).toBe('Fallback System Prompt');
     expect(parsed.userPrompt).toBe(rawEdited);
   });
+
+  it('DEFAULT_SYSTEM_PROMPT uses universal terminology without Americanisms', () => {
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('redacted server/container logs');
+    expect(DEFAULT_SYSTEM_PROMPT).not.toContain('sanitized');
+    expect(DEFAULT_SYSTEM_PROMPT).not.toContain('analyze');
+  });
 });

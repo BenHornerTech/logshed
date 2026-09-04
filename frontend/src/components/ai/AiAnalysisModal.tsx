@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { Sparkles, Copy, Check, Shield, RefreshCw, AlertCircle, Info, RotateCcw } from 'lucide-react';
-import { LogEntry, AiPreviewResponse, AiAnalysisResponse } from '../../types.ts';
-import { previewAiPrompt, analyzeLogs } from '../../api/ai.ts';
+import { LogEntry, AiPreviewResponse, AiDiagnosisResponse } from '../../types.ts';
+import { previewAiPrompt, diagnoseLogs } from '../../api/ai.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
 import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, parseFullEnvelope } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
@@ -32,8 +32,8 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const [provider, setProvider] = useState<string>('gemini');
   const [model, setModel] = useState<string>('gemini-2.5-flash');
 
-  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
-  const [analysisResult, setAnalysisResult] = useState<AiAnalysisResponse | null>(null);
+  const [isDiagnosing, setIsDiagnosing] = useState<boolean>(false);
+  const [analysisResult, setAnalysisResult] = useState<AiDiagnosisResponse | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   const [copiedPrompt, setCopiedPrompt] = useState<boolean>(false);
@@ -41,16 +41,16 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
 
   const buildCombinedPrompt = (basePrompt: string, ctx: string) => {
     if (!ctx.trim()) return basePrompt;
-    const parts = basePrompt.split('### Sanitized Log Stream');
+    const parts = basePrompt.split('### Redacted Log Stream');
     if (parts.length === 2) {
-      return `${parts[0]}### Situational Context from Operator\n${ctx.trim()}\n\n### Sanitized Log Stream${parts[1]}`;
+      return `${parts[0]}### Situational Context from Operator\n${ctx.trim()}\n\n### Redacted Log Stream${parts[1]}`;
     }
     return `${basePrompt}\n\n### Situational Context from Operator\n${ctx.trim()}`;
   };
 
   const defaultPrompt = useMemo(() => {
     if (!preview) return '';
-    return buildCombinedPrompt(preview.sanitized_prompt, userContext);
+    return buildCombinedPrompt(preview.redacted_prompt, userContext);
   }, [preview, userContext]);
 
   const hasEditedPrompt = isPromptEdited && Boolean(preview && promptText.trim() !== defaultPrompt.trim());
@@ -104,10 +104,10 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       const initialSys = res.system_prompt || DEFAULT_SYSTEM_PROMPT;
       setSystemPrompt(initialSys);
       setIsSystemPromptEdited(false);
-      setPromptText(buildCombinedPrompt(res.sanitized_prompt, userContext));
+      setPromptText(buildCombinedPrompt(res.redacted_prompt, userContext));
       setIsPromptEdited(false);
     } catch (err: any) {
-      setPreviewError(err.message || 'Failed to generate sanitized AI preview.');
+      setPreviewError(err.message || 'Failed to generate redacted AI preview.');
     } finally {
       setIsLoadingPreview(false);
     }
@@ -116,7 +116,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const handleUserContextChange = (newContext: string) => {
     setUserContext(newContext);
     if (!isPromptEdited && preview) {
-      setPromptText(buildCombinedPrompt(preview.sanitized_prompt, newContext));
+      setPromptText(buildCombinedPrompt(preview.redacted_prompt, newContext));
     }
   };
 
@@ -154,9 +154,9 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
     }
 
     try {
-      setIsAnalyzing(true);
+      setIsDiagnosing(true);
       setAnalysisError(null);
-      const res = await analyzeLogs({
+      const res = await diagnoseLogs({
         log_ids: validLogIds,
         user_context: userContext.trim() || undefined,
         prompt_override: hasEditedPrompt ? promptText.trim() : undefined,
@@ -166,9 +166,9 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       });
       setAnalysisResult(res);
     } catch (err: any) {
-      setAnalysisError(err.message || 'AI analysis request failed.');
+      setAnalysisError(err.message || 'AI diagnosis request failed.');
     } finally {
-      setIsAnalyzing(false);
+      setIsDiagnosing(false);
     }
   };
 
@@ -246,7 +246,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
 
         {preview && !analysisResult && (
           <div className="space-y-3">
-            {/* Sanitized Preview & Prompt Editor Block */}
+            {/* Redacted Preview & Prompt Editor Block */}
             <div>
               <div className="flex flex-wrap items-center justify-between mb-1.5 gap-2">
                 <div className="flex items-center gap-2">
@@ -313,7 +313,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                 ref={promptTextareaRef}
                 value={promptViewMode === 'full' ? buildFullEnvelope(systemPrompt, promptText) : promptText}
                 onChange={handlePromptChange}
-                placeholder={promptViewMode === 'full' ? 'Full LLM prompt envelope...' : 'Sanitized prompt...'}
+                placeholder={promptViewMode === 'full' ? 'Full LLM prompt envelope...' : 'Redacted prompt...'}
                 className="w-full bg-dark-950 border border-dark-700 rounded-lg p-3 font-mono text-slate-200 text-xs focus:outline-hidden focus:border-accent-500 leading-relaxed whitespace-pre-wrap resize-y overflow-y-hidden"
               />
             </div>
@@ -381,13 +381,13 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
             <div className="pt-2 flex justify-end">
               <button
                 onClick={handleRunAnalysis}
-                disabled={isAnalyzing}
+                disabled={isDiagnosing}
                 className="bg-accent-600 hover:bg-accent-500 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition shadow-md"
               >
-                {isAnalyzing ? (
+                {isDiagnosing ? (
                   <>
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Analyzing Logs with LLM...</span>
+                    <span>Running analysis...</span>
                   </>
                 ) : (
                   <>
@@ -409,7 +409,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                 <div className="flex items-center gap-2">
                   <Shield className="w-4 h-4 text-emerald-400" />
                   <span className="font-semibold text-slate-200">
-                    {selectedLogs.length} Log{selectedLogs.length === 1 ? '' : 's'} Analyzed
+                    {selectedLogs.length} Log{selectedLogs.length === 1 ? '' : 's'} Inspected
                   </span>
                   {preview && (
                     <span className="text-slate-400 font-mono text-[11px]">

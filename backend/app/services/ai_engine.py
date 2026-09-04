@@ -16,12 +16,12 @@ from google.genai import types as genai_types
 from openai import AsyncOpenAI
 
 from app.core.config import is_debug_or_dev
-from app.core.sanitizer import sanitize
+from app.core.redactor import redact
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_PROMPT = """You are an expert systems engineer, site reliability engineer (SRE), and Linux/Docker administrator.
-Analyze the following sanitized server/container logs and provide a structured diagnosis in Markdown format.
+Review the following redacted server/container logs and provide a structured diagnosis in Markdown format.
 
 Your response MUST include the following three sections with exact headers:
 ## Summary
@@ -39,14 +39,14 @@ SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
 def build_analysis_prompt(
     source_alias: str,
     app_name: str,
-    sanitized_logs: str,
+    redacted_logs: str,
     log_count: int,
     user_context: Optional[str] = None,
     host_notes: Optional[str] = None,
 ) -> str:
     """
     Construct the full prompt payload sent to the LLM.
-    Combines host/container metadata, optional host notes, chronological sanitized logs, and optional operator notes.
+    Combines host/container metadata, optional host notes, chronological redacted logs, and optional operator notes.
     """
     parts = [
         "### System Metadata",
@@ -68,12 +68,12 @@ def build_analysis_prompt(
         ])
 
     parts.extend([
-        "### Sanitized Log Stream (Chronological)",
+        "### Redacted Log Stream (Chronological)",
         "```",
-        sanitized_logs.strip(),
+        redacted_logs.strip(),
         "```",
         "",
-        "Please analyze these logs and provide Summary, Root Cause, and Actionable Remediation.",
+        "Please review these logs and provide Summary, Root Cause, and Actionable Remediation.",
     ])
 
     return "\n".join(parts)
@@ -191,7 +191,7 @@ async def dispatch_gemini_request(
     except ValueError:
         raise
     except Exception as e:
-        clean_err = str(sanitize(str(e)[:500]))
+        clean_err = str(redact(str(e)[:500]))
         err_msg = f"Gemini API error: {clean_err}"
         if is_debug_or_dev():
             logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
@@ -261,7 +261,7 @@ async def dispatch_openai_request(
     except ValueError:
         raise
     except Exception as e:
-        clean_err = str(sanitize(str(e)[:500]))
+        clean_err = str(redact(str(e)[:500]))
         err_msg = f"OpenAI endpoint error: {clean_err}"
         if is_debug_or_dev():
             logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
@@ -277,7 +277,7 @@ async def execute_ai_analysis(
     base_url: Optional[str],
     source_alias: str,
     app_name: str,
-    sanitized_logs: str,
+    redacted_logs: str,
     log_count: int,
     user_context: Optional[str] = None,
     host_notes: Optional[str] = None,
@@ -294,7 +294,7 @@ async def execute_ai_analysis(
         prompt = build_analysis_prompt(
             source_alias=source_alias,
             app_name=app_name,
-            sanitized_logs=sanitized_logs,
+            redacted_logs=redacted_logs,
             log_count=log_count,
             user_context=user_context,
             host_notes=host_notes,

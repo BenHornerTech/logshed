@@ -71,7 +71,7 @@ export interface AiPreviewRequest {
 }
 
 export interface AiPreviewResponse {
-  sanitized_prompt: string;
+  redacted_prompt: string;
   estimated_tokens: number;
   provider: string;
   model: string;
@@ -81,7 +81,7 @@ export interface AiPreviewResponse {
   system_prompt: string;
 }
 
-export interface AiAnalysisRequest {
+export interface AiDiagnosisRequest {
   log_ids: number[];
   user_context?: string;
   prompt_override?: string;
@@ -90,7 +90,7 @@ export interface AiAnalysisRequest {
   model?: string;
 }
 
-export interface AiAnalysisResponse {
+export interface AiDiagnosisResponse {
   summary: string;
   root_cause: string;
   remediation: string;

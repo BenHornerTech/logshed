@@ -86,7 +86,7 @@ def _format_fts_query(query_str: str) -> str:
 
 def _escape_fts_tokens(query_str: str) -> str:
     """
-    Fallback token sanitizer that wraps words in quotes with wildcard suffix
+    Fallback token cleaner that wraps words in quotes with wildcard suffix
     to handle malformed user input without causing FTS5 syntax errors.
     """
     q = query_str.strip()
@@ -99,11 +99,6 @@ def _escape_fts_tokens(query_str: str) -> str:
         if clean:
             tokens.append(f'"{clean}"*')
     return " ".join(tokens)
-
-
-def _sanitize_fts_query(query_str: str) -> str:
-    """Backwards-compatible alias for _escape_fts_tokens."""
-    return _escape_fts_tokens(query_str)
 
 
 def _parse_multi_values(values: Optional[list[str]]) -> list[str]:
@@ -202,7 +197,7 @@ async def list_logs(
             rows = cursor.fetchall()
         except sqlite3.OperationalError as e:
             if is_fts:
-                logger.info(f"FTS5 query '{params.get('fts_term')}' failed ({e}), falling back to tokenized search.")
+                logger.info(f"FTS5 query '{params.get('fts_term')}' failed ({e}), falling back to escaped token search.")
                 params["fts_term"] = _escape_fts_tokens(query)
                 try:
                     cursor.execute(count_sql, params)

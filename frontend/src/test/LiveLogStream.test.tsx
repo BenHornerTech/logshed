@@ -160,7 +160,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('displays Screen Buffer label and clear screen buffer tooltip (Item #14)', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText(/Screen Buffer:/)).toBeInTheDocument();
@@ -171,7 +171,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('does not render the redundant Maximize2 row action button (Item #17)', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -184,7 +184,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('formats timestamps and renders UTC + received_at tooltip (Item #5)', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -199,7 +199,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('maintains top-to-bottom stream direction and prepends SSE logs to the top (Item #4)', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -239,7 +239,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('handles checkbox clicking without bubbling to row detail modal (Item #15)', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -268,7 +268,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('performs Shift-Click range selection with single-host validation (Item #16)', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -298,7 +298,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('displays auto-scroll pause banner and jumps to top on click (Item #4)', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -346,7 +346,7 @@ describe('LiveLogStream Component', () => {
 
   it('maintains quick filter buttons even after a filter is applied (Item #32)', async () => {
     // Initially returns sampleLogs with tower-unraid and opnsense-router
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -379,7 +379,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('scopes app/container dropdown options to only apps belonging to the chosen host', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -423,7 +423,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('scopes host dropdown options when an app is selected first (bidirectional scoping)', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -456,7 +456,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('captures click away on backdrop so clicking outside closes dropdown without opening log drawer', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -484,7 +484,7 @@ describe('LiveLogStream Component', () => {
   });
 
   it('preserves full database hosts and apps in dropdowns even after clearing the screen buffer', async () => {
-    render(<LiveLogStream onAnalyzeAi={vi.fn()} />);
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
@@ -516,7 +516,7 @@ describe('LiveLogStream Component', () => {
     // Provide knownAliases with 172.22.2.4 -> NPM and 192.168.1.50 -> tower-unraid
     render(
       <LiveLogStream
-        onAnalyzeAi={vi.fn()}
+        onDiagnoseAi={vi.fn()}
         knownAliases={{
           '172.22.2.4': 'NPM',
           '192.168.1.50': 'tower-unraid',

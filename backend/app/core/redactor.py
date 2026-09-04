@@ -1,13 +1,13 @@
 """
-On-demand secret sanitizer for LogShed.
+On-demand secret redactor for LogShed.
 
 This module provides regex-based scrubbing of sensitive tokens, passwords,
 API keys, and credentials from log text before it is dispatched to an
 external LLM for analysis.
 
 IMPORTANT: This is NOT applied during ingestion or SQLite insertion.
-Raw logs remain unredacted in the database. Sanitization is applied
-on-demand only when preparing log text for AI preview/analysis
+Raw logs remain unredacted in the database. Redaction is applied
+on-demand only when preparing log text for AI preview/diagnosis
 (per SPEC.md §3 and §4.1).
 """
 
@@ -21,8 +21,8 @@ REDACTED = "[REDACTED]"
 # Each tuple: (pattern_name, compiled_regex, replacement_template)
 # Replacement templates use \1 etc. to preserve context around the redacted value.
 _PATTERNS: list[tuple[str, re.Pattern, str]] = [
-    # --- Authorization Headers ---
-    # Bearer tokens in Authorization headers
+    # --- Authentication Headers ---
+    # Bearer tokens in Authentication headers (matching RFC 7235 Authorization header syntax)
     (
         "bearer_token",
         re.compile(
@@ -31,7 +31,7 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
         ),
         rf"\1{REDACTED}",
     ),
-    # Basic auth in Authorization headers
+    # Basic auth in Authentication headers
     (
         "basic_auth",
         re.compile(
@@ -151,7 +151,7 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
 ]
 
 
-def sanitize(text: Union[str, list[str]]) -> Union[str, list[str]]:
+def redact(text: Union[str, list[str]]) -> Union[str, list[str]]:
     """
     Scrub sensitive secrets from log text.
 
@@ -159,16 +159,16 @@ def sanitize(text: Union[str, list[str]]) -> Union[str, list[str]]:
         text: A single log string or a list of log strings.
 
     Returns:
-        The sanitized text with secrets replaced by [REDACTED].
+        The redacted text with secrets replaced by [REDACTED].
         Returns the same type as the input (str or list[str]).
     """
     if isinstance(text, list):
-        return [_sanitize_single(line) for line in text]
-    return _sanitize_single(text)
+        return [_redact_single(line) for line in text]
+    return _redact_single(text)
 
 
-def _sanitize_single(text: str) -> str:
-    """Apply all sanitization patterns to a single string."""
+def _redact_single(text: str) -> str:
+    """Apply all redaction patterns to a single string."""
     result = text
     for _name, pattern, replacement in _PATTERNS:
         result = pattern.sub(replacement, result)

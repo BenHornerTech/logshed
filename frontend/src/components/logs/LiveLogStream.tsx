@@ -18,7 +18,7 @@ import { LogDetailModal } from './LogDetailModal.tsx';
 import { fetchLogs, fetchLogFacets } from '../../api/logs.ts';
 import { fetchAliases } from '../../api/aliases.ts';
 
-function normalizeIsoString(ts: string): string {
+function cleanIsoString(ts: string): string {
   let parseable = ts.trim();
   if (!parseable.endsWith('Z') && !/[+-]\d{2}(:\d{2})?$/.test(parseable)) {
     parseable = parseable.replace(' ', 'T') + 'Z';
@@ -33,13 +33,13 @@ export function formatLocalTimestamp(ts: string, fallbackTs?: string): string {
     // If timestamp is clearly in the future compared to received_at (> 60s),
     // clamp to fallbackTs (received_at) to avoid 1-hour future offsets on legacy RFC 3164 rows
     if (ts && fallbackTs) {
-      const dTs = new Date(normalizeIsoString(ts));
-      const dFb = new Date(normalizeIsoString(fallbackTs));
+      const dTs = new Date(cleanIsoString(ts));
+      const dFb = new Date(cleanIsoString(fallbackTs));
       if (!isNaN(dTs.getTime()) && !isNaN(dFb.getTime()) && dTs.getTime() - dFb.getTime() > 60000) {
         target = fallbackTs;
       }
     }
-    const parseable = normalizeIsoString(target);
+    const parseable = cleanIsoString(target);
     const d = new Date(parseable);
     if (isNaN(d.getTime())) {
       return target;
@@ -55,7 +55,7 @@ export function formatLocalTimestamp(ts: string, fallbackTs?: string): string {
 }
 
 interface LiveLogStreamProps {
-  onAnalyzeAi: (selectedLogs: LogEntry[]) => void;
+  onDiagnoseAi: (selectedLogs: LogEntry[]) => void;
   onAddAlias?: (ip: string) => void;
   knownAliases?: Record<string, string>;
 }
@@ -63,7 +63,7 @@ interface LiveLogStreamProps {
 const MAX_BUFFER_SIZE = 50000;
 
 export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
-  onAnalyzeAi,
+  onDiagnoseAi,
   onAddAlias,
   knownAliases = {},
 }) => {
@@ -601,7 +601,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   const handleLaunchAiAnalysis = () => {
     const selected = logs.filter((l) => selectedLogIds.has(l.id));
     if (selected.length > 0) {
-      onAnalyzeAi(selected);
+      onDiagnoseAi(selected);
     }
   };
 
@@ -817,7 +817,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
                     <div className="flex items-center justify-end gap-1 pr-1" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => {
-                          onAnalyzeAi([log]);
+                          onDiagnoseAi([log]);
                         }}
                         title="Explain with AI"
                         className="p-1 text-slate-400 hover:text-accent-400 hover:bg-dark-800 rounded transition"
@@ -873,7 +873,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
               className="bg-accent-600 hover:bg-accent-500 text-white text-xs font-medium px-4 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-md"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Analyze ({selectedLogs.length}) Selected Logs with AI</span>
+              <span>Run Analysis ({selectedLogs.length})</span>
             </button>
           </div>
         </div>
@@ -886,20 +886,20 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         onClose={() => setActiveLogDetail(null)}
         onExplainWithAi={(log, ctxLogs) => {
           setActiveLogDetail(null);
-          const logsToAnalyze = ctxLogs && ctxLogs.length > 0 ? ctxLogs : [log];
+          const logsToInspect = ctxLogs && ctxLogs.length > 0 ? ctxLogs : [log];
           setLogs((prevLogs) => {
             const existingIds = new Set(prevLogs.map((l) => l.id));
-            const missingLogs = logsToAnalyze.filter((l) => !existingIds.has(l.id));
+            const missingLogs = logsToInspect.filter((l) => !existingIds.has(l.id));
             if (missingLogs.length === 0) return prevLogs;
             return [...missingLogs, ...prevLogs].sort((a, b) => {
               const cmp = b.timestamp.localeCompare(a.timestamp);
               return cmp !== 0 ? cmp : b.id - a.id;
             });
           });
-          setSelectedLogIds(new Set(logsToAnalyze.map((l) => l.id)));
-          onAnalyzeAi(logsToAnalyze);
+          setSelectedLogIds(new Set(logsToInspect.map((l) => l.id)));
+          onDiagnoseAi(logsToInspect);
         }}
-        onAnalyzeWithContext={(targetAndCtxLogs) => {
+        onInspectWithContext={(targetAndCtxLogs) => {
           setActiveLogDetail(null);
           setLogs((prevLogs) => {
             const existingIds = new Set(prevLogs.map((l) => l.id));
@@ -911,7 +911,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
             });
           });
           setSelectedLogIds(new Set(targetAndCtxLogs.map((l) => l.id)));
-          onAnalyzeAi(targetAndCtxLogs);
+          onDiagnoseAi(targetAndCtxLogs);
         }}
         onAddAlias={onAddAlias}
         isHostAliased={

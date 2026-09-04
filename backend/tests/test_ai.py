@@ -111,7 +111,7 @@ class TestAiEngineDirect:
         prompt = ai_engine.build_analysis_prompt(
             source_alias="router",
             app_name="dnsmasq",
-            sanitized_logs="[2026-08-29T12:00:01Z] [dnsmasq] test log line",
+            redacted_logs="[2026-08-29T12:00:01Z] [dnsmasq] test log line",
             log_count=1,
             user_context="Firmware recently updated",
         )
@@ -124,12 +124,12 @@ class TestAiEngineDirect:
         prompt = ai_engine.build_analysis_prompt(
             source_alias="pve1",
             app_name="pvedaemon",
-            sanitized_logs="[2026-08-29T12:00:01Z] [pvedaemon] test log line",
+            redacted_logs="[2026-08-29T12:00:01Z] [pvedaemon] test log line",
             log_count=1,
             host_notes="Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'",
         )
         assert "- Host Notes: Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'" in prompt
-        meta_section = prompt.split("### Sanitized Log Stream")[0]
+        meta_section = prompt.split("### Redacted Log Stream")[0]
         assert "### System Metadata" in meta_section
         assert "- Host Notes: Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'" in meta_section
 
@@ -137,7 +137,7 @@ class TestAiEngineDirect:
         prompt = ai_engine.build_analysis_prompt(
             source_alias="pve1",
             app_name="pvedaemon",
-            sanitized_logs="[2026-08-29T12:00:01Z] [pvedaemon] test log line",
+            redacted_logs="[2026-08-29T12:00:01Z] [pvedaemon] test log line",
             log_count=1,
             host_notes=None,
         )
@@ -153,7 +153,7 @@ Multiple transaction queries deadlock on shared index.
 
 ## Actionable Remediation
 1. Kill long-running lock PID.
-2. Optimize transaction isolation level.
+2. Tune transaction isolation level.
 """
         summary, root_cause, remediation = ai_engine.parse_structured_ai_response(sample)
         assert summary == "A critical database lock contention occurred."
@@ -199,7 +199,7 @@ Multiple transaction queries deadlock on shared index.
             mock_genai.Client.assert_called_once_with(api_key="test-key")
 
     @pytest.mark.asyncio
-    async def test_dispatch_gemini_error_sanitized(self):
+    async def test_dispatch_gemini_error_redacted(self):
         mock_generate = AsyncMock(
             side_effect=Exception('Invalid API key api_key=secret12345678 in request')
         )
@@ -276,7 +276,7 @@ Multiple transaction queries deadlock on shared index.
                 base_url=None,
                 source_alias="router",
                 app_name="dnsmasq",
-                sanitized_logs="raw logs",
+                redacted_logs="raw logs",
                 log_count=1,
                 prompt_override="Operator explicitly edited prompt payload",
             )
@@ -337,16 +337,16 @@ class TestAiPreviewAndGating:
             assert data["source_alias"] == "router"
             assert data["app_name"] == "dnsmasq"
             assert data["log_count"] == 2
-            assert "[REDACTED]" in data["sanitized_prompt"]
-            assert "do_not_leak_this_token" not in data["sanitized_prompt"]
-            assert "supersecret12345" not in data["sanitized_prompt"]
+            assert "[REDACTED]" in data["redacted_prompt"]
+            assert "do_not_leak_this_token" not in data["redacted_prompt"]
+            assert "supersecret12345" not in data["redacted_prompt"]
             assert data["provider"] == "gemini"
             assert data["model"] == "gemini-2.5-flash"
             assert data["estimated_tokens"] > 0
             mock_exec.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_preview_and_analyze_reject_multi_host_ids(self, populated_db, auth_client):
+    async def test_preview_and_diagnose_reject_multi_host_ids(self, populated_db, auth_client):
         # Log 1 is router (192.168.1.1), Log 3 is proxmox-01 (192.168.1.50)
         preview_res = await auth_client.post(
             "/api/ai/preview",
@@ -355,12 +355,12 @@ class TestAiPreviewAndGating:
         assert preview_res.status_code == 400
         assert "Selected logs must share the same host alias" in preview_res.json()["detail"]
 
-        analyze_res = await auth_client.post(
-            "/api/ai/analyze",
+        diagnose_res = await auth_client.post(
+            "/api/ai/diagnose",
             json={"log_ids": [1, 3]},
         )
-        assert analyze_res.status_code == 400
-        assert "Selected logs must share the same host alias" in analyze_res.json()["detail"]
+        assert diagnose_res.status_code == 400
+        assert "Selected logs must share the same host alias" in diagnose_res.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_preview_injects_host_alias_notes(self, populated_db, auth_client):
@@ -375,7 +375,7 @@ class TestAiPreviewAndGating:
 
         res = await auth_client.post("/api/ai/preview", json={"log_ids": [3]})
         assert res.status_code == 200
-        prompt = res.json()["sanitized_prompt"]
+        prompt = res.json()["redacted_prompt"]
         assert "- Host Notes: Primary Proxmox VE hypervisor running kernel 6.8 with ZFS pool 'rpool'" in prompt
 
     @pytest.mark.asyncio
@@ -386,7 +386,7 @@ class TestAiPreviewAndGating:
         )
         assert res.status_code == 200
         data = res.json()
-        full_prompt = data["sanitized_prompt"]
+        full_prompt = data["redacted_prompt"]
         expected_tokens = max(1, int(len(full_prompt) // 3.5 + len(ai_engine.SYSTEM_PROMPT) // 3.5 + 50))
         assert data["estimated_tokens"] == expected_tokens
         assert data["estimated_tokens"] >= 250
@@ -402,13 +402,13 @@ class TestAiPreviewAndGating:
 
 
 # ===================================================================
-# 3. AI Analyze Workflow & Audit Logging
+# 3. AI Diagnose Workflow & Audit Logging
 # ===================================================================
 
-class TestAiAnalyzeWorkflow:
+class TestAiDiagnoseWorkflow:
 
     @pytest.mark.asyncio
-    async def test_analyze_passes_host_notes_to_engine(self, populated_db, auth_client):
+    async def test_diagnose_passes_host_notes_to_engine(self, populated_db, auth_client):
         conn = sqlite3.connect(populated_db)
         cursor = conn.cursor()
         cursor.execute(
@@ -433,21 +433,21 @@ class TestAiAnalyzeWorkflow:
                 150,
             ),
         ) as mock_exec:
-            res = await auth_client.post("/api/ai/analyze", json={"log_ids": [1]})
+            res = await auth_client.post("/api/ai/diagnose", json={"log_ids": [1]})
             assert res.status_code == 200
             assert mock_exec.called
             _, kwargs = mock_exec.call_args
             assert kwargs.get("host_notes") == "Edge router running pfSense 2.7.2"
 
     @pytest.mark.asyncio
-    async def test_analyze_gemini_provider(self, populated_db, auth_client):
+    async def test_diagnose_gemini_provider(self, populated_db, auth_client):
         mock_raw_response = (
             "## Summary\n"
             "DNS server encountered authentication failure and upstream connection timeouts.\n\n"
             "## Root Cause\n"
             "Invalid Bearer token supplied by client combined with unreachable upstream DNS resolver 1.1.1.1.\n\n"
             "## Actionable Remediation\n"
-            "1. Verify client authorization headers.\n"
+            "1. Verify client authentication headers.\n"
             "2. Check firewall outbound UDP/TCP port 53 to 1.1.1.1."
         )
 
@@ -457,9 +457,9 @@ class TestAiAnalyzeWorkflow:
             return_value=(
                 "DNS server encountered authentication failure and upstream connection timeouts.",
                 "Invalid Bearer token supplied by client combined with unreachable upstream DNS resolver 1.1.1.1.",
-                "1. Verify client authorization headers.\n2. Check firewall outbound UDP/TCP port 53 to 1.1.1.1.",
+                "1. Verify client authentication headers.\n2. Check firewall outbound UDP/TCP port 53 to 1.1.1.1.",
                 mock_raw_response,
-                "### System Metadata\n- Host: router\n\n### Sanitized Log Stream (Chronological)\n```\nlog line\n```",
+                "### System Metadata\n- Host: router\n\n### Redacted Log Stream (Chronological)\n```\nlog line\n```",
                 180,
                 65,
                 0,
@@ -467,7 +467,7 @@ class TestAiAnalyzeWorkflow:
             ),
         ) as mock_exec:
             res = await auth_client.post(
-                "/api/ai/analyze",
+                "/api/ai/diagnose",
                 json={
                     "log_ids": [1, 2],
                     "user_context": "Investigating network blip after update",
@@ -479,7 +479,7 @@ class TestAiAnalyzeWorkflow:
             data = res.json()
             assert "DNS server encountered authentication failure" in data["summary"]
             assert "Invalid Bearer token supplied" in data["root_cause"]
-            assert "Verify client authorization headers" in data["remediation"]
+            assert "Verify client authentication headers" in data["remediation"]
             assert data["model_used"] == "gemini-2.5-flash"
             assert data["tokens_in"] == 180
             assert data["tokens_out"] == 65
@@ -496,11 +496,11 @@ class TestAiAnalyzeWorkflow:
             assert call_kwargs["app_name"] == "dnsmasq"
             assert call_kwargs["log_count"] == 2
             assert call_kwargs["user_context"] == "Investigating network blip after update"
-            assert "[REDACTED]" in call_kwargs["sanitized_logs"]
-            assert "do_not_leak_this_token" not in call_kwargs["sanitized_logs"]
+            assert "[REDACTED]" in call_kwargs["redacted_logs"]
+            assert "do_not_leak_this_token" not in call_kwargs["redacted_logs"]
 
     @pytest.mark.asyncio
-    async def test_analyze_openai_compatible_provider(self, populated_db, auth_client, tmp_path):
+    async def test_diagnose_openai_compatible_provider(self, populated_db, auth_client, tmp_path):
         db_file = tmp_path / "logs.db"
         conn = sqlite3.connect(str(db_file))
         enc_ollama_key = encrypt_value("ollama-key")
@@ -520,7 +520,7 @@ class TestAiAnalyzeWorkflow:
                 "DNS timeout.",
                 "Restart.",
                 mock_raw,
-                "### System Metadata\n- Host: router\n\n### Sanitized Log Stream (Chronological)\n```\nlog line\n```",
+                "### System Metadata\n- Host: router\n\n### Redacted Log Stream (Chronological)\n```\nlog line\n```",
                 140,
                 50,
                 0,
@@ -528,7 +528,7 @@ class TestAiAnalyzeWorkflow:
             ),
         ) as mock_exec:
             res = await auth_client.post(
-                "/api/ai/analyze",
+                "/api/ai/diagnose",
                 json={
                     "log_ids": [1, 2],
                     "provider": "openai_compatible",
@@ -560,7 +560,7 @@ class TestAiAnalyzeWorkflow:
                 "Audit test cause",
                 "Audit test fix",
                 "Raw audit text",
-                "### System Metadata\n- Host: router\n\n### Sanitized Log Stream\n```\nlogs\n```",
+                "### System Metadata\n- Host: router\n\n### Redacted Log Stream\n```\nlogs\n```",
                 80,
                 31,
                 0,
@@ -568,7 +568,7 @@ class TestAiAnalyzeWorkflow:
             ),
         ):
             res = await auth_client.post(
-                "/api/ai/analyze",
+                "/api/ai/diagnose",
                 json={"log_ids": [1, 2], "user_context": "Audit check context"},
             )
             assert res.status_code == 200
@@ -596,7 +596,7 @@ class TestAiAnalyzeWorkflow:
             return_value=("Summary", "Cause", "Fix", "Raw", "Prompt", 50, 20, 0, 70),
         ):
             res = await auth_client.post(
-                "/api/ai/analyze",
+                "/api/ai/diagnose",
                 json={"log_ids": [1, 2]},
             )
             assert res.status_code == 200
@@ -615,7 +615,7 @@ class TestAiAnalyzeWorkflow:
             new_callable=AsyncMock,
             return_value=("Summary 2", "Cause 2", "Fix 2", "Raw 2", "Prompt 2", 50, 20, 0, 70),
         ):
-            await auth_client.post("/api/ai/analyze", json={"log_ids": [1, 2]})
+            await auth_client.post("/api/ai/diagnose", json={"log_ids": [1, 2]})
 
         clear_res = await auth_client.delete("/api/ai/audit")
         assert clear_res.status_code == 200
@@ -626,7 +626,7 @@ class TestAiAnalyzeWorkflow:
         assert list_res.json()["total"] == 0
 
     @pytest.mark.asyncio
-    async def test_analyze_with_prompt_override_dispatches_directly_and_audits(self, populated_db, auth_client):
+    async def test_diagnose_with_prompt_override_dispatches_directly_and_audits(self, populated_db, auth_client):
         mock_raw_response = (
             "## Summary\nOverridden prompt summary.\n\n"
             "## Root Cause\nOverridden prompt cause.\n\n"
@@ -650,7 +650,7 @@ class TestAiAnalyzeWorkflow:
             ),
         ) as mock_exec:
             res = await auth_client.post(
-                "/api/ai/analyze",
+                "/api/ai/diagnose",
                 json={
                     "log_ids": [1, 2],
                     "prompt_override": custom_prompt,
@@ -672,13 +672,13 @@ class TestAiAnalyzeWorkflow:
             assert matching[0]["prompt_sent"] == custom_prompt
 
     @pytest.mark.asyncio
-    async def test_analyze_api_failure_logging_concise(self, populated_db, auth_client, monkeypatch):
+    async def test_diagnose_api_failure_logging_concise(self, populated_db, auth_client, monkeypatch):
         monkeypatch.delenv("DEBUG", raising=False)
         monkeypatch.delenv("ENVIRONMENT", raising=False)
 
         with patch("app.api.ai.execute_ai_analysis", side_effect=Exception("Connection timeout to LLM provider")), \
              patch("app.api.ai.logger.warning") as mock_warn:
-            res = await auth_client.post("/api/ai/analyze", json={"log_ids": [1, 2]})
+            res = await auth_client.post("/api/ai/diagnose", json={"log_ids": [1, 2]})
             assert res.status_code == 502
             assert "Connection timeout to LLM provider" in res.json()["detail"]
             mock_warn.assert_called_with("AI analysis request failed: Connection timeout to LLM provider")
@@ -699,7 +699,7 @@ class TestAiAnalyzeWorkflow:
         assert res2.json()["ai_system_prompt"] == custom_prompt
 
     @pytest.mark.asyncio
-    async def test_analyze_with_system_prompt_override_and_audit(self, populated_db, auth_client):
+    async def test_diagnose_with_system_prompt_override_and_audit(self, populated_db, auth_client):
         custom_sys = "Custom system instructions for root cause triage."
         mock_raw = "## Summary\nTest summary\n\n## Root Cause\nTest cause\n\n## Actionable Remediation\nTest fix"
         with patch(
@@ -718,7 +718,7 @@ class TestAiAnalyzeWorkflow:
             ),
         ) as mock_exec:
             res = await auth_client.post(
-                "/api/ai/analyze",
+                "/api/ai/diagnose",
                 json={
                     "log_ids": [1, 2],
                     "system_prompt_override": custom_sys,

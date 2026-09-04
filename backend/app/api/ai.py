@@ -9,14 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_current_user, run_db_query
 from app.core.config import is_debug_or_dev
-from app.core.sanitizer import sanitize
+from app.core.redactor import redact
 from app.core.security import decrypt_value
 from app.models import (
-    AiAnalyzeRequest,
-    AiAnalyzeResponse,
     AiAuditDeleteResponse,
     AiAuditItem,
     AiAuditListResponse,
+    AiDiagnosisRequest,
+    AiDiagnosisResponse,
     AiPreviewRequest,
     AiPreviewResponse,
 )
@@ -66,7 +66,7 @@ async def preview_ai_prompt(
     user: dict = Depends(get_current_user),
 ) -> AiPreviewResponse:
     """
-    Generate a sanitized preview of selected logs with token estimation.
+    Generate a redacted preview of selected logs with token estimation.
     Enforces that all selected logs belong to the exact same host alias and IP.
     Makes NO outbound LLM calls.
     """
@@ -103,13 +103,13 @@ async def preview_ai_prompt(
     app_name = rows[0]["app_name"]
 
     raw_lines = [f"[{r['timestamp']}] [{r['app_name']}] {r['message']}" for r in rows]
-    sanitized_lines = sanitize(raw_lines)
-    sanitized_logs_text = "\n".join(sanitized_lines) if isinstance(sanitized_lines, list) else str(sanitized_lines)
+    redacted_lines = redact(raw_lines)
+    redacted_logs_text = "\n".join(redacted_lines) if isinstance(redacted_lines, list) else str(redacted_lines)
 
     full_prompt = build_analysis_prompt(
         source_alias=source_alias,
         app_name=app_name,
-        sanitized_logs=sanitized_logs_text,
+        redacted_logs=redacted_logs_text,
         log_count=len(rows),
         host_notes=host_notes,
     )
@@ -118,7 +118,7 @@ async def preview_ai_prompt(
     estimated_tokens = max(1, int(len(full_prompt) // 3.5 + len(system_prompt) // 3.5 + 50))
 
     return AiPreviewResponse(
-        sanitized_prompt=full_prompt,
+        redacted_prompt=full_prompt,
         estimated_tokens=estimated_tokens,
         provider=provider,
         model=model,
@@ -129,13 +129,13 @@ async def preview_ai_prompt(
     )
 
 
-@router.post("/analyze", response_model=AiAnalyzeResponse)
-async def analyze_logs(
-    req: AiAnalyzeRequest,
+@router.post("/diagnose", response_model=AiDiagnosisResponse)
+async def diagnose_logs(
+    req: AiDiagnosisRequest,
     user: dict = Depends(get_current_user),
-) -> AiAnalyzeResponse:
+) -> AiDiagnosisResponse:
     """
-    Executes full on-demand AI root-cause analysis on selected logs.
+    Executes full on-demand AI root-cause diagnosis on selected logs.
     Persists diagnosis in ai_audit_log and returns structured output.
     """
     try:
@@ -179,8 +179,8 @@ async def analyze_logs(
         app_name = rows[0]["app_name"]
 
         raw_lines = [f"[{r['timestamp']}] [{r['app_name']}] {r['message']}" for r in rows]
-        sanitized_lines = sanitize(raw_lines)
-        sanitized_logs = "\n".join(sanitized_lines) if isinstance(sanitized_lines, list) else str(sanitized_lines)
+        redacted_lines = redact(raw_lines)
+        redacted_logs = "\n".join(redacted_lines) if isinstance(redacted_lines, list) else str(redacted_lines)
 
         provider = req.provider or settings.get("ai_provider") or "gemini"
         default_model = "gemini-2.5-flash" if provider == "gemini" else "gpt-4o"
@@ -200,7 +200,7 @@ async def analyze_logs(
             base_url=base_url,
             source_alias=source_alias,
             app_name=app_name,
-            sanitized_logs=sanitized_logs,
+            redacted_logs=redacted_logs,
             log_count=len(rows),
             user_context=req.user_context,
             host_notes=host_notes,
@@ -240,7 +240,7 @@ async def analyze_logs(
 
         audit_id = await run_db_query(_save_audit)
 
-        return AiAnalyzeResponse(
+        return AiDiagnosisResponse(
             summary=summary,
             root_cause=root_cause,
             remediation=remediation,
@@ -254,14 +254,14 @@ async def analyze_logs(
     except HTTPException:
         raise
     except ValueError as ve:
-        clean_err = str(sanitize(str(ve)[:500]))
+        clean_err = str(redact(str(ve)[:500]))
         if is_debug_or_dev():
             logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
         else:
             logger.warning(f"AI analysis request failed: {clean_err}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     except Exception as exc:
-        clean_err = str(sanitize(str(exc)[:500]))
+        clean_err = str(redact(str(exc)[:500]))
         if is_debug_or_dev():
             logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
         else:
@@ -304,12 +304,12 @@ async def list_ai_audit(
         items = []
         for r in rows:
             p_sent = r["prompt_sent"]
-            if p_sent and not p_sent.startswith("### System Metadata") and not p_sent.startswith("### Sanitized Log Stream"):
-                # Reconstitute full prompt structure for older records that stored only raw sanitized logs
+            if p_sent and not p_sent.startswith("### System Metadata") and not p_sent.startswith("### Redacted Log Stream"):
+                # Reconstitute full prompt structure for older records that stored only raw logs
                 p_sent = build_analysis_prompt(
                     source_alias=r["source_alias"],
                     app_name=r["app_name"],
-                    sanitized_logs=p_sent,
+                    redacted_logs=p_sent,
                     log_count=r["log_count"],
                     user_context=r["user_context"],
                 )

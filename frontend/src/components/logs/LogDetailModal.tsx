@@ -11,7 +11,7 @@ interface LogDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   onExplainWithAi: (log: LogEntry, contextLogs?: LogEntry[]) => void;
-  onAnalyzeWithContext?: (logs: LogEntry[]) => void;
+  onInspectWithContext?: (logs: LogEntry[]) => void;
   onAddAlias?: (ip: string) => void;
   isHostAliased?: boolean;
 }
@@ -21,7 +21,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
   isOpen,
   onClose,
   onExplainWithAi,
-  onAnalyzeWithContext,
+  onInspectWithContext,
   onAddAlias,
   isHostAliased,
 }) => {
@@ -69,10 +69,10 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
     });
   }, [log, contextLogs]);
 
-  const handleAnalyzeTargetAndContext = () => {
+  const handleInspectTargetAndContext = () => {
     if (!log || targetAndContextLogs.length === 0) return;
-    if (onAnalyzeWithContext) {
-      onAnalyzeWithContext(targetAndContextLogs);
+    if (onInspectWithContext) {
+      onInspectWithContext(targetAndContextLogs);
     } else {
       onExplainWithAi(log, targetAndContextLogs);
     }
@@ -235,12 +235,12 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
 
                 {contextLogs.length > 0 && !isLoadingContext && (
                   <button
-                    onClick={handleAnalyzeTargetAndContext}
+                    onClick={handleInspectTargetAndContext}
                     title="Add Context to AI Analysis"
                     className="flex items-center gap-1.5 px-2.5 py-1 bg-accent-600 hover:bg-accent-500 text-white rounded font-medium transition text-[11px] shadow-xs"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Analyze Target + Context ({targetAndContextLogs.length} logs)</span>
+                    <span>Inspect Target + Context ({targetAndContextLogs.length} logs)</span>
                   </button>
                 )}
               </div>

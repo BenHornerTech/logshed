@@ -17,7 +17,7 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
       model: 'gemini-3.7-flash',
       prompt_sent: 'Prompt text',
       response_text:
-        '## Summary\nThe `technitium-sync` service completed its synchronization successfully.\n\n## Root Cause\nNo failure occurred.\n\n## Actionable Remediation\nContinue monitoring.',
+        '## Summary\nThe `technitium-sync` service completed its sync successfully.\n\n## Root Cause\nNo failure occurred.\n\n## Actionable Remediation\nContinue monitoring.',
       tokens_in: 800,
       tokens_out: 185,
       tokens_thoughts: 0,
@@ -56,7 +56,7 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
 
     // Clean summary should strip '## Summary' and backticks around 'technitium-sync'
     const summaryCell = screen.getByText(
-      'The technitium-sync service completed its synchronization successfully.'
+      'The technitium-sync service completed its sync successfully.'
     );
     expect(summaryCell).toBeInTheDocument();
     expect(summaryCell.textContent).not.toContain('## Summary');

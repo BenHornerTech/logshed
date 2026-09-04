@@ -163,7 +163,7 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
           <button
             onClick={handlePruneNow}
             disabled={isPruning}
-            title="Immediately purge logs older than the configured retention policy, optimize the search index, and truncate the SQLite WAL."
+            title="Immediately purge logs older than the configured retention policy, compact the search index, and truncate the SQLite WAL."
             className="bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800 font-medium px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition shadow-xs cursor-pointer disabled:cursor-not-allowed"
           >
             {isPruning ? (
@@ -180,7 +180,7 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
           </button>
           <div
             className="text-slate-500 hover:text-slate-300 transition cursor-help p-0.5"
-            title="Pruning runs automatically once every 24 hours. Click 'Prune & Vacuum Now' if you recently lowered your retention days and want to immediately purge older logs, optimize the search index, and truncate the SQLite WAL to reclaim disk space."
+            title="Pruning runs automatically once every 24 hours. Click 'Prune & Vacuum Now' if you recently lowered your retention days and want to immediately purge older logs, compact the search index, and truncate the SQLite WAL to reclaim disk space."
           >
             <Info className="w-4 h-4" />
           </div>

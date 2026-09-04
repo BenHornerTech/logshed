@@ -3,7 +3,7 @@
  */
 
 export const DEFAULT_SYSTEM_PROMPT = `You are an expert systems engineer, site reliability engineer (SRE), and Linux/Docker administrator.
-Analyze the following sanitized server/container logs and provide a structured diagnosis in Markdown format.
+Review the following redacted server/container logs and provide a structured diagnosis in Markdown format.
 
 Your response MUST include the following three sections with exact headers:
 ## Summary

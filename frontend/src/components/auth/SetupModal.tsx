@@ -40,7 +40,7 @@ export const SetupModal: React.FC = () => {
           </div>
           <h1 className="text-xl font-bold text-slate-100 tracking-wide">FIRST-RUN ADMIN SETUP</h1>
           <p className="text-xs text-slate-400 mt-1 text-center">
-            Initialize your master administrator password for LogShed.
+            Set up your master administrator password for LogShed.
           </p>
         </div>
 
@@ -95,11 +95,11 @@ export const SetupModal: React.FC = () => {
             className="w-full bg-accent-600 hover:bg-accent-500 disabled:opacity-50 text-white font-medium py-2.5 px-4 rounded-lg text-sm transition-all shadow-md flex items-center justify-center space-x-2"
           >
             {isLoading ? (
-              <span>Initializing Account...</span>
+              <span>Setting up Account...</span>
             ) : (
               <>
                 <ShieldCheck className="w-4 h-4" />
-                <span>Initialize Admin & Log In</span>
+                <span>Set Up Admin & Log In</span>
               </>
             )}
           </button>

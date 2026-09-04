@@ -125,7 +125,7 @@ CREATE TABLE system_settings (
 Daily task runs iterative batch pruning to prevent WAL expansion and lock contention:
 1. Loop batch deletions until no matching rows remain:
    `DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE timestamp < datetime('now', '-' || :retention_days || ' days') LIMIT 5000);`
-2. Execute FTS5 index optimization:
+2. Execute FTS5 index compaction:
    `INSERT INTO logs_fts(logs_fts) VALUES('optimize');`
 3. Checkpoint and truncate the WAL:
    `PRAGMA wal_checkpoint(TRUNCATE);`
@@ -154,7 +154,7 @@ Daily task runs iterative batch pruning to prevent WAL expansion and lock conten
   * Syslog streams: `stream_key = f"{source_ip}:{app_name}"`
   * Docker streams: `stream_key = f"docker:{container_id}"`
   * Flushes buffered lines into a single log entry on a **150ms per-stream timeout** or upon receiving a new RFC-compliant timestamped header for that stream.
-* **Raw Log Storage:** Logs are committed to SQLite in their original unredacted format. Sanitization is not applied at ingestion.
+* **Raw Log Storage:** Logs are committed to SQLite in their original unredacted format. Redaction is not applied at ingestion.
 * **Bounded Buffer & Batch Flusher:** `asyncio.Queue(maxsize=10000)`. If saturated, increment atomic `dropped_logs_total` counter. Flusher commits batches to SQLite every 2000ms or when the batch reaches 5000 records. The flusher must aggressively drain pending items using `queue.get_nowait()` during each cycle to maximize throughput and prevent artificial bottlenecks.
 
 ---
@@ -165,7 +165,7 @@ AI interactions are strictly user-initiated. No background workers or automated 
 
 ### 4.1 Log Selection & Context Enrichment Workflow
 1. **Selection:** User selects one or multiple log entries in the UI. **Constraint:** All selected logs must share the same `source_alias` / `source_ip`. The UI disables selection across disparate hosts; backend returns `400 Bad Request` if `log_ids` span multiple hosts.
-2. **On-Demand Redaction Pass:** The backend filters selected logs through `sanitizer.py` (scrubbing tokens, passwords, JWTs, AWS keys) before returning the preview payload to the UI.
+2. **On-Demand Redaction Pass:** The backend filters selected logs through `redactor.py` (scrubbing tokens, passwords, JWTs, AWS keys) before returning the preview payload to the UI.
 3. **Payload Inspection & User Enrichment:**
    - UI opens an analysis modal displaying:
      * The scrubbed, redacted text preview exactly as it will be dispatched to the LLM.
@@ -228,8 +228,8 @@ python -m app.cli reset-admin --password <new_password>
 | `GET` | `/api/logs/stream` | Real-time Server-Sent Events (SSE) | `severity_max`, `source`, `app_name` |
 | `GET` | `/api/logs/{id}/context` | Fetch surrounding context lines scoped to the same `source_alias` and `app_name` | Query param: `lines=10` |
 | **On-Demand AI Engine** |  |  |  |
-| `POST` | `/api/ai/preview` | Generate sanitized preview and token estimate (rejects multi-host IDs with `400`) | `{"log_ids": [101, 102]}` |
-| `POST` | `/api/ai/analyze` | Execute user-confirmed AI analysis | `{"log_ids": [101, 102], "user_context": "...", "provider": "gemini|openai", "model": "..."}` |
+| `POST` | `/api/ai/preview` | Generate redacted preview and token estimate (rejects multi-host IDs with `400`) | `{"log_ids": [101, 102]}` |
+| `POST` | `/api/ai/diagnose` | Execute user-confirmed AI diagnosis | `{"log_ids": [101, 102], "user_context": "...", "provider": "gemini|openai", "model": "..."}` |
 | `GET` | `/api/ai/audit` | Fetch historical AI queries & token usage | Query params: `limit`, `offset` |
 | **Host Aliases** |  |  |  |
 | `GET` | `/api/aliases` | List IP-to-Host mappings | None |
@@ -253,7 +253,7 @@ python -m app.cli reset-admin --password <new_password>
   * Virtualized log list (`@tanstack/react-virtual`) capable of handling 50k+ lines without DOM lag.
   * Real-time Server-Sent Events (SSE) stream with auto-scroll and pause-on-scroll-up detection.
   * Severity color-coded badges (Emergency/Alert/Crit/Error = Red, Warning = Yellow, Notice/Info/Debug = Slate/Blue).
-  * Checkbox multi-select mode with a floating action bar: `"Analyze (N) Selected Logs with AI"`.
+  * Checkbox multi-select mode with a floating action bar: `"Run Analysis (N)"` or `"Inspect (N) Selected Logs with AI"`.
 
 * **Selection & Previews:**
   * Restrict multi-selection to entries with matching source_alias.
@@ -275,7 +275,7 @@ python -m app.cli reset-admin --password <new_password>
 
 
 * **On-Demand AI Analysis Modal / Slide-Over:**
-  * Sanitized log preview displaying the exact text to be dispatched (with one-click copy).
+  * Redacted log preview displaying the exact text to be dispatched (with one-click copy).
   * Real-time token counter and estimated API cost preview.
   * Free-text user context textarea to provide situational background (e.g., recent system updates, topology changes).
   * Markdown-rendered analysis display (Summary, Root Cause, Remediation steps with copyable code/command blocks).

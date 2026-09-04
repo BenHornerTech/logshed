@@ -65,14 +65,14 @@ async def _supervise_worker(coro_fn, name: str, *args, **kwargs) -> None:
 async def lifespan(app: FastAPI):
     """
     Application lifespan manager.
-    Initializes database schema, master encryption keys, and starts background workers.
+    Sets up database schema, master encryption keys, and starts background workers.
     """
     global _queue_consumer, _metrics_worker, _prune_worker, _syslog_server, _docker_tailer, _assembler, _background_tasks
 
     db_path = get_db_path()
-    logger.info(f"Initializing LogShed database at {db_path}...")
+    logger.info(f"Setting up LogShed database at {db_path}...")
 
-    # 1. Run migrations and initialize master key
+    # 1. Run migrations and set up master key
     await asyncio.to_thread(run_migrations, db_path)
     await asyncio.to_thread(get_or_create_master_key)
 

@@ -34,8 +34,8 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
   ];
 
   const samplePreview = {
-    sanitized_prompt:
-      "### System Metadata\n- Host / Source: router\n- Container / Service: dnsmasq\n- Total Selected Logs: 2\n\n### Sanitized Log Stream (Chronological)\n```\n[2026-09-04T08:00:00.000Z] [dnsmasq] query failed: upstream DNS server refused connection\n[2026-09-04T08:00:01.000Z] [dnsmasq] retrying upstream DNS server at 1.1.1.1:53\n```\n\nPlease analyze these logs and provide Summary, Root Cause, and Actionable Remediation.",
+    redacted_prompt:
+      "### System Metadata\n- Host / Source: router\n- Container / Service: dnsmasq\n- Total Selected Logs: 2\n\n### Redacted Log Stream (Chronological)\n```\n[2026-09-04T08:00:00.000Z] [dnsmasq] query failed: upstream DNS server refused connection\n[2026-09-04T08:00:01.000Z] [dnsmasq] retrying upstream DNS server at 1.1.1.1:53\n```\n\nPlease review these logs and provide Summary, Root Cause, and Actionable Remediation.",
     estimated_tokens: 280,
     provider: 'gemini',
     model: 'gemini-2.5-flash',
@@ -43,13 +43,13 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     source_alias: 'router',
     app_name: 'dnsmasq',
     system_prompt:
-      'You are an expert systems engineer, site reliability engineer (SRE), and Linux/Docker administrator.\nAnalyze the following sanitized server/container logs and provide a structured diagnosis in Markdown format.\n\nYour response MUST include the following three sections with exact headers:\n## Summary\nA concise 1-2 sentence overview of the issue.\n\n## Root Cause\nA detailed explanation of why the event or failure occurred based on the log evidence.\n\n## Actionable Remediation\nStep-by-step commands, configuration fixes, or debugging steps to resolve the issue.',
+      'You are an expert systems engineer, site reliability engineer (SRE), and Linux/Docker administrator.\nReview the following redacted server/container logs and provide a structured diagnosis in Markdown format.\n\nYour response MUST include the following three sections with exact headers:\n## Summary\nA concise 1-2 sentence overview of the issue.\n\n## Root Cause\nA detailed explanation of why the event or failure occurred based on the log evidence.\n\n## Actionable Remediation\nStep-by-step commands, configuration fixes, or debugging steps to resolve the issue.',
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(aiApi, 'previewAiPrompt').mockResolvedValue(samplePreview);
-    vi.spyOn(aiApi, 'analyzeLogs').mockResolvedValue({
+    vi.spyOn(aiApi, 'diagnoseLogs').mockResolvedValue({
       summary: 'DNS server connection refused.',
       root_cause: 'Upstream 1.1.1.1 DNS is unreachable.',
       remediation: 'Check firewall routing and DNS configuration.',
@@ -76,7 +76,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     });
 
     // The prompt is rendered inside an editable textarea
-    const promptTextarea = await screen.findByPlaceholderText('Sanitized prompt...');
+    const promptTextarea = await screen.findByPlaceholderText('Redacted prompt...');
     expect(promptTextarea.tagName.toLowerCase()).toBe('textarea');
     expect((promptTextarea as HTMLTextAreaElement).value).toContain('### System Metadata');
     expect((promptTextarea as HTMLTextAreaElement).value).toContain('query failed: upstream DNS server refused connection');
@@ -94,7 +94,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       />
     );
 
-    const promptTextarea = await screen.findByPlaceholderText('Sanitized prompt...');
+    const promptTextarea = await screen.findByPlaceholderText('Redacted prompt...');
     expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
     expect(screen.queryByText('(modified)')).not.toBeInTheDocument();
 
@@ -123,7 +123,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       />
     );
 
-    await screen.findByPlaceholderText('Sanitized prompt...');
+    await screen.findByPlaceholderText('Redacted prompt...');
 
     const tooltipText =
       'Estimated prompt/input tokens only (includes system instructions and metadata). Does not include model thinking or response output tokens.';
@@ -142,7 +142,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       />
     );
 
-    await screen.findByPlaceholderText('Sanitized prompt...');
+    await screen.findByPlaceholderText('Redacted prompt...');
 
     const disclaimerText =
       'AI root-cause analyses and remediation commands are advisory only. Always verify proposed commands and configurations before executing on systems. API calls consume tokens billed to your provider.';
@@ -150,7 +150,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     expect(screen.getByText(disclaimerText)).toBeInTheDocument();
   });
 
-  it('dispatches prompt_override to analyzeLogs when prompt was edited by operator', async () => {
+  it('dispatches prompt_override to diagnoseLogs when prompt was edited by operator', async () => {
     render(
       <AiAnalysisModal
         isOpen={true}
@@ -159,7 +159,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       />
     );
 
-    const promptTextarea = await screen.findByPlaceholderText('Sanitized prompt...');
+    const promptTextarea = await screen.findByPlaceholderText('Redacted prompt...');
 
     fireEvent.change(promptTextarea, {
       target: { value: 'Pruned prompt by operator for faster diagnosis.' },
@@ -169,7 +169,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     fireEvent.click(runBtn);
 
     await waitFor(() => {
-      expect(aiApi.analyzeLogs).toHaveBeenCalledWith(
+      expect(aiApi.diagnoseLogs).toHaveBeenCalledWith(
         expect.objectContaining({
           log_ids: [1, 2],
           prompt_override: 'Pruned prompt by operator for faster diagnosis.',
@@ -189,7 +189,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       />
     );
 
-    const promptTextarea = await screen.findByPlaceholderText('Sanitized prompt...');
+    const promptTextarea = await screen.findByPlaceholderText('Redacted prompt...');
 
     fireEvent.change(promptTextarea, {
       target: { value: 'My custom prompt to copy' },
@@ -214,7 +214,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       />
     );
 
-    const promptTextarea = await screen.findByPlaceholderText('Sanitized prompt...');
+    const promptTextarea = await screen.findByPlaceholderText('Redacted prompt...');
     expect((promptTextarea as HTMLTextAreaElement).value).not.toContain('=== SYSTEM INSTRUCTIONS ===');
 
     // Click "Full LLM Prompt" toggle button
@@ -241,7 +241,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     expect((promptTextarea as HTMLTextAreaElement).value).not.toContain('=== SYSTEM INSTRUCTIONS ===');
   });
 
-  it('allows editing system prompt in Full LLM Prompt view and passes system_prompt_override to analyzeLogs', async () => {
+  it('allows editing system prompt in Full LLM Prompt view and passes system_prompt_override to diagnoseLogs', async () => {
     render(
       <AiAnalysisModal
         isOpen={true}
@@ -250,7 +250,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       />
     );
 
-    await screen.findByPlaceholderText('Sanitized prompt...');
+    await screen.findByPlaceholderText('Redacted prompt...');
 
     // Switch to Full LLM Prompt
     fireEvent.click(screen.getByRole('button', { name: 'Full LLM Prompt' }));
@@ -269,7 +269,7 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     fireEvent.click(runBtn);
 
     await waitFor(() => {
-      expect(aiApi.analyzeLogs).toHaveBeenCalledWith(
+      expect(aiApi.diagnoseLogs).toHaveBeenCalledWith(
         expect.objectContaining({
           log_ids: [1, 2],
           prompt_override: 'Custom user logs payload.',
