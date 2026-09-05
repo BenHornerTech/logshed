@@ -48,6 +48,7 @@ export interface StorageMetricsResponse {
   db_size_bytes: number;
   disk_free_bytes: number;
   disk_total_bytes: number;
+  total_logs_count?: number;
   history: StorageMetricsSnapshot[];
 }
 

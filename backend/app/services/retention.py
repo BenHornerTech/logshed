@@ -13,10 +13,10 @@ from app.services.storage_metrics import record_metrics, prune_old_metrics
 
 logger = logging.getLogger(__name__)
 
-def execute_prune(db_path: str | Path, retention_days: int = 30) -> dict:
+def execute_prune(db_path: str | Path, retention_days: int = 30, vacuum: bool = False) -> dict:
     """
     Executes iterative batch pruning, FTS5 index compaction, WAL checkpointing,
-    and updates storage metrics.
+    optional VACUUM page defragmentation, and updates storage metrics.
     
     Returns a dict with:
         deleted_logs: Total number of log rows deleted
@@ -26,7 +26,8 @@ def execute_prune(db_path: str | Path, retention_days: int = 30) -> dict:
     total_deleted = 0
     db_path_obj = Path(db_path)
 
-    with get_connection(db_path_obj) as conn:
+    conn = get_connection(db_path_obj)
+    try:
         cursor = conn.cursor()
         
         # 1. Iterative batch deletion of logs older than retention_days
@@ -57,16 +58,31 @@ def execute_prune(db_path: str | Path, retention_days: int = 30) -> dict:
             cursor.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         except sqlite3.Error as e:
             logger.warning(f"WAL checkpoint warning: {e}")
+        finally:
+            cursor.close()
 
-    # 4. Prune storage metrics older than 30 days
+        # 4. Optional VACUUM outside active transactions
+        if vacuum:
+            try:
+                conn.commit()
+                prev_isolation = conn.isolation_level
+                conn.isolation_level = None
+                conn.execute("VACUUM;")
+                conn.isolation_level = prev_isolation
+            except sqlite3.Error as e:
+                logger.warning(f"VACUUM warning: {e}")
+    finally:
+        conn.close()
+
+    # 5. Prune storage metrics older than 30 days
     deleted_metrics = prune_old_metrics(db_path_obj)
 
-    # 5. Take fresh storage metrics snapshot
+    # 6. Take fresh storage metrics snapshot
     metrics = record_metrics(db_path_obj)
 
     logger.info(
         f"Prune completed: deleted {total_deleted} logs, "
-        f"{deleted_metrics} old metrics, retention_days={retention_days}"
+        f"{deleted_metrics} old metrics, retention_days={retention_days}, vacuum={vacuum}"
     )
 
     return {
@@ -77,9 +93,11 @@ def execute_prune(db_path: str | Path, retention_days: int = 30) -> dict:
     }
 
 
-async def execute_prune_async(db_path: str | Path, retention_days: int = 30) -> dict:
+async def execute_prune_async(
+    db_path: str | Path, retention_days: int = 30, vacuum: bool = False
+) -> dict:
     """Async wrapper executing prune on a thread."""
-    return await asyncio.to_thread(execute_prune, db_path, retention_days)
+    return await asyncio.to_thread(execute_prune, db_path, retention_days, vacuum)
 
 
 class PruneWorker:

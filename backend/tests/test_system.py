@@ -22,8 +22,10 @@ from app.core.security import (
     reset_crypto_cache,
 )
 from app.core.sse import sse_manager
+from app.cli import seed_logs
+from app.api.deps import run_db_query
 from app.main import _supervise_worker, create_app
-from app.services.retention import PruneWorker
+from app.services.retention import PruneWorker, execute_prune
 from app.services.storage_metrics import (
     StorageMetricsWorker,
     prune_old_metrics,
@@ -270,6 +272,81 @@ class TestRetentionAndPruneWorker:
         with get_connection(db_file) as conn:
             count = conn.execute("SELECT COUNT(*) FROM logs WHERE message = 'old log pruned by worker'").fetchone()[0]
             assert count == 0
+
+    def test_prune_vacuum_reclaims_freelist(self, tmp_path: Path):
+        db_file = tmp_path / "logs.db"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        old_time = (now - datetime.timedelta(days=40)).isoformat()
+
+        # Insert 1500 logs older than retention period
+        entries = [
+            (old_time, old_time, f"192.168.1.{i % 250}", f"host-{i}", "app", 1, 6, f"large log payload with lots of text {i} " * 10, "raw")
+            for i in range(1500)
+        ]
+        with get_connection(db_file) as conn:
+            conn.executemany(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias,
+                   app_name, facility, severity, message, raw)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                entries
+            )
+            conn.commit()
+
+        # Run execute_prune with vacuum=False
+        res_no_vac = execute_prune(db_file, retention_days=30, vacuum=False)
+        assert res_no_vac["deleted_logs"] == 1500
+
+        with get_connection(db_file) as conn:
+            # In SQLite WAL mode after deleting 1500 rows, freelist pages exist before vacuum
+            freelist_before = conn.execute("PRAGMA freelist_count;").fetchone()[0]
+            assert freelist_before > 0
+
+        # Now run execute_prune with vacuum=True
+        res_vac = execute_prune(db_file, retention_days=30, vacuum=True)
+        assert res_vac["status"] == "ok"
+        with get_connection(db_file) as conn:
+            freelist_after = conn.execute("PRAGMA freelist_count;").fetchone()[0]
+            assert freelist_after == 0
+
+    @pytest.mark.asyncio
+    async def test_storage_metrics_worker_manual_trigger_single_row(self, tmp_path: Path):
+        db_file = tmp_path / "logs.db"
+        worker = StorageMetricsWorker(db_file)
+        task = asyncio.create_task(worker.run())
+
+        # Allow worker to run its initial sample
+        await asyncio.sleep(0.05)
+
+        with get_connection(db_file) as conn:
+            initial_count = conn.execute("SELECT COUNT(*) FROM storage_metrics").fetchone()[0]
+            assert initial_count == 1
+
+        # Trigger manual sample
+        metrics = await worker.trigger_sample()
+        assert metrics is not None
+        assert "recorded_at" in metrics
+
+        # Allow background loop time to execute if it were incorrectly woken
+        await asyncio.sleep(0.1)
+
+        with get_connection(db_file) as conn:
+            after_count = conn.execute("SELECT COUNT(*) FROM storage_metrics").fetchone()[0]
+            # Must be exactly 2 (1 initial + 1 manual trigger), not 3 (no duplicate background sample)
+            assert after_count == 2
+
+        await worker.stop()
+        await task
+
+    def test_seed_logs_utility(self, tmp_path: Path):
+        db_file = tmp_path / "logs.db"
+        inserted = seed_logs(count=100, days=45, db_path=str(db_file))
+        assert inserted == 100
+
+        with get_connection(db_file) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+            assert count == 100
+            min_ts, max_ts = conn.execute("SELECT MIN(timestamp), MAX(timestamp) FROM logs").fetchone()
+            assert min_ts < max_ts
 
     @pytest.mark.asyncio
     async def test_storage_metrics_worker_exception_backoff(self, tmp_path: Path):
@@ -523,3 +600,104 @@ class TestHostAliases:
         assert res_reverted.json()["total"] == 2
         for log in res_reverted.json()["logs"]:
             assert log["source_alias"] == "192.168.1.99"
+
+    @pytest.mark.asyncio
+    async def test_chunked_alias_update_interleaves_with_concurrent_writes(
+        self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
+    ):
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+        target_ip = "192.168.10.200"
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        # Seed 1200 logs (more than 2 batches of 500) for target_ip
+        with get_connection(db_file) as conn:
+            conn.executemany(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                   VALUES (?, ?, ?, ?, 'app', 1, 6, ?, 'raw')""",
+                [(now, now, target_ip, target_ip, f"log msg {i}") for i in range(1200)],
+            )
+            conn.commit()
+
+        concurrent_inserted = []
+        stop_concurrent = asyncio.Event()
+
+        # Concurrent background writer inserting logs while alias update runs
+        async def concurrent_writer():
+            writer_idx = 0
+            while not stop_concurrent.is_set():
+                def _write(conn):
+                    c = conn.cursor()
+                    c.execute(
+                        """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                           VALUES (?, ?, '10.99.99.99', 'other-host', 'writer', 1, 6, ?, 'raw')""",
+                        (now, now, f"concurrent msg {writer_idx}"),
+                    )
+                    conn.commit()
+                await run_db_query(_write)
+                concurrent_inserted.append(writer_idx)
+                writer_idx += 1
+                await asyncio.sleep(0.002)
+
+        writer_task = asyncio.create_task(concurrent_writer())
+
+        try:
+            # Upsert alias: retroactively updates 1200 rows in chunks of 500
+            res = await client.post(
+                "/api/aliases",
+                json={"ip": target_ip, "alias": "chunked-switch", "notes": "Chunked test"},
+            )
+            assert res.status_code == 200
+        finally:
+            stop_concurrent.set()
+            await writer_task
+
+        # Ensure concurrent writer succeeded without lock errors and inserted records
+        assert len(concurrent_inserted) > 0
+
+        # Verify all 1200 logs were updated to chunked-switch
+        with get_connection(db_file) as conn:
+            updated_count = conn.execute(
+                "SELECT COUNT(*) FROM logs WHERE source_ip = ? AND source_alias = 'chunked-switch'",
+                (target_ip,),
+            ).fetchone()[0]
+            assert updated_count == 1200
+
+        # Test delete alias chunked update with concurrent writes
+        stop_concurrent.clear()
+        concurrent_deleted = []
+
+        async def concurrent_writer_2():
+            w_idx = 0
+            while not stop_concurrent.is_set():
+                def _write(conn):
+                    c = conn.cursor()
+                    c.execute(
+                        """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                           VALUES (?, ?, '10.99.99.99', 'other-host', 'writer', 1, 6, ?, 'raw')""",
+                        (now, now, f"concurrent delete msg {w_idx}"),
+                    )
+                    conn.commit()
+                await run_db_query(_write)
+                concurrent_deleted.append(w_idx)
+                w_idx += 1
+                await asyncio.sleep(0.002)
+
+        writer_task_2 = asyncio.create_task(concurrent_writer_2())
+        try:
+            del_res = await client.delete(f"/api/aliases/{target_ip}")
+            assert del_res.status_code == 200
+        finally:
+            stop_concurrent.set()
+            await writer_task_2
+
+        assert len(concurrent_deleted) > 0
+
+        # Verify all 1200 logs reverted to target_ip
+        with get_connection(db_file) as conn:
+            reverted_count = conn.execute(
+                "SELECT COUNT(*) FROM logs WHERE source_ip = ? AND source_alias = ?",
+                (target_ip, target_ip),
+            ).fetchone()[0]
+            assert reverted_count == 1200
+

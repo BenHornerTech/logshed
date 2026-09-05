@@ -67,7 +67,7 @@ async def trigger_prune(user: dict = Depends(get_current_user)) -> PruneResponse
     retention_days = await run_db_query(_get_retention_days)
     db_path = get_db_path()
 
-    result = await execute_prune_async(db_path, retention_days=retention_days)
+    result = await execute_prune_async(db_path, retention_days=retention_days, vacuum=True)
 
     metrics_raw = result["metrics"]
     metric_item = StorageMetricItem(

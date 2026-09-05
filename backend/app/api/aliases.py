@@ -3,6 +3,7 @@ Host aliases API endpoints for IP to Hostname mapping management.
 """
 
 import datetime
+import time
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, run_db_query
@@ -52,9 +53,24 @@ async def create_or_update_alias(
             """,
             (req.ip, req.alias, req.notes, now),
         )
-        # Retroactively update previously ingested logs for this source IP
-        cursor.execute("UPDATE logs SET source_alias = ? WHERE source_ip = ?", (req.alias, req.ip))
         conn.commit()
+
+        # Retroactively update previously ingested logs for this source IP in chunked batches
+        update_query = """
+            UPDATE logs SET source_alias = ?
+            WHERE source_ip = ? AND id IN (
+                SELECT id FROM logs
+                WHERE source_ip = ? AND source_alias != ?
+                LIMIT 500
+            )
+        """
+        while True:
+            cursor.execute(update_query, (req.alias, req.ip, req.ip, req.alias))
+            count = cursor.rowcount
+            conn.commit()
+            if count < 500:
+                break
+            time.sleep(0.01)
 
         cursor.execute("SELECT ip, alias, notes, created_at FROM host_aliases WHERE ip = ?", (req.ip,))
         row = cursor.fetchone()
@@ -80,10 +96,24 @@ async def delete_alias(
         cursor = conn.cursor()
         cursor.execute("DELETE FROM host_aliases WHERE ip = ?", (ip,))
         deleted = cursor.rowcount > 0
-        if deleted:
-            # Revert previously ingested logs for this source IP back to the raw IP
-            cursor.execute("UPDATE logs SET source_alias = source_ip WHERE source_ip = ?", (ip,))
         conn.commit()
+        if deleted:
+            # Revert previously ingested logs for this source IP back to the raw IP in chunked batches
+            update_query = """
+                UPDATE logs SET source_alias = source_ip
+                WHERE source_ip = ? AND id IN (
+                    SELECT id FROM logs
+                    WHERE source_ip = ? AND source_alias != ?
+                    LIMIT 500
+                )
+            """
+            while True:
+                cursor.execute(update_query, (ip, ip, ip))
+                count = cursor.rowcount
+                conn.commit()
+                if count < 500:
+                    break
+                time.sleep(0.01)
         return deleted
 
     deleted = await run_db_query(_delete)

@@ -30,10 +30,12 @@ export const StorageCard: React.FC<StorageCardProps> = ({ metrics }) => {
     ? Math.min(100, Math.max(0, Math.round((diskUsedBytes / metrics.disk_total_bytes) * 100)))
     : 0;
 
-  // History latest log count or default
-  const totalLogs = metrics.history && metrics.history.length > 0
-    ? metrics.history[metrics.history.length - 1].total_logs_count
-    : 0;
+  // Real-time current log count from metrics.total_logs_count, or fallback to latest history snapshot
+  const totalLogs = typeof metrics.total_logs_count === 'number'
+    ? metrics.total_logs_count
+    : (metrics.history && metrics.history.length > 0
+      ? metrics.history[metrics.history.length - 1].total_logs_count
+      : 0);
 
   return (
     <div className="bg-dark-900 border border-dark-700 rounded-xl p-5 shadow-md">

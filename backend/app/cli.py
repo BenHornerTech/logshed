@@ -61,6 +61,90 @@ def reset_admin(password: str, db_path: str = _DEFAULT_DB_PATH) -> None:
         conn.close()
 
 
+def seed_logs(
+    count: int = 500,
+    days: int = 45,
+    db_path: str = _DEFAULT_DB_PATH,
+) -> int:
+    """
+    Seed dummy log entries distributed across the past `days` days.
+    Useful for testing retention pruning, search, and storage metrics.
+
+    Args:
+        count: Number of dummy logs to generate.
+        days: Number of days in the past to distribute logs across.
+        db_path: Path to the SQLite database.
+
+    Returns:
+        Number of logs inserted.
+    """
+    run_migrations(db_path)
+
+    sample_sources = [
+        ("192.168.1.1", "router"),
+        ("192.168.1.10", "pve-node1"),
+        ("192.168.1.20", "truenas"),
+        ("192.168.1.50", "k3s-master"),
+        ("192.168.1.105", "ha-os"),
+    ]
+
+    sample_apps = [
+        ("kernel", 3, "BTRFS error (device sdb1): parent transid verify failed"),
+        ("systemd", 6, "Started Periodic Background Maintenance Service."),
+        ("sshd", 4, "Failed password for invalid user admin from 10.0.0.99 port 44122"),
+        ("nginx", 6, "GET /api/v1/health HTTP/1.1 200 45ms - Mozilla/5.0"),
+        ("dockerd", 6, "Container 8f9b2c3d started successfully"),
+        ("zfs", 3, "ZFS pool 'tank' reported 1 checksum error during scrub"),
+        ("cron", 6, "CRON[14221]: (root) CMD (/usr/local/bin/backup.sh > /dev/null)"),
+    ]
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    entries = []
+
+    for i in range(count):
+        offset_seconds = (days * 86400) * (1.0 - (i / max(count - 1, 1)))
+        ts = now - datetime.timedelta(seconds=offset_seconds)
+        ts_iso = ts.isoformat()
+
+        ip, alias = sample_sources[i % len(sample_sources)]
+        app, severity, base_msg = sample_apps[i % len(sample_apps)]
+        message = f"[{i+1}/{count}] {base_msg}"
+        raw = f"<{severity + 8}>1 {ts_iso} {alias} {app} - - - {message}"
+
+        entries.append((
+            ts_iso,
+            ts_iso,
+            ip,
+            alias,
+            app,
+            1,  # facility
+            severity,
+            message,
+            raw,
+        ))
+
+    conn = get_connection(db_path)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO logs (
+                timestamp, received_at, source_ip, source_alias,
+                app_name, facility, severity, message, raw
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            entries,
+        )
+        conn.commit()
+        print(f"Successfully seeded {len(entries)} logs across the last {days} days into {db_path}.")
+        return len(entries)
+    except Exception as e:
+        conn.rollback()
+        print(f"Error seeding logs: {e}", file=sys.stderr)
+        raise
+    finally:
+        conn.close()
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -85,10 +169,35 @@ def main() -> None:
         help=f"Path to SQLite database (default: {_DEFAULT_DB_PATH})",
     )
 
+    # seed-logs subcommand
+    seed_parser = subparsers.add_parser(
+        "seed-logs",
+        help="Seed dummy logs distributed across a range of days",
+    )
+    seed_parser.add_argument(
+        "--count",
+        type=int,
+        default=500,
+        help="Number of dummy logs to generate (default: 500)",
+    )
+    seed_parser.add_argument(
+        "--days",
+        type=int,
+        default=45,
+        help="Number of past days to span timestamps across (default: 45)",
+    )
+    seed_parser.add_argument(
+        "--db-path",
+        default=_DEFAULT_DB_PATH,
+        help=f"Path to SQLite database (default: {_DEFAULT_DB_PATH})",
+    )
+
     args = parser.parse_args()
 
     if args.command == "reset-admin":
         reset_admin(args.password, args.db_path)
+    elif args.command == "seed-logs":
+        seed_logs(args.count, args.days, args.db_path)
     else:
         parser.print_help()
         sys.exit(1)

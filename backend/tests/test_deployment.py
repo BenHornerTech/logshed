@@ -214,7 +214,7 @@ class TestEntrypointStatic:
         assert "1000" in content
         assert "docker.sock" in content
         assert "stat" in content
-        assert "chown appuser:appuser /data" in content or ("chown" in content and "/data" in content)
+        assert "chown -R appuser:appuser /data" in content
         assert "--workers 1" in content
         assert "gosu" in content
         assert "tini" in content
