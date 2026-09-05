@@ -25,6 +25,7 @@ from app.services.ai_engine import (
     SYSTEM_PROMPT,
     build_analysis_prompt,
     execute_ai_analysis,
+    truncate_logs_to_budget,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,11 @@ def _fetch_and_validate_logs(conn, log_ids: list[int]):
     """
     Helper to fetch logs by IDs, sort chronologically, and validate single-host constraint.
     """
+    if len(log_ids) > 200:
+        return None, "Maximum of 200 log IDs allowed per request."
+    if not log_ids:
+        return None, "No logs found for provided IDs."
+
     placeholders = ",".join("?" * len(log_ids))
     cursor = conn.cursor()
     cursor.execute(
@@ -70,6 +76,12 @@ async def preview_ai_prompt(
     Enforces that all selected logs belong to the exact same host alias and IP.
     Makes NO outbound LLM calls.
     """
+    if len(req.log_ids) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot analyze more than 200 logs at once.",
+        )
+
     def _fetch(conn):
         rows, err = _fetch_and_validate_logs(conn, req.log_ids)
         if err:
@@ -105,6 +117,7 @@ async def preview_ai_prompt(
     raw_lines = [f"[{r['timestamp']}] [{r['app_name']}] {r['message']}" for r in rows]
     redacted_lines = redact(raw_lines)
     redacted_logs_text = "\n".join(redacted_lines) if isinstance(redacted_lines, list) else str(redacted_lines)
+    redacted_logs_text = truncate_logs_to_budget(redacted_logs_text)
 
     full_prompt = build_analysis_prompt(
         source_alias=source_alias,
@@ -138,6 +151,12 @@ async def diagnose_logs(
     Executes full on-demand AI root-cause diagnosis on selected logs.
     Persists diagnosis in ai_audit_log and returns structured output.
     """
+    if len(req.log_ids) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot analyze more than 200 logs at once.",
+        )
+
     try:
         def _fetch_data_and_settings(conn):
             rows, err = _fetch_and_validate_logs(conn, req.log_ids)

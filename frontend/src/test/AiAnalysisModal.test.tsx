@@ -278,4 +278,32 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       );
     });
   });
+
+  it('displays a clear guardrail error when more than 200 logs are selected without calling preview API', async () => {
+    const manyLogs: LogEntry[] = Array.from({ length: 250 }, (_, i) => ({
+      id: i + 1,
+      timestamp: '2026-09-04T08:00:00.000Z',
+      received_at: '2026-09-04T08:00:00.100Z',
+      source_ip: '192.168.1.1',
+      source_alias: 'router',
+      app_name: 'dnsmasq',
+      facility: 1,
+      severity: 3,
+      message: `log line ${i}`,
+      raw: `raw log ${i}`,
+    }));
+
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={manyLogs}
+      />
+    );
+
+    expect(await screen.findByText(/Cannot analyze more than 200 logs at once/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/250 logs selected/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/\(Max 200 logs allowed\)/i)).toBeInTheDocument();
+    expect(aiApi.previewAiPrompt).not.toHaveBeenCalled();
+  });
 });

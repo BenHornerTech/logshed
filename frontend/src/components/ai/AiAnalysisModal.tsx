@@ -92,6 +92,13 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       return;
     }
 
+    if (validLogIds.length > 200) {
+      setPreviewError(
+        `Cannot analyze more than 200 logs at once (${validLogIds.length} logs selected). Please reduce your selection to 200 logs or fewer.`
+      );
+      return;
+    }
+
     try {
       setIsLoadingPreview(true);
       setPreviewError(null);
@@ -153,6 +160,13 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       return;
     }
 
+    if (validLogIds.length > 200) {
+      setAnalysisError(
+        `Cannot analyze more than 200 logs at once (${validLogIds.length} logs selected). Please reduce your selection to 200 logs or fewer.`
+      );
+      return;
+    }
+
     try {
       setIsDiagnosing(true);
       setAnalysisError(null);
@@ -205,10 +219,15 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
         {/* Host & Target Scope Header */}
         <div className="p-3 bg-dark-950 rounded-lg border border-dark-700 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-emerald-400" />
+            <Shield className={`w-4 h-4 ${selectedLogs.length > 200 ? 'text-amber-400' : 'text-emerald-400'}`} />
             <span className="font-semibold text-slate-200">
               {selectedLogs.length} Log{selectedLogs.length === 1 ? '' : 's'} Selected
             </span>
+            {selectedLogs.length > 200 && (
+              <span className="text-[11px] text-amber-400 font-mono">
+                (Max 200 logs allowed)
+              </span>
+            )}
             {preview && (
               <span className="text-slate-400 font-mono">
                 ({preview.source_alias} • {preview.app_name})

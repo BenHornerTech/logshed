@@ -121,6 +121,115 @@ class TestAuthentication:
         assert res_blocked_correct.status_code == 429
 
     @pytest.mark.asyncio
+    async def test_login_rate_limiting_untrusted_spoofed_xff_does_not_bypass(self):
+        """
+        Verify that an attacker on an untrusted IP cycling X-Forwarded-For cannot
+        bypass login rate limits. The server must use the peer IP and block on the 6th attempt.
+        """
+        app = create_app()
+        # Untrusted origin connecting directly
+        untrusted_transport = ASGITransport(app=app, client=("198.51.100.5", 50000))
+        async with AsyncClient(transport=untrusted_transport, base_url="http://test") as untrusted_client:
+            await untrusted_client.post("/api/auth/setup", json={"password": "real_password"})
+
+            # Attacker cycles different X-Forwarded-For headers to try to bypass rate limiting
+            for i in range(5):
+                res = await untrusted_client.post(
+                    "/api/auth/login",
+                    json={"password": "wrong_password"},
+                    headers={"X-Forwarded-For": f"10.0.0.{i+1}"},
+                )
+                assert res.status_code == 401
+
+            # 6th attempt with yet another X-Forwarded-For must be blocked by rate limit
+            res_blocked = await untrusted_client.post(
+                "/api/auth/login",
+                json={"password": "wrong_password"},
+                headers={"X-Forwarded-For": "10.0.0.99"},
+            )
+            assert res_blocked.status_code == 429
+            assert "Too many failed login attempts" in res_blocked.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_login_rate_limiting_untrusted_spoofed_xff_does_not_lockout_victim(self):
+        """
+        Verify that an attacker on an untrusted IP spoofing an admin/victim IP in X-Forwarded-For
+        does not lock out the victim.
+        """
+        app = create_app()
+        untrusted_transport = ASGITransport(app=app, client=("198.51.100.5", 50000))
+        victim_transport = ASGITransport(app=app, client=("203.0.113.50", 50000))
+
+        async with AsyncClient(transport=untrusted_transport, base_url="http://test") as attacker_client, \
+                   AsyncClient(transport=victim_transport, base_url="http://test") as victim_client:
+            await attacker_client.post("/api/auth/setup", json={"password": "secure_admin_pass"})
+
+            # Attacker sends failed attempts claiming to be the victim in X-Forwarded-For
+            for _ in range(5):
+                res = await attacker_client.post(
+                    "/api/auth/login",
+                    json={"password": "wrong_password"},
+                    headers={"X-Forwarded-For": "203.0.113.50"},
+                )
+                assert res.status_code == 401
+
+            # Attacker should be rate limited on their own IP
+            attacker_res = await attacker_client.post(
+                "/api/auth/login",
+                json={"password": "wrong_password"},
+                headers={"X-Forwarded-For": "203.0.113.50"},
+            )
+            assert attacker_res.status_code == 429
+
+            # Victim logging in with their actual credentials must NOT be locked out
+            victim_res = await victim_client.post(
+                "/api/auth/login",
+                json={"password": "secure_admin_pass"},
+            )
+            assert victim_res.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_login_trusted_proxies_parses_rightmost_untrusted_hop(self, monkeypatch):
+        """
+        When TRUSTED_PROXIES is configured, the server parses the rightmost untrusted hop
+        from X-Forwarded-For to attribute rate limiting.
+        """
+        monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.1, 10.0.0.2")
+        app = create_app()
+        # Direct connection comes from trusted proxy 10.0.0.1
+        proxy_transport = ASGITransport(app=app, client=("10.0.0.1", 50000))
+        async with AsyncClient(transport=proxy_transport, base_url="http://test") as proxy_client:
+            await proxy_client.post("/api/auth/setup", json={"password": "proxy_password"})
+
+            # XFF chain: [spoofed_ip, untrusted_client_ip, trusted_proxy_ip]
+            # Rightmost untrusted hop is 203.0.113.88
+            xff = "192.0.2.1, 203.0.113.88, 10.0.0.2"
+
+            for _ in range(5):
+                res = await proxy_client.post(
+                    "/api/auth/login",
+                    json={"password": "wrong_password"},
+                    headers={"X-Forwarded-For": xff},
+                )
+                assert res.status_code == 401
+
+            # 6th attempt from same untrusted client IP is rate limited
+            res_blocked = await proxy_client.post(
+                "/api/auth/login",
+                json={"password": "wrong_password"},
+                headers={"X-Forwarded-For": xff},
+            )
+            assert res_blocked.status_code == 429
+
+            # A different client coming through the same proxy chain is NOT rate limited
+            res_other = await proxy_client.post(
+                "/api/auth/login",
+                json={"password": "wrong_password"},
+                headers={"X-Forwarded-For": "203.0.113.99, 10.0.0.2"},
+            )
+            assert res_other.status_code == 401
+
+    @pytest.mark.asyncio
     async def test_auth_status_endpoint(self, client: AsyncClient, auth_cookie: dict):
         # Before setup
         res = await client.get("/api/auth/status")

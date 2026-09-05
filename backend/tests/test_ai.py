@@ -289,6 +289,34 @@ Multiple transaction queries deadlock on shared index.
             )
 
     @pytest.mark.asyncio
+    async def test_execute_ai_analysis_truncates_massive_log_text(self):
+        massive_logs_text = ("Log line with data: " + ("X" * 150) + "\n") * 700
+        assert len(massive_logs_text) > 100_000
+
+        with patch("app.services.ai_engine.dispatch_gemini_request", new_callable=AsyncMock) as mock_dispatch:
+            mock_dispatch.return_value = (
+                "## Summary\nTruncated summary\n\n## Root Cause\nTruncated cause\n\n## Actionable Remediation\nTruncated fix",
+                100,
+                50,
+                0,
+                150,
+            )
+            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
+                provider="gemini",
+                model="gemini-2.5-flash",
+                api_key="key",
+                base_url=None,
+                source_alias="router",
+                app_name="dnsmasq",
+                redacted_logs=massive_logs_text,
+                log_count=700,
+            )
+            assert "[... Truncated older logs to fit token budget ...]" in prompt_sent
+            call_prompt = mock_dispatch.call_args[1]["prompt"]
+            assert "[... Truncated older logs to fit token budget ...]" in call_prompt
+            assert len(call_prompt) <= 105_000
+
+    @pytest.mark.asyncio
     async def test_dispatch_gemini_error_logging_concise_warning(self, monkeypatch):
         mock_generate = AsyncMock(side_effect=Exception("API quota exceeded for project 12345"))
         with patch("app.services.ai_engine.genai") as mock_genai, \
@@ -399,6 +427,48 @@ class TestAiPreviewAndGating:
         assert "system_prompt" in data
         assert len(data["system_prompt"]) > 0
         assert data["estimated_tokens"] > 100
+
+    @pytest.mark.asyncio
+    async def test_preview_rejects_more_than_200_log_ids(self, populated_db, auth_client):
+        res = await auth_client.post(
+            "/api/ai/preview",
+            json={"log_ids": list(range(1, 202))},
+        )
+        assert res.status_code in (400, 422)
+
+    @pytest.mark.asyncio
+    async def test_preview_truncates_massive_log_text(self, populated_db, auth_client):
+        conn = sqlite3.connect(populated_db)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-03-01T10:00:00Z",
+                "2026-03-01T10:00:00Z",
+                "192.168.1.1",
+                "router",
+                "dnsmasq",
+                1,
+                3,
+                "A" * 120_000,
+                "raw_big",
+            ),
+        )
+        big_log_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        res = await auth_client.post(
+            "/api/ai/preview",
+            json={"log_ids": [big_log_id]},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert "[... Truncated older logs to fit token budget ...]" in data["redacted_prompt"]
+        assert len(data["redacted_prompt"]) <= 105_000
 
 
 # ===================================================================
@@ -736,3 +806,11 @@ class TestAiDiagnoseWorkflow:
             matching = [item for item in audit_res.json()["items"] if item["id"] == audit_id]
             assert len(matching) == 1
             assert matching[0]["system_prompt"] == custom_sys
+
+    @pytest.mark.asyncio
+    async def test_diagnose_rejects_more_than_200_log_ids(self, populated_db, auth_client):
+        res = await auth_client.post(
+            "/api/ai/diagnose",
+            json={"log_ids": list(range(1, 202))},
+        )
+        assert res.status_code in (400, 422)

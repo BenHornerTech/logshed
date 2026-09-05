@@ -270,6 +270,30 @@ async def dispatch_openai_request(
         raise RuntimeError(err_msg)
 
 
+MAX_LOG_TEXT_CHARS = 100_000
+TRUNCATION_NOTICE = "[... Truncated older logs to fit token budget ...]\n"
+
+
+def truncate_logs_to_budget(logs_text: str, max_chars: int = MAX_LOG_TEXT_CHARS) -> str:
+    """
+    Defensively truncate concatenated log text if it exceeds max_chars.
+    Retains the most recent logs fitting within the budget, prepending an explicit notice.
+    """
+    if len(logs_text) <= max_chars:
+        return logs_text
+
+    budget = max_chars - len(TRUNCATION_NOTICE)
+    if budget <= 0:
+        return TRUNCATION_NOTICE.strip()
+
+    truncated = logs_text[-budget:]
+    nl_idx = truncated.find("\n")
+    if nl_idx != -1 and nl_idx < 500:
+        truncated = truncated[nl_idx + 1:]
+
+    return TRUNCATION_NOTICE + truncated
+
+
 async def execute_ai_analysis(
     provider: str,
     model: str,
@@ -288,6 +312,8 @@ async def execute_ai_analysis(
     Unified entrypoint to run on-demand AI analysis.
     Returns (summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used).
     """
+    redacted_logs = truncate_logs_to_budget(redacted_logs)
+
     if prompt_override and prompt_override.strip():
         prompt = prompt_override.strip()
     else:

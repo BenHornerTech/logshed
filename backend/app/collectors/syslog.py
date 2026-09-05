@@ -90,7 +90,28 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
                 msg = remainder
 
             if timestamp != "-":
-                result["timestamp"] = timestamp
+                try:
+                    ts_clean = timestamp.replace("Z", "+00:00")
+                    dt = datetime.datetime.fromisoformat(ts_clean)
+                    if dt.tzinfo is None:
+                        local_tz = datetime.datetime.now().astimezone().tzinfo
+                        dt_utc = dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+                    else:
+                        dt_utc = dt.astimezone(datetime.timezone.utc)
+                    diff_seconds = (dt_utc - now).total_seconds()
+                    if diff_seconds > 60:
+                        offset_hours = round(diff_seconds / 3600)
+                        if offset_hours > 0:
+                            dt_utc -= datetime.timedelta(hours=offset_hours)
+                        if (dt_utc - now).total_seconds() > 60:
+                            dt_utc = now
+                    # Preserve standard Zulu notation if input cleanly used 'Z'
+                    if timestamp.endswith("Z"):
+                        result["timestamp"] = timestamp
+                    else:
+                        result["timestamp"] = dt_utc.isoformat()
+                except Exception:
+                    result["timestamp"] = timestamp
             if hostname != "-":
                 result["hostname"] = hostname
             if app_name != "-":

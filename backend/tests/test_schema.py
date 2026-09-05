@@ -318,3 +318,23 @@ class TestFTS5Sync:
         conn.close()
 
         assert count_after == 0
+
+    def test_startup_sanitization_clamps_future_timestamps(self, tmp_path: Path):
+        """run_migrations should sanitize any legacy corrupted or future-dated timestamps."""
+        db_file = tmp_path / "sanitize_test.db"
+        run_migrations(db_file)
+
+        with get_connection(db_file) as conn:
+            # Insert a corrupted row with timestamp in the future (e.g. 18:11 when received at 17:11)
+            conn.execute(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                   VALUES ('2026-09-05T18:11:00+01:00', '2026-09-05T17:11:00.000000+00:00', '192.168.1.1', 'router', 'syslog', 1, 6, 'corrupted', 'raw')"""
+            )
+            conn.commit()
+
+        # Rerun run_migrations as happens on container restart
+        run_migrations(db_file)
+
+        with get_connection(db_file) as conn:
+            row = conn.execute("SELECT timestamp, received_at FROM logs WHERE message = 'corrupted'").fetchone()
+            assert row[0] == row[1]

@@ -31,7 +31,15 @@ export async function apiFetch<T>(endpoint: string, options: RequestInit = {}): 
       try {
         errorData = JSON.parse(text);
         if (errorData?.detail) {
-          errorMsg = typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail);
+          if (typeof errorData.detail === 'string') {
+            errorMsg = errorData.detail;
+          } else if (Array.isArray(errorData.detail)) {
+            errorMsg = errorData.detail
+              .map((d: any) => (typeof d === 'string' ? d : d.msg || d.message || JSON.stringify(d)))
+              .join('; ');
+          } else {
+            errorMsg = JSON.stringify(errorData.detail);
+          }
         } else if (text && text.trim().length > 0) {
           errorMsg = text;
         }

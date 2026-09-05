@@ -10,9 +10,10 @@ from typing import Optional
 
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import ai, aliases, auth, logs, settings, system
@@ -147,6 +148,20 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan,
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        # Format clean, human-readable error messages without dumping massive raw input payloads
+        messages = []
+        for err in exc.errors():
+            msg = err.get("msg", "Validation error")
+            loc = " -> ".join(str(l) for l in err.get("loc", []) if l != "body")
+            messages.append(f"{loc}: {msg}" if loc else msg)
+        clean_detail = "; ".join(messages) if messages else "Request validation failed."
+        return JSONResponse(
+            status_code=422,
+            content={"detail": clean_detail},
+        )
 
     # CORS Middleware allowing credentials for Vite frontend development
     app.add_middleware(

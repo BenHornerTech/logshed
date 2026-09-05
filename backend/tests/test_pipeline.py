@@ -511,3 +511,61 @@ class TestQueueConsumer:
         # Verify dropped logs counter incremented by batch size
         assert get_dropped_count() == initial_drops + batch_size
         assert f"Dropped {batch_size} logs permanently" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_queue_consumer_normalizes_timezone_and_clamps_future_timestamps(self, db_path: Path):
+        """
+        Entries with non-UTC timezone offsets, naive timestamps, or future dates are
+        normalized to UTC and clamped so that newer logs always sort ahead of older logs.
+        """
+        consumer = QueueConsumer(db_path)
+        q = get_queue()
+
+        # Older log emitted at 17:11 UTC with +01:00 (18:11 local)
+        q.put_nowait({
+            "timestamp": "2026-09-05T18:11:00+01:00",
+            "received_at": "2026-09-05T17:11:00.000000+00:00",
+            "source_ip": "192.168.1.1",
+            "source_alias": "gateway",
+            "app_name": "syslog",
+            "facility": 1,
+            "severity": 6,
+            "message": "Older 18:11 BST log with +01:00",
+            "raw": "raw",
+        })
+
+        # Newer log emitted at 17:29 UTC (18:29 local)
+        q.put_nowait({
+            "timestamp": "2026-09-05T17:29:00+00:00",
+            "received_at": "2026-09-05T17:29:00.000000+00:00",
+            "source_ip": "docker",
+            "source_alias": "docker",
+            "app_name": "nginx",
+            "facility": 1,
+            "severity": 6,
+            "message": "Newer 18:29 BST log in UTC",
+            "raw": "raw",
+        })
+
+        consumer_task = asyncio.create_task(consumer.run())
+
+        for _ in range(20):
+            if q.empty():
+                break
+            await asyncio.sleep(0.05)
+
+        assert q.empty()
+        await consumer.stop()
+        await consumer_task
+
+        conn = get_connection(db_path)
+        rows = conn.execute(
+            "SELECT message, timestamp FROM logs ORDER BY timestamp DESC, id DESC"
+        ).fetchall()
+        conn.close()
+
+        assert len(rows) == 2
+        # The 17:29 log MUST sort before the 18:11+01:00 (17:11 UTC) log
+        assert "Newer 18:29 BST" in rows[0][0]
+        assert "Older 18:11 BST" in rows[1][0]
+        assert rows[0][1] > rows[1][1]

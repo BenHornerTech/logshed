@@ -4,6 +4,7 @@ Provides setup lockout, Argon2id verification, rate-limited login, and session c
 """
 
 import datetime
+import ipaddress
 import os
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
@@ -26,14 +27,82 @@ from app.models import (
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+def _clean_ip(ip_str: str) -> str:
+    """Clean whitespace and optional port numbers from an IP string."""
+    ip_str = ip_str.strip()
+    if ip_str.startswith("["):
+        end_bracket = ip_str.find("]")
+        if end_bracket != -1:
+            return ip_str[1:end_bracket]
+    if ip_str.count(":") == 1 and "." in ip_str:
+        return ip_str.split(":")[0]
+    return ip_str
+
+
+def _get_trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Parse comma-separated IPs/CIDRs from TRUSTED_PROXIES environment variable."""
+    trusted_env = os.environ.get("TRUSTED_PROXIES", "").strip()
+    if not trusted_env:
+        return []
+    networks = []
+    for part in trusted_env.split(","):
+        cleaned = _clean_ip(part)
+        if cleaned:
+            try:
+                networks.append(ipaddress.ip_network(cleaned, strict=False))
+            except ValueError:
+                pass
+    return networks
+
+
+def _is_trusted_proxy(ip_str: str, trusted_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network]) -> bool:
+    """Check if an IP string is loopback or belongs to one of the trusted proxy networks."""
+    cleaned = _clean_ip(ip_str)
+    try:
+        addr = ipaddress.ip_address(cleaned)
+    except ValueError:
+        return False
+    if addr.is_loopback:
+        return True
+    for net in trusted_networks:
+        if addr in net:
+            return True
+    return False
+
+
 def _get_client_ip(request: Request) -> str:
-    """Extract client IP address, checking X-Forwarded-For header first."""
+    """
+    Extract client IP address safely with trusted proxy validation.
+    Inspects request.client.host. If TRUSTED_PROXIES is configured or the connection
+    origin is loopback, parses the client IP from the rightmost untrusted hop
+    in X-Forwarded-For. If TRUSTED_PROXIES is not set and the caller is not on loopback,
+    falls back strictly to request.client.host.
+    """
+    if not request.client or not request.client.host:
+        return "127.0.0.1"
+
+    peer_ip = _clean_ip(request.client.host)
+    trusted_networks = _get_trusted_networks()
+
+    # If the direct peer is not trusted, ignore X-Forwarded-For to prevent spoofing
+    if not _is_trusted_proxy(peer_ip, trusted_networks):
+        return peer_ip
+
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "127.0.0.1"
+    if not forwarded:
+        return peer_ip
+
+    hops = [_clean_ip(h) for h in forwarded.split(",") if _clean_ip(h)]
+    if not hops:
+        return peer_ip
+
+    # Walk hops right-to-left looking for the rightmost untrusted hop
+    for hop in reversed(hops):
+        if not _is_trusted_proxy(hop, trusted_networks):
+            return hop
+
+    # If all hops are trusted, fall back to the leftmost hop
+    return hops[0]
 
 
 def _is_secure_cookie(request: Request) -> bool:

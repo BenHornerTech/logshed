@@ -369,17 +369,33 @@ class QueueConsumer:
         try:
             cursor = conn.cursor()
             for entry in batch:
-                # Defensive clamp: ensure no entry is saved with a timestamp in the future compared to received_at
+                # Defensive clamp & UTC normalization: ensure timestamp is in canonical UTC
+                # and no entry is saved with a timestamp in the future compared to received_at
                 try:
                     ts_val = entry.get("timestamp")
                     rec_val = entry.get("received_at")
-                    if ts_val and rec_val:
-                        dt_ts = datetime.datetime.fromisoformat(ts_val)
-                        dt_rec = datetime.datetime.fromisoformat(rec_val)
-                        if (dt_ts - dt_rec).total_seconds() > 60:
-                            entry["timestamp"] = rec_val
+                    if ts_val:
+                        dt_ts = datetime.datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
+                        if dt_ts.tzinfo is None:
+                            local_tz = datetime.datetime.now().astimezone().tzinfo
+                            dt_ts = dt_ts.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+                        else:
+                            dt_ts = dt_ts.astimezone(datetime.timezone.utc)
+
+                        if rec_val:
+                            dt_rec = datetime.datetime.fromisoformat(rec_val.replace("Z", "+00:00"))
+                            if dt_rec.tzinfo is None:
+                                dt_rec = dt_rec.replace(tzinfo=datetime.timezone.utc)
+                            else:
+                                dt_rec = dt_rec.astimezone(datetime.timezone.utc)
+
+                            if (dt_ts - dt_rec).total_seconds() > 60:
+                                dt_ts = dt_rec
+
+                        entry["timestamp"] = dt_ts.isoformat()
                 except Exception:
-                    pass
+                    if entry.get("received_at"):
+                        entry["timestamp"] = entry["received_at"]
                 cursor.execute(query, entry)
                 entry["id"] = cursor.lastrowid
             conn.commit()

@@ -12,6 +12,7 @@ import {
   Info,
   Clock,
   Loader2,
+  AlertCircle,
 } from 'lucide-react';
 import { LogEntry, LogFilterParams } from '../../types.ts';
 import { SeverityBadge } from '../common/SeverityBadge.tsx';
@@ -981,16 +982,27 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {selectedLogs.length > 200 && (
+              <span className="text-xs text-amber-400 flex items-center gap-1 font-mono">
+                <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                <span>Max 200 logs for AI</span>
+              </span>
+            )}
+
             <button
               onClick={clearSelection}
-              className="px-3 py-1 text-xs text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded transition"
+              className="px-3 py-1 text-xs text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded transition cursor-pointer"
             >
               Clear Selection
             </button>
 
             <button
               onClick={handleLaunchAiAnalysis}
-              className="bg-accent-600 hover:bg-accent-500 text-white text-xs font-medium px-4 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-md"
+              className={`text-white text-xs font-medium px-4 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow-md cursor-pointer ${
+                selectedLogs.length > 200
+                  ? 'bg-amber-600 hover:bg-amber-500'
+                  : 'bg-accent-600 hover:bg-accent-500'
+              }`}
             >
               <Sparkles className="w-3.5 h-3.5" />
               <span>Run Analysis ({selectedLogs.length})</span>
