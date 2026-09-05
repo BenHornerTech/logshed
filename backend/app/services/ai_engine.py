@@ -56,7 +56,18 @@ def build_analysis_prompt(
     ]
 
     if host_notes and host_notes.strip():
-        parts.append(f"- Host Notes: {host_notes.strip()}")
+        stripped_notes = host_notes.strip()
+        if "\n" in stripped_notes or stripped_notes.startswith("- "):
+            parts.append("- Host Notes:")
+            for line in stripped_notes.splitlines():
+                line = line.strip()
+                if line:
+                    if line.startswith("- "):
+                        parts.append(f"  {line}")
+                    else:
+                        parts.append(f"  - {line}")
+        else:
+            parts.append(f"- Host Notes: {stripped_notes}")
 
     parts.append("")
 

@@ -300,7 +300,7 @@ describe('LiveLogStream Component', () => {
     });
   });
 
-  it('performs Shift-Click range selection with single-host validation (Item #16)', async () => {
+  it('performs Shift-Click range selection across multiple hosts without error', async () => {
     render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
 
     await waitFor(() => {
@@ -315,18 +315,104 @@ describe('LiveLogStream Component', () => {
     fireEvent.click(row0Checkbox);
     expect(screen.getByText('1 log selected')).toBeInTheDocument();
 
-    // Shift-click row 1 (index 1) - same host
+    // Shift-click row 1 (index 1)
     fireEvent.click(row1Checkbox, { shiftKey: true });
     expect(screen.getByText('2 logs selected')).toBeInTheDocument();
 
-    // Now shift-click row 3 (index 3) - row 2 is opnsense-router (disparate host)
+    // Now shift-click row 3 (index 3) - row 2 is opnsense-router (cross-host selection)
     const row3Checkbox = logRows[3].firstElementChild as HTMLElement; // id 104, host: homelab-host
     fireEvent.click(row3Checkbox, { shiftKey: true });
 
-    // Should select row 3 as well (total 3 logs: 101, 102, 104) while skipping row 2 (103)
+    // Should select all 4 logs across both hosts without any errors
     await waitFor(() => {
-      expect(screen.getByText('3 logs selected')).toBeInTheDocument();
-      expect(screen.getByText(/Range selection contained logs from multiple hosts/i)).toBeInTheDocument();
+      expect(screen.getByText('4 logs selected')).toBeInTheDocument();
+      expect(screen.queryByText(/Range selection contained logs from multiple hosts/i)).toBeNull();
+      expect(screen.getByText(/2 hosts/i)).toBeInTheDocument();
+    });
+  });
+
+  it('supports individual multi-host selection and shows multi-host status in action bar', async () => {
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    const logRows = document.querySelectorAll('.log-row');
+    const row0Checkbox = logRows[0].firstElementChild as HTMLElement; // id 101, host: homelab-host
+    const row2Checkbox = logRows[2].firstElementChild as HTMLElement; // id 103, host: opnsense-router
+
+    // Select row 0 (homelab-host)
+    fireEvent.click(row0Checkbox);
+    expect(screen.getByText('1 log selected')).toBeInTheDocument();
+    expect(screen.getAllByText('homelab-host').length).toBeGreaterThan(0);
+
+    // Select row 2 (opnsense-router)
+    fireEvent.click(row2Checkbox);
+    expect(screen.getByText('2 logs selected')).toBeInTheDocument();
+    expect(screen.getByText(/2 hosts/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Cannot select across different hosts/i)).toBeNull();
+  });
+
+  it('selects all logs currently in browser buffer with Select All action (capped at 200) and clears with Deselect All', async () => {
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // Locate "Select All" button in the toolbar
+    const selectAllBtn = screen.getByRole('button', { name: /^Select All$/i });
+    expect(selectAllBtn).toBeInTheDocument();
+
+    // Click "Select All"
+    fireEvent.click(selectAllBtn);
+
+    // All 4 logs in sampleLogs should be selected
+    await waitFor(() => {
+      expect(screen.getByText('4 logs selected')).toBeInTheDocument();
+    });
+
+    // Deselect All button should now be available in toolbar and floating action bar
+    const deselectAllBtns = screen.getAllByRole('button', { name: /^Deselect All$/i });
+    expect(deselectAllBtns.length).toBeGreaterThan(0);
+
+    // Click Deselect All from the floating action bar or toolbar
+    fireEvent.click(deselectAllBtns[0]);
+
+    // Selection should be cleared
+    await waitFor(() => {
+      expect(screen.queryByText('4 logs selected')).toBeNull();
+    });
+  });
+
+  it('toggles Select All and Deselect All via table header column checkbox', async () => {
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // Find table header toggle button (aria-label "Toggle select all in table")
+    const headerToggle = screen.getByRole('button', { name: 'Toggle select all in table' });
+    expect(headerToggle).toBeInTheDocument();
+
+    // Click table header toggle to select all
+    fireEvent.click(headerToggle);
+
+    await waitFor(() => {
+      expect(screen.getByText('4 logs selected')).toBeInTheDocument();
+    });
+
+    // Now button aria-label should be "Toggle deselect all in table"
+    const headerDeselectToggle = screen.getByRole('button', { name: 'Toggle deselect all in table' });
+    expect(headerDeselectToggle).toBeInTheDocument();
+
+    // Click table header toggle to deselect all
+    fireEvent.click(headerDeselectToggle);
+
+    await waitFor(() => {
+      expect(screen.queryByText('4 logs selected')).toBeNull();
     });
   });
 

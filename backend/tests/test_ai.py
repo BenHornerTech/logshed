@@ -374,21 +374,70 @@ class TestAiPreviewAndGating:
             mock_exec.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_preview_and_diagnose_reject_multi_host_ids(self, populated_db, auth_client):
+    async def test_preview_and_diagnose_multi_host_success(self, populated_db, auth_client):
+        # Insert host notes for both hosts to test aggregation
+        conn = sqlite3.connect(populated_db)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO host_aliases (ip, alias, notes, created_at) VALUES (?, ?, ?, datetime('now'))",
+            ("192.168.1.1", "router", "Edge router running pfSense 2.7.2"),
+        )
+        cursor.execute(
+            "INSERT INTO host_aliases (ip, alias, notes, created_at) VALUES (?, ?, ?, datetime('now'))",
+            ("192.168.1.50", "proxmox-01", "Primary Proxmox VE hypervisor"),
+        )
+        conn.commit()
+        conn.close()
+
         # Log 1 is router (192.168.1.1), Log 3 is proxmox-01 (192.168.1.50)
         preview_res = await auth_client.post(
             "/api/ai/preview",
             json={"log_ids": [1, 3]},
         )
-        assert preview_res.status_code == 400
-        assert "Selected logs must share the same host alias" in preview_res.json()["detail"]
+        assert preview_res.status_code == 200
+        preview_data = preview_res.json()
+        assert preview_data["log_count"] == 2
+        assert "proxmox-01" in preview_data["source_alias"]
+        assert "router" in preview_data["source_alias"]
 
-        diagnose_res = await auth_client.post(
-            "/api/ai/diagnose",
-            json={"log_ids": [1, 3]},
-        )
-        assert diagnose_res.status_code == 400
-        assert "Selected logs must share the same host alias" in diagnose_res.json()["detail"]
+        # Prompt text must include host attribution on each line
+        prompt_text = preview_data["redacted_prompt"]
+        assert "[router] [dnsmasq]" in prompt_text
+        assert "[proxmox-01] [pve-ha]" in prompt_text
+
+        # Host notes from both hosts should be aggregated
+        assert "[router]: Edge router running pfSense 2.7.2" in prompt_text
+        assert "[proxmox-01]: Primary Proxmox VE hypervisor" in prompt_text
+
+        # Test diagnose also succeeds with multi-host selection
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=(
+                "Multi-host issue detected across router and proxmox.",
+                "Cross-host communication failure.",
+                "Verify network connectivity between hosts.",
+                "Raw response",
+                "Prompt sent",
+                120,
+                60,
+                0,
+                180,
+            ),
+        ) as mock_exec:
+            diagnose_res = await auth_client.post(
+                "/api/ai/diagnose",
+                json={"log_ids": [1, 3]},
+            )
+            assert diagnose_res.status_code == 200
+            diag_data = diagnose_res.json()
+            assert diag_data["summary"] == "Multi-host issue detected across router and proxmox."
+            assert mock_exec.called
+            _, kwargs = mock_exec.call_args
+            assert "[router] [dnsmasq]" in kwargs.get("redacted_logs")
+            assert "[proxmox-01] [pve-ha]" in kwargs.get("redacted_logs")
+            assert "[router]: Edge router running pfSense 2.7.2" in kwargs.get("host_notes")
+            assert "[proxmox-01]: Primary Proxmox VE hypervisor" in kwargs.get("host_notes")
 
     @pytest.mark.asyncio
     async def test_preview_injects_host_alias_notes(self, populated_db, auth_client):

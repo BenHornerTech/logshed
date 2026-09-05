@@ -6,7 +6,6 @@ import {
   Sparkles,
   CheckSquare,
   Square,
-  AlertTriangle,
   ArrowUp,
   Trash2,
   Info,
@@ -162,7 +161,6 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   const [missedLogsCount, setMissedLogsCount] = useState<number>(0);
   const [selectedLogIds, setSelectedLogIds] = useState<Set<number>>(new Set());
   const [lastSelectedLogIndex, setLastSelectedLogIndex] = useState<number | null>(null);
-  const [selectionHostError, setSelectionHostError] = useState<string | null>(null);
   const [activeLogDetail, setActiveLogDetail] = useState<LogEntry | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
@@ -767,10 +765,9 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     return result.length > 0 ? result : allAvailableSources;
   }, [activeApps, allAvailableSources, appToHostsMap]);
 
-  // Multi-select with strict same-host constraint and Shift-click range support
+  // Multi-select across single or multiple hosts with Shift-click range support
   const toggleSelectLog = (log: LogEntry, index: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    setSelectionHostError(null);
 
     // Shift-Click Range Selection
     if (e.shiftKey && lastSelectedLogIndex !== null && lastSelectedLogIndex !== index) {
@@ -778,26 +775,10 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       const end = Math.max(lastSelectedLogIndex, index);
       const rangeLogs = logs.slice(start, end + 1);
 
-      // Determine active host: from already selected logs, or fallback to anchor log
-      const selectedEntries = logs.filter((l) => selectedLogIds.has(l.id));
-      const activeHost = selectedEntries.length > 0
-        ? selectedEntries[0].source_alias
-        : (logs[lastSelectedLogIndex]?.source_alias || log.source_alias);
-
-      const hasDisparateHosts = rangeLogs.some((l) => l.source_alias !== activeHost);
-      const validLogs = rangeLogs.filter((l) => l.source_alias === activeHost);
-
       const newSet = new Set(selectedLogIds);
-      validLogs.forEach((l) => newSet.add(l.id));
+      rangeLogs.forEach((l) => newSet.add(l.id));
       setSelectedLogIds(newSet);
       setLastSelectedLogIndex(index);
-
-      if (hasDisparateHosts) {
-        setSelectionHostError(
-          `Range selection contained logs from multiple hosts. Only logs matching host "${activeHost}" were selected.`
-        );
-        setTimeout(() => setSelectionHostError(null), 4000);
-      }
       return;
     }
 
@@ -810,30 +791,21 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       return;
     }
 
-    // Check if other selected logs exist and verify same host
-    if (newSet.size > 0) {
-      const selectedEntries = logs.filter((l) => newSet.has(l.id));
-      if (selectedEntries.length > 0) {
-        const firstHost = selectedEntries[0].source_alias;
-        if (firstHost !== log.source_alias) {
-          setSelectionHostError(
-            `Cannot select across different hosts. Selected logs must belong to "${firstHost}".`
-          );
-          setTimeout(() => setSelectionHostError(null), 4000);
-          return;
-        }
-      }
-    }
-
     newSet.add(log.id);
     setSelectedLogIds(newSet);
     setLastSelectedLogIndex(index);
   };
 
-  const clearSelection = () => {
+  const selectAllLogs = () => {
+    // Select all logs loaded in the client-side buffer, capped at the 200-log AI analysis ceiling
+    const targetLogs = logs.slice(0, 200);
+    const newSet = new Set(targetLogs.map((l) => l.id));
+    setSelectedLogIds(newSet);
+  };
+
+  const deselectAllLogs = () => {
     setSelectedLogIds(new Set());
     setLastSelectedLogIndex(null);
-    setSelectionHostError(null);
   };
 
   const handleLaunchAiAnalysis = () => {
@@ -917,6 +889,26 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
         {/* Right: Stream State Controls */}
         <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-1.5 border-r border-dark-700 pr-3 mr-1">
+            <button
+              onClick={selectAllLogs}
+              disabled={logs.length === 0}
+              className="px-2 py-1 rounded text-xs font-medium bg-dark-800 text-slate-300 border border-dark-700 hover:border-slate-500 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              title={logs.length > 200 ? 'Select all logs in buffer (capped at 200)' : 'Select all logs in buffer'}
+            >
+              Select All
+            </button>
+            {selectedLogIds.size > 0 && (
+              <button
+                onClick={deselectAllLogs}
+                className="px-2 py-1 rounded text-xs font-medium bg-dark-800 text-slate-400 border border-dark-700 hover:border-slate-500 hover:text-slate-200 transition cursor-pointer"
+                title="Deselect all selected logs"
+              >
+                Deselect All
+              </button>
+            )}
+          </div>
+
           <span className="font-mono text-slate-400 text-[11px]">
             Screen Buffer: <span className="text-slate-200">{logs.length.toLocaleString()}</span> lines
           </span>
@@ -947,31 +939,32 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
             onClick={clearLogsBuffer}
             title="Clear screen buffer (clears browser view only; does not delete logs from disk)"
             aria-label="Clear screen buffer (clears browser view only; does not delete logs from disk)"
-            className="p-1 text-slate-400 hover:text-red-400 hover:bg-dark-800 rounded transition"
+            className="p-1 text-slate-400 hover:text-red-400 hover:bg-dark-800 rounded transition cursor-pointer"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Host Constraint Warning Toast */}
-      {selectionHostError && (
-        <div className="bg-amber-950/90 border-b border-amber-800 text-amber-200 px-4 py-1.5 text-xs flex items-center justify-between animate-in fade-in">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>{selectionHostError}</span>
-          </div>
-          <button onClick={() => setSelectionHostError(null)} className="text-amber-300 hover:text-white font-bold">
-            ×
-          </button>
-        </div>
-      )}
-
       {/* Virtualized Table View */}
       <div className="flex-1 relative overflow-hidden flex flex-col">
         {/* Table Header */}
         <div className="bg-dark-950 border-b border-dark-700 text-slate-400 text-[11px] font-mono font-semibold grid grid-cols-[36px_165px_65px_130px_130px_1fr_60px] px-3 py-1.5 select-none items-center">
-          <div className="text-center">#</div>
+          <div className="flex items-center justify-center">
+            <button
+              onClick={selectedLogIds.size > 0 ? deselectAllLogs : selectAllLogs}
+              disabled={logs.length === 0}
+              title={selectedLogIds.size > 0 ? 'Deselect all rows' : (logs.length > 200 ? 'Select all rows (capped at 200)' : 'Select all rows')}
+              aria-label={selectedLogIds.size > 0 ? 'Toggle deselect all in table' : 'Toggle select all in table'}
+              className="p-1 hover:text-slate-200 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {selectedLogIds.size > 0 ? (
+                <CheckSquare className="w-3.5 h-3.5 text-accent-400" />
+              ) : (
+                <Square className="w-3.5 h-3.5 opacity-50 hover:opacity-100" />
+              )}
+            </button>
+          </div>
           <div>TIMESTAMP</div>
           <div>SEV</div>
           <div>HOST / IP</div>
@@ -1124,9 +1117,27 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
             <span className="text-xs font-semibold text-slate-200">
               {selectedLogs.length} log{selectedLogs.length === 1 ? '' : 's'} selected
             </span>
-            <span className="text-xs text-slate-400 font-mono">
-              Host: <span className="text-accent-400">{selectedLogs[0].source_alias}</span>
-            </span>
+            {(() => {
+              const uniqueHosts = Array.from(
+                new Set(selectedLogs.map((l) => l.source_alias || l.source_ip || 'unknown'))
+              );
+              if (uniqueHosts.length === 1) {
+                return (
+                  <span className="text-xs text-slate-400 font-mono">
+                    Host: <span className="text-accent-400">{uniqueHosts[0]}</span>
+                  </span>
+                );
+              }
+              return (
+                <span className="text-xs text-slate-400 font-mono">
+                  Hosts:{' '}
+                  <span className="text-accent-400">
+                    {uniqueHosts.length} hosts ({uniqueHosts.slice(0, 3).join(', ')}
+                    {uniqueHosts.length > 3 ? '...' : ''})
+                  </span>
+                </span>
+              );
+            })()}
           </div>
 
           <div className="flex items-center gap-2">
@@ -1138,10 +1149,10 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
             )}
 
             <button
-              onClick={clearSelection}
+              onClick={deselectAllLogs}
               className="px-3 py-1 text-xs text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded transition cursor-pointer"
             >
-              Clear Selection
+              Deselect All
             </button>
 
             <button

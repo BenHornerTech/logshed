@@ -166,7 +166,7 @@ Daily task runs iterative batch pruning to prevent WAL expansion and lock conten
 AI interactions are strictly user-initiated. No background workers or automated pipelines dispatch logs to external LLMs.
 
 ### 4.1 Log Selection & Context Enrichment Workflow
-1. **Selection:** User selects one or multiple log entries in the UI. **Constraint:** All selected logs must share the same `source_alias` / `source_ip`. The UI disables selection across disparate hosts; backend returns `400 Bad Request` if `log_ids` span multiple hosts.
+1. **Selection:** User selects one or multiple log entries in the UI across single or multiple hosts. Cross-host log selection is supported. The prompt builder annotates each dispatched log line with its originating host/source alias (`[{timestamp}] [{source_alias}] [{app_name}] {message}`) and aggregates notes for all unique hosts present in the batch.
 2. **On-Demand Redaction Pass:** The backend filters selected logs through `redactor.py` (scrubbing tokens, passwords, JWTs, AWS keys) before returning the preview payload to the UI.
 3. **Payload Inspection & User Enrichment:**
    - UI opens an analysis modal displaying:
@@ -227,7 +227,7 @@ python -m app.cli reset-admin --password <new_password>
 | `GET` | `/api/logs/stream` | Real-time Server-Sent Events (SSE) | `severity_max`, `source`, `app_name` |
 | `GET` | `/api/logs/{id}/context` | Fetch surrounding context lines scoped to the same `source_alias` and `app_name` | Query param: `lines=10` |
 | **On-Demand AI Engine** |  |  |  |
-| `POST` | `/api/ai/preview` | Generate redacted preview and token estimate (rejects multi-host IDs with `400`) | `{"log_ids": [101, 102]}` |
+| `POST` | `/api/ai/preview` | Generate redacted preview and token estimate | `{"log_ids": [101, 102]}` |
 | `POST` | `/api/ai/diagnose` | Execute user-confirmed AI diagnosis | `{"log_ids": [101, 102], "user_context": "...", "provider": "gemini|openai", "model": "..."}` |
 | `GET` | `/api/ai/audit` | Fetch historical AI queries & token usage | Query params: `limit`, `offset` |
 | **Host Aliases** |  |  |  |
@@ -253,7 +253,8 @@ python -m app.cli reset-admin --password <new_password>
   * Checkbox multi-select mode with a floating action bar: `"Run Analysis (N)"` or `"Inspect (N) Selected Logs with AI"`.
 
 * **Selection & Previews:**
-  * Restrict multi-selection to entries with matching source_alias.
+  * Multi-selection supports entries across single or multiple hosts with clear host attribution.
+  * Buffer selection controls ("Select All" / "Deselect All") in the UI to quickly select all logs currently loaded in the client-side browser buffer (capped at the 200-log AI analysis ceiling) or clear selection.
   * AI analysis modal displays the scrubbed/redacted text returned by /api/ai/preview.
   * Add a Model Selection dropdown inside the AI modal and Settings panel.
   * Document that severity sliders/pills map to RFC 5424 numerical priorities (0 = Emergency … 7 = Debug).

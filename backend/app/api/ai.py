@@ -35,7 +35,7 @@ router = APIRouter(prefix="/ai", tags=["AI"])
 
 def _fetch_and_validate_logs(conn, log_ids: list[int]):
     """
-    Helper to fetch logs by IDs, sort chronologically, and validate single-host constraint.
+    Helper to fetch logs by IDs and sort chronologically.
     """
     if len(log_ids) > 200:
         return None, "Maximum of 200 log IDs allowed per request."
@@ -57,13 +57,39 @@ def _fetch_and_validate_logs(conn, log_ids: list[int]):
     if not rows:
         return None, "No logs found for provided IDs."
 
-    # Verify single-host consistency across source_alias and source_ip
-    source_aliases = {r["source_alias"] for r in rows}
-    source_ips = {r["source_ip"] for r in rows}
-    if len(source_aliases) > 1 or len(source_ips) > 1:
-        return None, "Selected logs must share the same host alias and source IP."
-
     return rows, None
+
+
+def _get_aggregated_host_notes(conn, rows: list) -> Optional[str]:
+    """
+    Aggregate host notes from host_aliases matching any source_ip or source_alias in the batch.
+    For a single host with notes, returns the direct notes string.
+    For multiple hosts with notes, returns structured host-attributed notes.
+    """
+    unique_ips = list({r["source_ip"] for r in rows if r["source_ip"]})
+    unique_aliases = list({r["source_alias"] for r in rows if r["source_alias"]})
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT ip, alias, notes FROM host_aliases")
+    all_aliases = cursor.fetchall()
+
+    notes_by_host: dict[str, str] = {}
+    for a in all_aliases:
+        note = (a["notes"] or "").strip()
+        if note and (a["ip"] in unique_ips or a["alias"] in unique_aliases):
+            key = a["alias"] or a["ip"]
+            notes_by_host[key] = note
+
+    if not notes_by_host:
+        return None
+
+    # If all selected rows belong to a single host (alias or IP)
+    unique_batch_hosts = {r["source_alias"] or r["source_ip"] for r in rows}
+    if len(unique_batch_hosts) <= 1 and len(notes_by_host) == 1:
+        return list(notes_by_host.values())[0]
+
+    # Multi-host batch: attribute each note to its host
+    return "\n".join(f"- [{h}]: {n}" for h, n in sorted(notes_by_host.items()))
 
 
 @router.post("/preview", response_model=AiPreviewResponse)
@@ -96,10 +122,7 @@ async def preview_ai_prompt(
         model = settings_map.get("ai_model") or "gemini-2.5-flash"
         system_prompt = settings_map.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT
 
-        target_ip = rows[0]["source_ip"]
-        cursor.execute("SELECT notes FROM host_aliases WHERE ip = ?", (target_ip,))
-        alias_row = cursor.fetchone()
-        host_notes = alias_row["notes"] if alias_row and alias_row["notes"] else None
+        host_notes = _get_aggregated_host_notes(conn, rows)
 
         return (rows, provider, model, system_prompt, host_notes), None
 
@@ -111,10 +134,16 @@ async def preview_ai_prompt(
         )
 
     rows, provider, model, system_prompt, host_notes = result
-    source_alias = rows[0]["source_alias"]
-    app_name = rows[0]["app_name"]
+    unique_aliases = sorted(list({r["source_alias"] for r in rows if r["source_alias"]}))
+    source_alias = ", ".join(unique_aliases) if unique_aliases else (rows[0]["source_ip"] or "unknown")
 
-    raw_lines = [f"[{r['timestamp']}] [{r['app_name']}] {r['message']}" for r in rows]
+    unique_apps = sorted(list({r["app_name"] for r in rows if r["app_name"]}))
+    app_name = ", ".join(unique_apps) if unique_apps else "unknown"
+
+    raw_lines = [
+        f"[{r['timestamp']}] [{r['source_alias'] or r['source_ip'] or 'unknown'}] [{r['app_name']}] {r['message']}"
+        for r in rows
+    ]
     redacted_lines = redact(raw_lines)
     redacted_logs_text = "\n".join(redacted_lines) if isinstance(redacted_lines, list) else str(redacted_lines)
     redacted_logs_text = truncate_logs_to_budget(redacted_logs_text)
@@ -179,10 +208,7 @@ async def diagnose_logs(
                         v = ""
                 settings[k] = v
 
-            target_ip = rows[0]["source_ip"]
-            cursor.execute("SELECT notes FROM host_aliases WHERE ip = ?", (target_ip,))
-            alias_row = cursor.fetchone()
-            host_notes = alias_row["notes"] if alias_row and alias_row["notes"] else None
+            host_notes = _get_aggregated_host_notes(conn, rows)
 
             return (rows, settings, host_notes), None
 
@@ -194,10 +220,16 @@ async def diagnose_logs(
             )
 
         rows, settings, host_notes = result
-        source_alias = rows[0]["source_alias"]
-        app_name = rows[0]["app_name"]
+        unique_aliases = sorted(list({r["source_alias"] for r in rows if r["source_alias"]}))
+        source_alias = ", ".join(unique_aliases) if unique_aliases else (rows[0]["source_ip"] or "unknown")
 
-        raw_lines = [f"[{r['timestamp']}] [{r['app_name']}] {r['message']}" for r in rows]
+        unique_apps = sorted(list({r["app_name"] for r in rows if r["app_name"]}))
+        app_name = ", ".join(unique_apps) if unique_apps else "unknown"
+
+        raw_lines = [
+            f"[{r['timestamp']}] [{r['source_alias'] or r['source_ip'] or 'unknown'}] [{r['app_name']}] {r['message']}"
+            for r in rows
+        ]
         redacted_lines = redact(raw_lines)
         redacted_logs = "\n".join(redacted_lines) if isinstance(redacted_lines, list) else str(redacted_lines)
 

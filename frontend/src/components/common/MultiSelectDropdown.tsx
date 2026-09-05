@@ -241,7 +241,7 @@ export const MultiSelectDropdown: React.FC<MultiSelectDropdownProps> = ({
           </div>
 
           {/* Scrollable Option Items */}
-          <div className="max-h-52 overflow-y-auto py-1 font-mono text-xs">
+          <div className="max-h-[60vh] overflow-y-auto py-1 font-mono text-xs">
             {/* Custom Input Option if typed value not in list */}
             {allowCustomInput && isSearchTermNew && (
               <div
