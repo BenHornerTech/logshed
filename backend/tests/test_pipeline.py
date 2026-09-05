@@ -8,9 +8,12 @@ import datetime
 from pathlib import Path
 import pytest
 
+import sqlite3
+from app.api.deps import run_db_query
 from app.core.migrations import get_connection, run_migrations
 from app.core import pipeline as pipeline_mod
 from app.core.pipeline import (
+    InternalLogHandler,
     KeyedMultilineAssembler,
     QueueConsumer,
     IngestionRateTracker,
@@ -438,7 +441,7 @@ class TestQueueConsumer:
 
     @pytest.mark.asyncio
     async def test_queue_consumer_batch_insert_retry_succeeds(self, db_path: Path):
-        """Transient SQLite error during _insert_batch is retried once and succeeds without dropping logs."""
+        """Transient SQLite error during _insert_batch is retried with backoff and succeeds without dropping logs."""
         consumer = QueueConsumer(db_path)
         q = get_queue()
 
@@ -451,8 +454,7 @@ class TestQueueConsumer:
         def _flaky_insert(batch):
             nonlocal attempts
             attempts += 1
-            if attempts == 1:
-                import sqlite3
+            if attempts < 3:
                 raise sqlite3.OperationalError("database is locked")
             return original_insert(batch)
 
@@ -460,16 +462,16 @@ class TestQueueConsumer:
 
         consumer_task = asyncio.create_task(consumer.run())
 
-        for _ in range(20):
-            if q.empty():
+        # Allow consumer to reach batch deadline (2.0s) and retry to succeed
+        for _ in range(50):
+            if attempts >= 3:
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
 
-        assert q.empty()
         await consumer.stop()
         await consumer_task
 
-        assert attempts == 2
+        assert attempts == 3
         assert get_dropped_count() == 0
 
         conn = get_connection(db_path)
@@ -478,39 +480,129 @@ class TestQueueConsumer:
         assert count == 5
 
     @pytest.mark.asyncio
-    async def test_queue_consumer_batch_insert_failure_increments_drop_counter(self, db_path: Path, caplog):
-        """Permanent batch insert failure increments the dropped logs counter and logs exact drop count."""
-        import logging
-        caplog.set_level(logging.ERROR)
-
+    async def test_queue_consumer_retries_without_dropping_and_does_not_drain_queue(self, db_path: Path):
+        """
+        When database is locked or failing, QueueConsumer retains the batch in memory,
+        retries without incrementing dropped log counter, and does NOT pop subsequent queue items.
+        """
         consumer = QueueConsumer(db_path)
         q = get_queue()
 
-        batch_size = 4
-        for i in range(batch_size):
-            q.put_nowait(_make_entry(message=f"drop_test_{i}"))
+        # Enqueue first batch
+        q.put_nowait(_make_entry(message="batch_1_msg"))
+
+        attempts = 0
 
         def _failing_insert(batch):
-            import sqlite3
-            raise sqlite3.OperationalError("disk I/O error")
+            nonlocal attempts
+            attempts += 1
+            raise sqlite3.OperationalError("database is locked")
 
         consumer._insert_batch = _failing_insert
 
-        initial_drops = get_dropped_count()
         consumer_task = asyncio.create_task(consumer.run())
 
-        for _ in range(20):
-            if q.empty():
+        # Wait for batch deadline (2.0s) and first failure
+        for _ in range(35):
+            if attempts >= 1:
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
 
-        assert q.empty()
+        assert attempts >= 1
+
+        # While consumer is retrying batch 1, enqueue a second item
+        q.put_nowait(_make_entry(message="batch_2_msg"))
+
+        # Wait during retry backoff
+        await asyncio.sleep(0.3)
+
+        # batch_2_msg must NOT have been popped/drained from queue
+        assert q.qsize() == 1
+        assert get_dropped_count() == 0
+
+        # Now signal shutdown
         await consumer.stop()
         await consumer_task
 
-        # Verify dropped logs counter incremented by batch size
-        assert get_dropped_count() == initial_drops + batch_size
-        assert f"Dropped {batch_size} logs permanently" in caplog.text
+        # Dropped logs count must still be 0 (no batch was dropped permanently)
+        assert get_dropped_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_run_db_query_closes_connection(self, db_path: Path):
+        """run_db_query must explicitly close the database connection in a finally block."""
+        from unittest.mock import patch, MagicMock
+        import app.api.deps as deps_mod
+
+        spied_conn = None
+        orig_get_conn = deps_mod.get_connection
+
+        def _get_wrapped_conn(p):
+            nonlocal spied_conn
+            conn = orig_get_conn(p)
+            spied_conn = MagicMock(wraps=conn)
+            return spied_conn
+
+        with patch.object(deps_mod, "get_connection", side_effect=_get_wrapped_conn):
+            result = await run_db_query(lambda conn: conn.execute("SELECT 1").fetchone()[0], custom_db_path=db_path)
+
+        assert result == 1
+        assert spied_conn is not None
+        spied_conn.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_db_query_closes_connection_on_exception(self, db_path: Path):
+        """run_db_query must explicitly close the database connection even if query raises."""
+        from unittest.mock import patch, MagicMock
+        import app.api.deps as deps_mod
+
+        spied_conn = None
+        orig_get_conn = deps_mod.get_connection
+
+        def _get_wrapped_conn(p):
+            nonlocal spied_conn
+            conn = orig_get_conn(p)
+            spied_conn = MagicMock(wraps=conn)
+            return spied_conn
+
+        def _failing_query(conn: sqlite3.Connection):
+            raise RuntimeError("query error")
+
+        with patch.object(deps_mod, "get_connection", side_effect=_get_wrapped_conn):
+            with pytest.raises(RuntimeError, match="query error"):
+                await run_db_query(_failing_query, custom_db_path=db_path)
+
+        assert spied_conn is not None
+        spied_conn.close.assert_called_once()
+
+    def test_internal_log_handler_suppresses_db_loop_loggers(self):
+        """InternalLogHandler must ignore logs from pipeline, retention, and storage_metrics."""
+        handler = InternalLogHandler()
+        import logging
+
+        q = get_queue()
+        assert q.empty()
+
+        for name in [
+            "app.core.pipeline",
+            "app.services.retention",
+            "app.services.storage_metrics",
+            "app.core.pipeline.submodule",
+            "uvicorn.access",
+            "httpx",
+        ]:
+            record = logging.LogRecord(
+                name=name,
+                level=logging.ERROR,
+                pathname="test.py",
+                lineno=1,
+                msg=f"Error in {name}",
+                args=(),
+                exc_info=None,
+            )
+            handler.emit(record)
+
+        # None of the above should have been enqueued
+        assert q.empty()
 
     @pytest.mark.asyncio
     async def test_queue_consumer_normalizes_timezone_and_clamps_future_timestamps(self, db_path: Path):

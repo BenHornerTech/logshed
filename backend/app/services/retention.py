@@ -143,18 +143,22 @@ class PruneWorker:
 
     def _get_retention_days(self) -> int:
         """Synchronous query for configured retention_days."""
+        conn = None
         try:
-            with get_connection(self._db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT value FROM system_settings WHERE key = 'retention_days'")
-                row = cursor.fetchone()
-                if row and row[0]:
-                    try:
-                        return int(row[0])
-                    except ValueError:
-                        pass
+            conn = get_connection(self._db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM system_settings WHERE key = 'retention_days'")
+            row = cursor.fetchone()
+            if row and row[0]:
+                try:
+                    return int(row[0])
+                except ValueError:
+                    pass
         except Exception as e:
             logger.warning(f"Failed to read retention_days from database, defaulting to 30: {e}")
+        finally:
+            if conn:
+                conn.close()
         return 30
 
     async def stop(self) -> None:

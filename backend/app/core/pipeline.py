@@ -29,10 +29,17 @@ class InternalLogHandler(logging.Handler):
         "httpcore",
         "httpx",
         "asyncio",
+        "app.core.pipeline",
+        "app.services.retention",
+        "app.services.storage_metrics",
     }
 
     def emit(self, record: logging.LogRecord) -> None:
-        if record.name in self.IGNORED_LOGGERS or record.name.startswith("uvicorn.access"):
+        if (
+            record.name in self.IGNORED_LOGGERS
+            or record.name.startswith("uvicorn.access")
+            or any(record.name.startswith(f"{ignored}.") for ignored in self.IGNORED_LOGGERS)
+        ):
             return
 
         # Map Python log levels to RFC 5424 severity (0-7)
@@ -276,7 +283,6 @@ class QueueConsumer:
         """Main loop: drain queue with deadline-based batching (up to 5000 records or 2s window)."""
         self._running = True
         queue = get_queue()
-        error_backoff = 0.5
         
         while self._running:
             # Wait for the first item
@@ -314,26 +320,28 @@ class QueueConsumer:
 
             if batch:
                 inserted = False
-                try:
-                    await asyncio.to_thread(self._insert_batch, batch)
-                    inserted = True
-                except Exception as e:
-                    logger.warning(
-                        f"Transient error inserting batch of {len(batch)} logs: {e}. Retrying once..."
-                    )
-                    await asyncio.sleep(0.1)
+                backoff = 0.5
+                while True:
                     try:
                         await asyncio.to_thread(self._insert_batch, batch)
                         inserted = True
-                    except Exception as retry_err:
-                        dropped_count = len(batch)
-                        increment_dropped_count(dropped_count)
-                        logger.error(
-                            f"Error inserting batch after retry: {retry_err}. "
-                            f"Dropped {dropped_count} logs permanently. Backing off for {error_backoff:.1f}s..."
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        if not self._running:
+                            logger.warning(
+                                f"Shutdown signaled while inserting batch of {len(batch)} logs: {e}."
+                            )
+                            break
+                        logger.warning(
+                            f"Error inserting batch of {len(batch)} logs: {e}. Retrying in {backoff:.1f}s..."
                         )
-                        await asyncio.sleep(error_backoff)
-                        error_backoff = min(error_backoff * 2.0, 30.0)
+                        try:
+                            await asyncio.sleep(backoff)
+                        except asyncio.CancelledError:
+                            raise
+                        backoff = min(backoff * 2.0, 10.0)
 
                 if inserted:
                     record_ingest(len(batch))
@@ -343,11 +351,12 @@ class QueueConsumer:
                     from app.core.sse import sse_manager
                     for entry in batch:
                         await sse_manager.broadcast(entry)
-                    error_backoff = 0.5
-                    
-                # Mark as done
-                for _ in batch:
-                    queue.task_done()
+
+                    # Mark as done
+                    for _ in batch:
+                        queue.task_done()
+                else:
+                    break
 
     async def stop(self) -> None:
         """Signal graceful shutdown."""

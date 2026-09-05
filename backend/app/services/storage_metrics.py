@@ -42,15 +42,19 @@ def sample_storage_metrics(db_path: str | Path) -> dict:
 
     # Query log count
     total_logs = 0
+    conn = None
     try:
-        with get_connection(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM logs")
-            row = cursor.fetchone()
-            if row:
-                total_logs = row[0]
+        conn = get_connection(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM logs")
+        row = cursor.fetchone()
+        if row:
+            total_logs = row[0]
     except sqlite3.Error as e:
         logger.error(f"Failed to query log count: {e}")
+    finally:
+        if conn:
+            conn.close()
 
     return {
         "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -67,8 +71,10 @@ def record_metrics(db_path: str | Path) -> dict:
     """
     metrics = sample_storage_metrics(db_path)
     
+    conn = None
     try:
-        with get_connection(db_path) as conn:
+        conn = get_connection(db_path)
+        with conn:
             conn.execute(
                 """
                 INSERT INTO storage_metrics 
@@ -83,9 +89,11 @@ def record_metrics(db_path: str | Path) -> dict:
                     metrics["total_logs_count"]
                 )
             )
-            conn.commit()
     except sqlite3.Error as e:
         logger.error(f"Failed to record storage metrics: {e}")
+    finally:
+        if conn:
+            conn.close()
         
     return metrics
 
@@ -94,16 +102,20 @@ def prune_old_metrics(db_path: str | Path) -> int:
     """
     Deletes storage metrics older than 30 days.
     """
+    conn = None
     try:
-        with get_connection(db_path) as conn:
+        conn = get_connection(db_path)
+        with conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM storage_metrics WHERE recorded_at < datetime('now', '-30 days')")
             deleted = cursor.rowcount
-            conn.commit()
             return deleted
     except sqlite3.Error as e:
         logger.error(f"Failed to prune old metrics: {e}")
         return 0
+    finally:
+        if conn:
+            conn.close()
 
 
 class StorageMetricsWorker:

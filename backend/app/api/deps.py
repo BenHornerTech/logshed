@@ -25,9 +25,13 @@ async def run_db_query(fn: Callable[[sqlite3.Connection], T], custom_db_path: Op
     db_path = custom_db_path or get_db_path()
 
     def _execute() -> T:
-        with get_connection(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            return fn(conn)
+        conn = get_connection(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                return fn(conn)
+        finally:
+            conn.close()
 
     return await asyncio.to_thread(_execute)
 

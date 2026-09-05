@@ -58,7 +58,7 @@ class TestSyslogParsing:
         assert result["facility"] == 16     # 134 // 8
         assert result["severity"] == 6      # 134 % 8
         assert result["app_name"] == "myapp"
-        assert result["timestamp"] == "2024-01-15T10:30:00.000Z"
+        assert result["timestamp"] == "2024-01-15T10:30:00+00:00"
         assert "Application started" in result["message"]
 
     def test_rfc5424_nil_fields(self):
@@ -77,7 +77,7 @@ class TestSyslogParsing:
         assert result["severity"] == 6
         assert result["app_name"] == "myapp"
         assert result.get("hostname") == "srv01"
-        assert result["timestamp"] == "2024-01-15T10:30:00.000Z"
+        assert result["timestamp"] == "2024-01-15T10:30:00+00:00"
         assert result["message"] == "Actual message text"
 
     def test_rfc5424_multiple_structured_data_elements(self):
@@ -154,6 +154,18 @@ class TestSyslogParsing:
         result = parse_syslog_message(raw, "10.0.0.1")
         parsed_dt = datetime.datetime.fromisoformat(result["timestamp"])
         assert (parsed_dt - now).total_seconds() <= 60
+
+    def test_rfc5424_future_zulu_timestamp_clamped_to_arrival_time(self):
+        """RFC 5424 timestamp ending in 'Z' that is far in the future must be clamped to arrival time."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        future_time = now + datetime.timedelta(hours=5)
+        future_iso = future_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        raw = f"<134>1 {future_iso} myhost myapp 1234 ID47 - Future time message".encode()
+        result = parse_syslog_message(raw, "10.0.0.1")
+        parsed_dt = datetime.datetime.fromisoformat(result["timestamp"])
+        diff = abs((parsed_dt - now).total_seconds())
+        assert diff <= 60
+        assert result["timestamp"] != future_iso
 
 
 # ===================================================================
@@ -342,6 +354,49 @@ class TestSyslogNetworkAndProtocol:
 
         await server.stop()
         assert server.alias_cache._refresh_task is None
+
+    @pytest.mark.asyncio
+    async def test_udp_syslog_bounded_queue_saturation_drops(self, db_path: Path):
+        """When UDP protocol queue fills up, extra packets are dropped and counted."""
+        alias_cache = AliasCache(db_path)
+        asm = KeyedMultilineAssembler()
+        # Initialize with max_queue_size=2 and num_workers=0 so queue fills
+        proto = SyslogUDPProtocol(asm, alias_cache, max_queue_size=2, num_workers=0)
+        from app.core.pipeline import get_dropped_count
+        initial_drops = get_dropped_count()
+
+        proto.datagram_received(b"<14>Jan  1 10:00:00 host1 app1: msg 1", ("10.0.0.1", 514))
+        proto.datagram_received(b"<14>Jan  1 10:00:00 host1 app1: msg 2", ("10.0.0.1", 514))
+        assert proto.queue.qsize() == 2
+
+        # 3rd packet exceeds maxsize=2 and is dropped
+        proto.datagram_received(b"<14>Jan  1 10:00:00 host1 app1: msg 3", ("10.0.0.1", 514))
+        assert get_dropped_count() == initial_drops + 1
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_tcp_syslog_bounded_queue_saturation_drops(self, db_path: Path):
+        """When TCP protocol queue fills up, extra lines are dropped and counted."""
+        alias_cache = AliasCache(db_path)
+        asm = KeyedMultilineAssembler()
+        proto = SyslogTCPProtocol(asm, alias_cache, max_queue_size=2, num_workers=0)
+
+        class MockTransport:
+            def get_extra_info(self, name):
+                return ("10.0.0.2", 54321)
+            def close(self):
+                pass
+
+        proto.connection_made(MockTransport())
+        from app.core.pipeline import get_dropped_count
+        initial_drops = get_dropped_count()
+
+        proto.data_received(b"<14>Jan  1 10:00:00 host1 app1: msg 1\n<14>Jan  1 10:00:00 host1 app1: msg 2\n")
+        assert proto.queue.qsize() == 2
+
+        proto.data_received(b"<14>Jan  1 10:00:00 host1 app1: msg 3\n")
+        assert get_dropped_count() == initial_drops + 1
+        await proto.stop()
 
 
 # ===================================================================
