@@ -19,7 +19,7 @@ Only the following are true environment variables, supplied at container start a
 - `LOGSHED_SECRET_KEY` — optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
 - `COOKIE_SECURE` — optional boolean (`true`/`false`, defaults to `false`). When `false` (the default), session cookies are issued without the `Secure` flag to allow direct HTTP access over local IP addresses in homelabs, or automatically detects HTTPS via `X-Forwarded-Proto` header or request scheme. Set to `true` when running behind an SSL-terminating reverse proxy that does not send `X-Forwarded-Proto`.
 
-All other configuration — AI provider, AI API key, AI base URL, AI model, Pushover user key, Pushover app token, and `retention_days` — is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
+All other configuration — AI provider, AI API key, AI base URL, AI model, and `retention_days` — is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
 
 ---
 
@@ -161,7 +161,7 @@ Daily task runs iterative batch pruning to prevent WAL expansion and lock conten
 
 ---
 
-## 4. On-Demand AI Analysis Engine & Notification Export
+## 4. On-Demand AI Analysis Engine
 
 AI interactions are strictly user-initiated. No background workers or automated pipelines dispatch logs to external LLMs.
 
@@ -192,9 +192,6 @@ Unified client supporting Google Gemini (`google-genai` SDK) and OpenAI-compatib
     3. **Actionable Remediation:** Step-by-step commands, configuration fixes, or debugging steps.
   - **Audit Logging:** Every manual request is recorded in `ai_audit_log` (prompt, user context, response and tokens used).
 
-### 4.3 Notification & Export Integration
-- **Pushover Action:** Inside the AI response view, provide a **"Send to Pushover"** button.
-- Clicking dispatches the generated summary and remediation plan to the user's Pushover devices via `https://api.pushover.net/1/messages.json` with `title="[LogShed Analysis] {source_alias}: {app_name}"`.
 
 ---
 
@@ -204,7 +201,7 @@ Unified client supporting Google Gemini (`google-genai` SDK) and OpenAI-compatib
 * **First-Run Setup Lockout:** `/api/auth/setup` is only accessible when the `admin_auth` table is empty. If an admin record exists, `/api/auth/setup` immediately returns `403 Forbidden`.
 * **Session Security:** Cryptographically signed, HTTP-only, `SameSite=Lax` session cookies. No JWTs in browser storage.
 * **Rate Limiting:** In-memory sliding window on `/api/auth/login` (5 failed attempts per IP per minute).
-* **Secrets at Rest:** API keys and Pushover tokens encrypted with `cryptography.fernet`. Master encryption key stored at `/data/.secret_key` (generated automatically on first boot with `0600` permissions).
+* **Secrets at Rest:** API keys encrypted with `cryptography.fernet`. Master encryption key stored at `/data/.secret_key` (generated automatically on first boot with `0600` permissions).
 * **CLI Password Recovery:** Single-command rescue executable inside container:
 ```bash
 python -m app.cli reset-admin --password <new_password>
@@ -237,11 +234,9 @@ python -m app.cli reset-admin --password <new_password>
 | `GET` | `/api/aliases` | List IP-to-Host mappings | None |
 | `POST` | `/api/aliases` | Upsert host alias mapping | `{"ip": "...", "alias": "...", "notes": "..."}` |
 | `DELETE` | `/api/aliases/{ip}` | Remove host alias | None |
-| **Settings & Notifications** |  |  |  |
+| **Settings** |  |  |  |
 | `GET` | `/api/settings` | Read application configuration (keys masked) | None |
-| `POST` | `/api/settings` | Update settings (encrypted at rest) | `{"ai_provider": "...", "ai_model": "...", "ai_api_key": "...", "ai_base_url": "...", "pushover_user_key": "...", "pushover_app_token": "...", "retention_days": 30}` |
-| `POST` | `/api/notifications/test` | Test Pushover credentials | None |
-| `POST` | `/api/notifications/pushover` | Dispatch manual analysis/summary to mobile | `{"title": "...", "message": "...", "priority": 0}` |
+| `POST` | `/api/settings` | Update settings (encrypted at rest) | `{"ai_provider": "...", "ai_model": "...", "ai_api_key": "...", "ai_base_url": "...", "retention_days": 30}` |
 | **System & Maintenance** |  |  |  |
 | `GET` | `/api/health` | Container healthcheck & queue metrics | Returns DB status, queue depth, dropped log count |
 | `POST` | `/api/maintenance/prune` | Trigger manual retention prune & vacuum | None |
@@ -278,10 +273,9 @@ python -m app.cli reset-admin --password <new_password>
 
 * **On-Demand AI Analysis Modal / Slide-Over:**
   * Redacted log preview displaying the exact text to be dispatched (with one-click copy).
-  * Real-time token counter and estimated API cost preview.
+  * Real-time token counter.
   * Free-text user context textarea to provide situational background (e.g., recent system updates, topology changes).
   * Markdown-rendered analysis display (Summary, Root Cause, Remediation steps with copyable code/command blocks).
-  * **"Send to Pushover"** push button to forward the generated summary and fix directly to mobile.
 
 
 * **Host Alias Manager:**
@@ -291,7 +285,6 @@ python -m app.cli reset-admin --password <new_password>
 
 * **Settings & Audit Panel:**
   * Encrypted API key management (Google Gemini, OpenAI / custom OpenAI-compatible endpoint like Ollama/vLLM).
-  * Pushover configuration (User Key, App Token) with an interactive `"Send Test Notification"` button.
   * **Storage & Retention Dashboard:**
     * Log retention slider (1–30 days) with manual `"Prune & Vacuum Now"` trigger.
     * **Current Storage Card:** Dual-metric display showing active Database Footprint (MB/GB) alongside a visual progress bar for Available Mount Disk Space.

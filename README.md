@@ -13,7 +13,6 @@ A lightweight, self-hosted homelab log aggregator and syslog server featuring re
 - **Keyed Multiline Assembly**: Assembles stack traces, tracebacks, and multiline logs cleanly on a per-stream basis.
 - **Fast Full-Text Search**: Instant search and filtering across hosts, containers, severity levels, and time windows.
 - **On-Demand AI Analysis**: User-initiated troubleshooting powered by your choice of LLM (OpenAI, Google Gemini, Ollama, LocalAI, etc.) with automatic client-side credential redaction before dispatch.
-- **Push Notifications**: One-click incident alert dispatch directly to Pushover.
 - **Configurable Retention**: Automated background pruning with SQLite page vacuuming and storage trend metrics.
 
 ---
@@ -83,7 +82,7 @@ The following environment variables are supplied at container boot:
 | `COOKIE_SECURE` | `false` | Set to `true` if running behind an SSL reverse proxy that does not send `X-Forwarded-Proto`. |
 | `LOGSHED_SECRET_KEY` | *(auto-generated)* | 32-byte URL-safe base64 key for encrypting runtime settings at rest. |
 
-> **Note**: Sensitive credentials (such as LLM API keys and Pushover tokens) and retention policies are configured entirely at runtime in the **Settings** panel within the web interface, encrypted at rest using AES-128-CBC / HMAC-SHA256 (Fernet).
+> **Note**: Sensitive credentials (such as LLM API keys) and retention policies are configured entirely at runtime in the **Settings** panel within the web interface, encrypted at rest using AES-128-CBC / HMAC-SHA256 (Fernet).
 
 ---
 
