@@ -81,7 +81,7 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
                     i = sd_end
                     # skip optional space between SD elements
                     if i < len(remainder) and remainder[i] == " " and i + 1 < len(remainder) and remainder[i + 1] == "[":
-                        pass  # don't skip, next iteration will see '['
+                        i += 1
                 sd = remainder[:sd_end]
                 msg = remainder[sd_end:].lstrip(" ")
             else:
@@ -142,6 +142,8 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
             if len(parts) == 2:
                 hostname = parts[0]
                 content = parts[1]
+                if hostname and hostname != "-":
+                    result["hostname"] = hostname
                 
                 app_match = re.match(r"^([^:\s]+?)(?:\[\d+\])?:\s*(.*)", content)
                 if app_match:
@@ -278,7 +280,12 @@ class SyslogUDPProtocol(asyncio.DatagramProtocol):
         try:
             parsed = parse_syslog_message(data, source_ip)
             # Zero-cost in-memory lookup — no DB I/O
-            parsed["source_alias"] = self.alias_cache.resolve(source_ip)
+            source_alias = self.alias_cache.resolve(source_ip)
+            if source_alias == source_ip:
+                hostname = parsed.get("hostname")
+                if hostname and hostname not in ("-", "unknown"):
+                    source_alias = hostname
+            parsed["source_alias"] = source_alias
             stream_key = f"{source_ip}:{parsed['app_name']}"
             await self.assembler.feed(stream_key, parsed)
         except Exception as e:
@@ -321,7 +328,12 @@ class SyslogTCPProtocol(asyncio.Protocol):
         try:
             parsed = parse_syslog_message(data, source_ip)
             # Zero-cost in-memory lookup — no DB I/O
-            parsed["source_alias"] = self.alias_cache.resolve(source_ip)
+            source_alias = self.alias_cache.resolve(source_ip)
+            if source_alias == source_ip:
+                hostname = parsed.get("hostname")
+                if hostname and hostname not in ("-", "unknown"):
+                    source_alias = hostname
+            parsed["source_alias"] = source_alias
             stream_key = f"{source_ip}:{parsed['app_name']}"
             await self.assembler.feed(stream_key, parsed)
         except Exception as e:

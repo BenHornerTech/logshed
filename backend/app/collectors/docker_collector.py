@@ -42,6 +42,9 @@ def _parse_docker_host() -> tuple[str, Optional[str]]:
     """
     docker_host = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock").strip()
 
+    if not docker_host or docker_host.lower() in ("none", "off", "disabled") or os.environ.get("ENABLE_DOCKER", "true").lower() in ("0", "false", "no", "disabled"):
+        return "", None
+
     if docker_host.startswith("unix://"):
         socket_path = docker_host[len("unix://"):]
         return f"http://localhost/{DOCKER_API_VERSION}", socket_path
@@ -283,12 +286,27 @@ class DockerTailer:
     - On disconnect: exponential backoff reconnect.
     """
 
-    def __init__(self, assembler: KeyedMultilineAssembler):
+    def __init__(
+        self,
+        assembler: KeyedMultilineAssembler,
+        socket_poll_interval: Optional[float] = None,
+        socket_poll_max: Optional[float] = None,
+    ):
         self._assembler = assembler
         self._running = False
         self._cancel_event = asyncio.Event()
         # container_id -> (task, cancel_event)
         self._tailers: dict[str, tuple[asyncio.Task, asyncio.Event]] = {}
+        self._socket_poll_interval = (
+            socket_poll_interval
+            if socket_poll_interval is not None
+            else float(os.environ.get("DOCKER_SOCKET_POLL_INTERVAL", "5.0"))
+        )
+        self._socket_poll_max = (
+            socket_poll_max
+            if socket_poll_max is not None
+            else float(os.environ.get("DOCKER_SOCKET_POLL_MAX", "60.0"))
+        )
 
     async def run(self) -> None:
         """
@@ -298,16 +316,44 @@ class DockerTailer:
         self._cancel_event.clear()
 
         base_url, uds_path = _parse_docker_host()
-        if uds_path and not os.path.exists(uds_path):
+        if not base_url:
             logger.info(
-                f"Docker socket not found at {uds_path}. "
-                "Docker container tailing disabled; operating in syslog-only mode."
+                "Docker container tailing disabled by configuration; operating in syslog-only mode."
             )
             try:
                 await self._cancel_event.wait()
             except asyncio.CancelledError:
                 pass
             return
+
+        if uds_path and not os.path.exists(uds_path):
+            logger.warning(
+                f"Docker socket not found at {uds_path}. Polling for socket before fallback..."
+            )
+            elapsed = 0.0
+            while elapsed < self._socket_poll_max and not os.path.exists(uds_path):
+                wait_time = min(self._socket_poll_interval, self._socket_poll_max - elapsed)
+                if wait_time <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(self._cancel_event.wait(), timeout=wait_time)
+                    return
+                except asyncio.TimeoutError:
+                    elapsed += wait_time
+                logger.debug(f"Polling for Docker socket at {uds_path} ({elapsed:.1f}s / {self._socket_poll_max:.1f}s)...")
+
+            if not os.path.exists(uds_path):
+                logger.info(
+                    f"Docker socket not found at {uds_path}. "
+                    "Docker container tailing disabled; operating in syslog-only mode."
+                )
+                try:
+                    await self._cancel_event.wait()
+                except asyncio.CancelledError:
+                    pass
+                return
+
+            logger.info(f"Docker socket found at {uds_path} after {elapsed:.1f}s.")
 
         backoff = _INITIAL_BACKOFF
 
@@ -367,7 +413,10 @@ class DockerTailer:
             return
 
         if container_id in self._tailers:
-            return
+            task, _ = self._tailers[container_id]
+            if not task.done():
+                return
+            self._tailers.pop(container_id, None)
 
         cancel = asyncio.Event()
         task = asyncio.create_task(
@@ -378,6 +427,7 @@ class DockerTailer:
             name=f"docker-tail-{container_name}",
         )
         self._tailers[container_id] = (task, cancel)
+        task.add_done_callback(lambda t: self._tailers.pop(container_id, None))
         logger.info(f"Started tailing container {container_name} ({container_id[:12]})")
 
     async def _stop_tailer(self, container_id: str) -> None:

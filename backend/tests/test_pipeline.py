@@ -435,3 +435,79 @@ class TestQueueConsumer:
             await consumer_task
         finally:
             await sse_manager.unsubscribe(sse_q)
+
+    @pytest.mark.asyncio
+    async def test_queue_consumer_batch_insert_retry_succeeds(self, db_path: Path):
+        """Transient SQLite error during _insert_batch is retried once and succeeds without dropping logs."""
+        consumer = QueueConsumer(db_path)
+        q = get_queue()
+
+        for i in range(5):
+            q.put_nowait(_make_entry(message=f"retry_test_{i}"))
+
+        original_insert = consumer._insert_batch
+        attempts = 0
+
+        def _flaky_insert(batch):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                import sqlite3
+                raise sqlite3.OperationalError("database is locked")
+            return original_insert(batch)
+
+        consumer._insert_batch = _flaky_insert
+
+        consumer_task = asyncio.create_task(consumer.run())
+
+        for _ in range(20):
+            if q.empty():
+                break
+            await asyncio.sleep(0.05)
+
+        assert q.empty()
+        await consumer.stop()
+        await consumer_task
+
+        assert attempts == 2
+        assert get_dropped_count() == 0
+
+        conn = get_connection(db_path)
+        count = conn.execute("SELECT COUNT(*) FROM logs WHERE message LIKE 'retry_test_%'").fetchone()[0]
+        conn.close()
+        assert count == 5
+
+    @pytest.mark.asyncio
+    async def test_queue_consumer_batch_insert_failure_increments_drop_counter(self, db_path: Path, caplog):
+        """Permanent batch insert failure increments the dropped logs counter and logs exact drop count."""
+        import logging
+        caplog.set_level(logging.ERROR)
+
+        consumer = QueueConsumer(db_path)
+        q = get_queue()
+
+        batch_size = 4
+        for i in range(batch_size):
+            q.put_nowait(_make_entry(message=f"drop_test_{i}"))
+
+        def _failing_insert(batch):
+            import sqlite3
+            raise sqlite3.OperationalError("disk I/O error")
+
+        consumer._insert_batch = _failing_insert
+
+        initial_drops = get_dropped_count()
+        consumer_task = asyncio.create_task(consumer.run())
+
+        for _ in range(20):
+            if q.empty():
+                break
+            await asyncio.sleep(0.05)
+
+        assert q.empty()
+        await consumer.stop()
+        await consumer_task
+
+        # Verify dropped logs counter incremented by batch size
+        assert get_dropped_count() == initial_drops + batch_size
+        assert f"Dropped {batch_size} logs permanently" in caplog.text

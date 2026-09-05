@@ -87,6 +87,24 @@ class TestSyslogParsing:
         assert result["app_name"] == "myapp"
         assert result["message"] == "Multiblock message"
 
+    def test_rfc5424_multiple_structured_data_elements_with_spaces(self):
+        """RFC 5424 SD elements separated by spaces should all be parsed without polluting message text."""
+        raw = b'<134>1 2024-01-15T10:30:00.000Z srv01 myapp 1234 ID47 [sd1 a="1"] [sd2 b="2"] [sd3 c="3"] Clean message text'
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["app_name"] == "myapp"
+        assert result["hostname"] == "srv01"
+        assert result["message"] == "Clean message text"
+
+    def test_rfc3164_sets_hostname(self):
+        """RFC 3164 messages should extract and set result['hostname']."""
+        raw = b"<14>Jan  5 10:30:00 webserver01 nginx[123]: Request processed"
+        result = parse_syslog_message(raw, "192.168.1.100")
+
+        assert result["hostname"] == "webserver01"
+        assert result["app_name"] == "nginx"
+        assert result["message"] == "Request processed"
+
     def test_rfc3164_message_starting_with_number_not_misidentified_as_5424(self):
         raw = b"<134>Jan 15 10:30:00 srv01 myapp: 42 connections opened"
         result = parse_syslog_message(raw, "10.0.0.1")
@@ -227,6 +245,90 @@ class TestSyslogNetworkAndProtocol:
         assert received[0][0] == "10.0.0.9:app1"
         assert received[0][1]["source_alias"] == "nas-box"
         assert received[0][1]["message"] == "hello udp"
+
+    @pytest.mark.asyncio
+    async def test_udp_syslog_unaliased_ip_adopts_parsed_hostname(self, db_path: Path):
+        """UDP message from unaliased IP should use parsed hostname as source_alias."""
+        received = []
+
+        class MockAssembler:
+            async def feed(self, stream_key: str, entry: dict):
+                received.append((stream_key, entry))
+
+        alias_cache = AliasCache(db_path)
+        alias_cache.load_aliases()
+
+        proto = SyslogUDPProtocol(MockAssembler(), alias_cache)
+
+        # RFC 3164 with hostname 'gateway01'
+        proto.datagram_received(
+            b"<14>Jan  1 10:00:00 gateway01 dhcpd: DHCPACK on 192.168.1.50",
+            ("192.168.1.1", 514),
+        )
+        # RFC 5424 with hostname 'pve-node2'
+        proto.datagram_received(
+            b"<134>1 2024-01-15T10:30:00.000Z pve-node2 qemu-server 1234 ID47 - VM 100 started",
+            ("192.168.1.2", 514),
+        )
+        await asyncio.sleep(0.05)
+
+        assert len(received) == 2
+        assert received[0][1]["source_alias"] == "gateway01"
+        assert received[0][0] == "192.168.1.1:dhcpd"
+        assert received[1][1]["source_alias"] == "pve-node2"
+        assert received[1][0] == "192.168.1.2:qemu-server"
+
+    @pytest.mark.asyncio
+    async def test_tcp_syslog_unaliased_ip_adopts_parsed_hostname(self, db_path: Path):
+        """TCP message from unaliased IP should use parsed hostname as source_alias."""
+        received = []
+
+        class MockAssembler:
+            async def feed(self, stream_key: str, entry: dict):
+                received.append((stream_key, entry))
+
+        alias_cache = AliasCache(db_path)
+        alias_cache.load_aliases()
+
+        proto = SyslogTCPProtocol(MockAssembler(), alias_cache)
+
+        class MockTransport:
+            def get_extra_info(self, name):
+                return ("192.168.1.3", 54321)
+            def close(self):
+                pass
+
+        proto.connection_made(MockTransport())
+
+        proto.data_received(b"<14>Jan  1 10:00:00 pihole-dns dnsmasq: query[A] example.com\n")
+        await asyncio.sleep(0.05)
+
+        assert len(received) == 1
+        assert received[0][1]["source_alias"] == "pihole-dns"
+        assert received[0][1]["source_ip"] == "192.168.1.3"
+
+    @pytest.mark.asyncio
+    async def test_syslog_unaliased_ip_invalid_or_nil_hostname_retains_ip(self, db_path: Path):
+        """When hostname is nil ('-') or unknown, source_alias should remain source_ip."""
+        received = []
+
+        class MockAssembler:
+            async def feed(self, stream_key: str, entry: dict):
+                received.append((stream_key, entry))
+
+        alias_cache = AliasCache(db_path)
+        alias_cache.load_aliases()
+
+        proto = SyslogUDPProtocol(MockAssembler(), alias_cache)
+
+        proto.datagram_received(
+            b"<165>1 2024-03-01T12:00:00Z - app 1234 - - Message with nil hostname",
+            ("192.168.1.4", 514),
+        )
+        await asyncio.sleep(0.05)
+
+        assert len(received) == 1
+        assert received[0][1]["source_alias"] == "192.168.1.4"
 
     @pytest.mark.asyncio
     async def test_syslog_server_start_and_stop(self, db_path: Path):

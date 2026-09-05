@@ -313,8 +313,29 @@ class QueueConsumer:
                     break
 
             if batch:
+                inserted = False
                 try:
                     await asyncio.to_thread(self._insert_batch, batch)
+                    inserted = True
+                except Exception as e:
+                    logger.warning(
+                        f"Transient error inserting batch of {len(batch)} logs: {e}. Retrying once..."
+                    )
+                    await asyncio.sleep(0.1)
+                    try:
+                        await asyncio.to_thread(self._insert_batch, batch)
+                        inserted = True
+                    except Exception as retry_err:
+                        dropped_count = len(batch)
+                        increment_dropped_count(dropped_count)
+                        logger.error(
+                            f"Error inserting batch after retry: {retry_err}. "
+                            f"Dropped {dropped_count} logs permanently. Backing off for {error_backoff:.1f}s..."
+                        )
+                        await asyncio.sleep(error_backoff)
+                        error_backoff = min(error_backoff * 2.0, 30.0)
+
+                if inserted:
                     record_ingest(len(batch))
                     # Broadcast to SSE subscribers on the event loop thread
                     # (asyncio.Queue is NOT thread-safe, so this must not
@@ -323,10 +344,6 @@ class QueueConsumer:
                     for entry in batch:
                         await sse_manager.broadcast(entry)
                     error_backoff = 0.5
-                except Exception as e:
-                    logger.error(f"Error inserting batch: {e}. Backing off for {error_backoff:.1f}s...")
-                    await asyncio.sleep(error_backoff)
-                    error_backoff = min(error_backoff * 2.0, 30.0)
                     
                 # Mark as done
                 for _ in batch:

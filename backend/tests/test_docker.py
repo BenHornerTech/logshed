@@ -161,11 +161,12 @@ class TestDockerSocketFallback:
         monkeypatch.setattr(os.path, "exists", _mock_exists)
 
         assembler = KeyedMultilineAssembler()
-        tailer = DockerTailer(assembler)
+        tailer = DockerTailer(assembler, socket_poll_interval=0.01, socket_poll_max=0.02)
 
         task = asyncio.create_task(tailer.run())
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.06)
 
+        assert "Polling for socket before fallback" in caplog.text
         expected_msg = (
             "Docker socket not found at /var/run/docker.sock. "
             "Docker container tailing disabled; operating in syslog-only mode."
@@ -173,6 +174,58 @@ class TestDockerSocketFallback:
         assert expected_msg in caplog.text
         assert not task.done()
 
+        await tailer.stop()
+        await task
+        assert task.done()
+
+    @pytest.mark.asyncio
+    async def test_socket_polling_attaches_when_socket_appears(self, monkeypatch, caplog):
+        """If docker.sock is missing at first but appears during polling, DockerTailer connects."""
+        caplog.set_level(logging.INFO)
+        monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+
+        exists_calls = 0
+        def _mock_exists(path):
+            nonlocal exists_calls
+            if path == "/var/run/docker.sock":
+                exists_calls += 1
+                return exists_calls >= 2  # becomes True on 2nd check
+            return True
+
+        monkeypatch.setattr(os.path, "exists", _mock_exists)
+
+        assembler = KeyedMultilineAssembler()
+        tailer = DockerTailer(assembler, socket_poll_interval=0.02, socket_poll_max=0.5)
+
+        async def _mock_attach(client):
+            pass
+
+        async def _mock_watch(client):
+            await tailer._cancel_event.wait()
+
+        monkeypatch.setattr(tailer, "_attach_running_containers", _mock_attach)
+        monkeypatch.setattr(tailer, "_watch_events", _mock_watch)
+
+        task = asyncio.create_task(tailer.run())
+        await asyncio.sleep(0.08)
+
+        assert "Docker socket found at /var/run/docker.sock" in caplog.text
+        await tailer.stop()
+        await task
+
+    @pytest.mark.asyncio
+    async def test_docker_disabled_by_config(self, monkeypatch, caplog):
+        """Setting DOCKER_HOST=none immediately operates in syslog-only mode without polling delay."""
+        caplog.set_level(logging.INFO)
+        monkeypatch.setenv("DOCKER_HOST", "none")
+
+        assembler = KeyedMultilineAssembler()
+        tailer = DockerTailer(assembler)
+
+        task = asyncio.create_task(tailer.run())
+        await asyncio.sleep(0.02)
+
+        assert "Docker container tailing disabled by configuration; operating in syslog-only mode." in caplog.text
         await tailer.stop()
         await task
         assert task.done()
@@ -193,3 +246,63 @@ class TestDockerSocketFallback:
         await tailer.stop()
         await task
         assert "Docker connection error at http://127.0.0.1:59999" in caplog.text
+
+
+# ===================================================================
+# 4. Tailer Task Map Cleanup & Reconnection
+# ===================================================================
+
+class TestDockerTailerTaskCleanup:
+
+    @pytest.mark.asyncio
+    async def test_tailer_task_completion_cleans_up_map(self):
+        """When a container tailer task terminates (EOF or error), it is removed from _tailers."""
+        assembler = KeyedMultilineAssembler()
+        tailer = DockerTailer(assembler)
+
+        container_id = "test_container_123456"
+        container_name = "test_app"
+
+        class MockResponse:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                if False:
+                    yield b""
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+
+            def stream(self, method, url, **kwargs):
+                return MockResponse()
+
+        mock_client = MockClient()
+
+        # Start tailer
+        tailer._start_tailer(mock_client, container_id, container_name)
+        assert container_id in tailer._tailers
+        task, _ = tailer._tailers[container_id]
+
+        # Wait for task to finish running (it finishes immediately on empty aiter_bytes)
+        await asyncio.sleep(0.05)
+        assert task.done()
+
+        # Verify task is popped from _tailers
+        assert container_id not in tailer._tailers
+
+        # Verify starting tailer again works and creates a new task
+        tailer._start_tailer(mock_client, container_id, container_name)
+        assert container_id in tailer._tailers
+        new_task, _ = tailer._tailers[container_id]
+        assert new_task is not task
+
+        await tailer.stop()
