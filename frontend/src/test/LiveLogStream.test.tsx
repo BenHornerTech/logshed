@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { LiveLogStream, formatLocalTimestamp } from '../components/logs/LiveLogStream.tsx';
+import { LiveLogStream, formatLocalTimestamp, matchesSearchQuery } from '../components/logs/LiveLogStream.tsx';
 import * as logsApi from '../api/logs.ts';
 import * as aliasesApi from '../api/aliases.ts';
 import { LogEntry } from '../types.ts';
@@ -377,6 +377,57 @@ describe('LiveLogStream Component', () => {
     });
   });
 
+  it('anchors scroll position when incoming logs arrive while auto-scroll is paused so visible logs do not move down', async () => {
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // Locate the scroll container
+    const scrollContainer = document.querySelector('.overflow-y-auto') as HTMLElement;
+    expect(scrollContainer).toBeInTheDocument();
+
+    // Simulate scrolling down 200px (user looking at older logs)
+    let scrollTopValue = 200;
+    Object.defineProperty(scrollContainer, 'scrollTop', {
+      get: () => scrollTopValue,
+      set: (val: number) => { scrollTopValue = val; },
+      configurable: true,
+    });
+    fireEvent.scroll(scrollContainer, { target: { scrollTop: 200 } });
+
+    // Auto-scroll is now paused
+    expect(screen.getByText('Paused')).toBeInTheDocument();
+
+    // Emit 3 new incoming SSE logs
+    const es = MockEventSource.instances[0];
+    const newLogs: LogEntry[] = Array.from({ length: 3 }, (_, i) => ({
+      id: 500 + i,
+      timestamp: `2026-09-03T16:00:0${i}.000Z`,
+      received_at: `2026-09-03T16:00:0${i}.010Z`,
+      source_ip: '192.168.1.50',
+      source_alias: 'homelab-host',
+      app_name: 'test',
+      facility: 1,
+      severity: 6,
+      message: `Anchored incoming log #${i}`,
+      raw: `raw`,
+    }));
+
+    act(() => {
+      newLogs.forEach((l) => es.emit('log', l));
+    });
+
+    // Wait for the floating paused banner (3 new logs at top)
+    await waitFor(() => {
+      expect(screen.getByText(/Auto-scroll paused \(3 new logs at top\)/i)).toBeInTheDocument();
+    });
+
+    // Verify scrollTop was compensated by 3 * 28 = 84px to prevent content jumping (200 + 84 = 284px)
+    expect(scrollContainer.scrollTop).toBe(284);
+  });
+
   it('maintains quick filter buttons even after a filter is applied (Item #32)', async () => {
     // Initially returns sampleLogs with homelab-host and opnsense-router
     render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
@@ -660,4 +711,170 @@ describe('LiveLogStream Component', () => {
       expect(screen.queryByText('Auto-Scroll ON')).toBeNull();
     });
   });
+
+  it('filters incoming SSE logs client-side when an active search query is applied', async () => {
+    // Start with search filter applied
+    vi.spyOn(logsApi, 'fetchLogs').mockResolvedValue({
+      logs: [sampleLogs[0]], // only the nginx timeout log initially
+      total: 1,
+      limit: 500,
+      offset: 0,
+    });
+
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // Enter a search query in the search bar
+    const searchInput = screen.getByPlaceholderText(/Full-text search/i);
+    fireEvent.change(searchInput, { target: { value: 'timeout' } });
+    fireEvent.keyDown(searchInput, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() => {
+      expect(searchInput).toHaveValue('timeout');
+    });
+
+    expect(MockEventSource.instances.length).toBeGreaterThan(0);
+    const es = MockEventSource.instances[0];
+
+    // 1. Emit an unrelated SSE log event (does not match 'timeout')
+    const unrelatedLog: LogEntry = {
+      id: 201,
+      timestamp: '2026-09-03T14:50:00.000Z',
+      received_at: '2026-09-03T14:50:00.010Z',
+      source_ip: '192.168.1.50',
+      source_alias: 'homelab-host',
+      app_name: 'cron',
+      facility: 9,
+      severity: 6,
+      message: 'Clean routine backup completed',
+      raw: '<14>1 2026-09-03T14:50:00.000Z homelab-host cron - - - Clean routine backup completed',
+    };
+
+    act(() => {
+      es.emit('log', unrelatedLog);
+    });
+
+    // 2. Emit a matching SSE log event (matches 'timeout')
+    const matchingLog: LogEntry = {
+      id: 202,
+      timestamp: '2026-09-03T14:50:05.000Z',
+      received_at: '2026-09-03T14:50:05.010Z',
+      source_ip: '192.168.1.50',
+      source_alias: 'homelab-host',
+      app_name: 'nginx',
+      facility: 1,
+      severity: 3,
+      message: 'Gateway timeout 504 on backend upstream',
+      raw: '<11>1 2026-09-03T14:50:05.000Z homelab-host nginx - - - Gateway timeout 504 on backend upstream',
+    };
+
+    act(() => {
+      es.emit('log', matchingLog);
+    });
+
+    // Matching log appears in stream
+    await waitFor(() => {
+      expect(screen.getByText('Gateway timeout 504 on backend upstream')).toBeInTheDocument();
+    });
+
+    // Unrelated non-matching log was dropped and NEVER appears in the DOM
+    expect(screen.queryByText('Clean routine backup completed')).toBeNull();
+  });
+
+  it('batches rapid SSE event bursts into state updates and accumulates facets incrementally', async () => {
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    const es = MockEventSource.instances[0];
+
+    // Emit 20 rapid SSE logs in a tight loop
+    const rapidLogs: LogEntry[] = Array.from({ length: 20 }, (_, i) => ({
+      id: 300 + i,
+      timestamp: `2026-09-03T15:00:${String(i).padStart(2, '0')}.000Z`,
+      received_at: `2026-09-03T15:00:${String(i).padStart(2, '0')}.010Z`,
+      source_ip: '192.168.1.75',
+      source_alias: 'storage-node',
+      app_name: i === 19 ? 'zfs-scrub' : 'samba',
+      facility: 1,
+      severity: 6,
+      message: `Rapid throughput event #${i}`,
+      raw: `<14>1 2026-09-03T15:00:00.000Z storage-node samba - - - Rapid throughput event #${i}`,
+    }));
+
+    act(() => {
+      rapidLogs.forEach((log) => es.emit('log', log));
+    });
+
+    // Verify newest log (index 19) is rendered at the top
+    await waitFor(() => {
+      expect(screen.getByText('Rapid throughput event #19')).toBeInTheDocument();
+    });
+
+    // Verify all 20 events are present in the list (total 4 original + 20 = 24 rows)
+    const rows = document.querySelectorAll('.log-row');
+    expect(rows.length).toBe(24);
+    expect(rows[0]).toHaveTextContent('Rapid throughput event #19');
+    expect(rows[19]).toHaveTextContent('Rapid throughput event #0');
+
+    // Verify newly introduced source and app were incrementally accumulated
+    expect(screen.getByRole('button', { name: 'storage-node' })).toBeInTheDocument();
+  });
 });
+
+describe('matchesSearchQuery Helper Function', () => {
+  const baseLog: LogEntry = {
+    id: 999,
+    timestamp: '2026-09-03T12:00:00.000Z',
+    received_at: '2026-09-03T12:00:00.010Z',
+    source_ip: '192.168.1.50',
+    source_alias: 'homelab-host',
+    app_name: 'nginx',
+    facility: 1,
+    severity: 3,
+    message: 'Upstream connection timeout to microservice',
+    raw: 'raw log',
+  };
+
+  it('matches all logs when query is empty or whitespace', () => {
+    expect(matchesSearchQuery(baseLog, '')).toBe(true);
+    expect(matchesSearchQuery(baseLog, '   ')).toBe(true);
+    expect(matchesSearchQuery(baseLog, undefined)).toBe(true);
+  });
+
+  it('performs case-insensitive substring matching on message, app_name, source_alias, and source_ip', () => {
+    expect(matchesSearchQuery(baseLog, 'timeout')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'TIMEOUT')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'NGINX')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'homelab')).toBe(true);
+    expect(matchesSearchQuery(baseLog, '192.168.1.50')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'unrelated-keyword')).toBe(false);
+  });
+
+  it('matches multiple space-separated terms', () => {
+    expect(matchesSearchQuery(baseLog, 'nginx timeout')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'homelab microservice')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'nginx missing_term')).toBe(false);
+  });
+
+  it('supports regex patterns', () => {
+    expect(matchesSearchQuery(baseLog, '^Upstream.*timeout')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'microservice$')).toBe(true);
+    expect(matchesSearchQuery(baseLog, '^microservice')).toBe(false);
+  });
+
+  it('supports column-specific queries like app_name: and source:', () => {
+    expect(matchesSearchQuery(baseLog, 'app_name:nginx')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'app:nginx')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'app_name:postgres')).toBe(false);
+    expect(matchesSearchQuery(baseLog, 'source:homelab-host')).toBe(true);
+    expect(matchesSearchQuery(baseLog, 'source:router')).toBe(false);
+    expect(matchesSearchQuery(baseLog, 'message:timeout')).toBe(true);
+  });
+});
+

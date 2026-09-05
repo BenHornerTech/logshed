@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   Play,
@@ -76,6 +76,73 @@ export function formatLocalTimestamp(ts: string, fallbackTs?: string): string {
   }
 }
 
+export function matchesSearchQuery(log: LogEntry, query?: string): boolean {
+  if (!query || !query.trim()) return true;
+
+  const q = query.trim();
+  const fields = [
+    log.message || '',
+    log.app_name || '',
+    log.source_alias || '',
+    log.source_ip || '',
+  ];
+  const combined = fields.join(' ').toLowerCase();
+
+  // 1. Direct case-insensitive substring match
+  if (combined.includes(q.toLowerCase())) {
+    return true;
+  }
+
+  // 2. Try regex match (e.g. if query contains regex patterns)
+  try {
+    const regex = new RegExp(q, 'i');
+    if (fields.some((f) => regex.test(f))) {
+      return true;
+    }
+  } catch {
+    // If not a valid regex, continue with token matching
+  }
+
+  // 3. Multi-term matching (e.g. "nginx error" -> all terms must match)
+  const terms = q
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !['and', 'or', 'not'].includes(t));
+
+  if (terms.length > 0) {
+    const allTermsMatch = terms.every((term) => {
+      // Check for column-specific search (e.g. app_name:nginx or app:nginx)
+      if (term.includes(':')) {
+        const [col, val] = term.split(':', 2);
+        const cleanVal = val.replace(/^["'*]+|["'*]+$/g, '');
+        if (!cleanVal) return true;
+        if (col === 'app_name' || col === 'app') {
+          return (log.app_name || '').toLowerCase().includes(cleanVal);
+        }
+        if (col === 'source' || col === 'source_alias' || col === 'host') {
+          return (
+            (log.source_alias || '').toLowerCase().includes(cleanVal) ||
+            (log.source_ip || '').toLowerCase().includes(cleanVal)
+          );
+        }
+        if (col === 'message' || col === 'msg') {
+          return (log.message || '').toLowerCase().includes(cleanVal);
+        }
+      }
+
+      const cleanTerm = term.replace(/^["'*]+|["'*]+$/g, '');
+      if (!cleanTerm) return true;
+      return combined.includes(cleanTerm);
+    });
+
+    if (allTermsMatch) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 interface LiveLogStreamProps {
   onDiagnoseAi: (selectedLogs: LogEntry[]) => void;
   onAddAlias?: (ip: string) => void;
@@ -83,6 +150,7 @@ interface LiveLogStreamProps {
 }
 
 const MAX_BUFFER_SIZE = 50000;
+const BATCH_FLUSH_INTERVAL_MS = 100;
 
 export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   onDiagnoseAi,
@@ -104,6 +172,21 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   const [filters, setFilters] = useState<LogFilterParams>({});
   const [activeAliasesMap, setActiveAliasesMap] = useState<Record<string, string>>({});
 
+  // Decoupled facet accumulation states
+  const [accumulatedSources, setAccumulatedSources] = useState<string[]>([]);
+  const [accumulatedApps, setAccumulatedApps] = useState<string[]>([]);
+  const [hostToAppsMap, setHostToAppsMap] = useState<Record<string, string[]>>({});
+  const [appToHostsMap, setAppToHostsMap] = useState<Record<string, string[]>>({});
+
+  // Incoming SSE batch buffer & flush timer
+  const incomingBufferRef = useRef<LogEntry[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const filtersRef = useRef<LogFilterParams>(filters);
+
+  useEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
+
   useEffect(() => {
     fetchAliases()
       .then((list) => {
@@ -124,14 +207,149 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     return { ...activeAliasesMap, ...knownAliases };
   }, [activeAliasesMap, knownAliases]);
 
+  const mergedAliasesRef = useRef(mergedAliases);
+  useEffect(() => {
+    mergedAliasesRef.current = mergedAliases;
+  }, [mergedAliases]);
+
   const parentRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const isAutoScrollRef = useRef<boolean>(true);
+  const pendingScrollAdjustmentRef = useRef<number>(0);
 
   // Keep ref updated
   useEffect(() => {
     isAutoScrollRef.current = autoScroll;
   }, [autoScroll]);
+
+  // Maintain scroll anchoring when new logs arrive while auto-scroll is paused
+  useLayoutEffect(() => {
+    if (pendingScrollAdjustmentRef.current > 0) {
+      const adjustment = pendingScrollAdjustmentRef.current;
+      pendingScrollAdjustmentRef.current = 0;
+      if (parentRef.current && !isAutoScrollRef.current) {
+        parentRef.current.scrollTop += adjustment;
+      }
+    }
+  }, [logs]);
+
+  // Incrementally accumulate facets from incoming batches without rescanning 50k logs
+  const updateFacetsWithNewLogs = useCallback((newLogs: LogEntry[]) => {
+    if (!newLogs || newLogs.length === 0) return;
+
+    // 1. Incrementally add any new sources
+    setAccumulatedSources((prev) => {
+      let added = false;
+      const currentSet = new Set(prev);
+      const aliasedIps = new Set(Object.keys(mergedAliasesRef.current || {}));
+      for (const log of newLogs) {
+        const canonical =
+          (log.source_ip && mergedAliasesRef.current[log.source_ip]) ||
+          (log.source_alias && mergedAliasesRef.current[log.source_alias]) ||
+          log.source_alias ||
+          log.source_ip;
+        if (canonical && !aliasedIps.has(canonical) && !currentSet.has(canonical)) {
+          currentSet.add(canonical);
+          added = true;
+        }
+      }
+      return added ? Array.from(currentSet).sort() : prev;
+    });
+
+    // 2. Incrementally add any new apps
+    setAccumulatedApps((prev) => {
+      let added = false;
+      const currentSet = new Set(prev);
+      for (const log of newLogs) {
+        if (log.app_name && !currentSet.has(log.app_name)) {
+          currentSet.add(log.app_name);
+          added = true;
+        }
+      }
+      return added ? Array.from(currentSet).sort() : prev;
+    });
+
+    // 3. Incrementally update hostToAppsMap
+    setHostToAppsMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const log of newLogs) {
+        if (log.app_name) {
+          const canonical =
+            (log.source_ip && mergedAliasesRef.current[log.source_ip]) ||
+            (log.source_alias && mergedAliasesRef.current[log.source_alias]) ||
+            log.source_alias ||
+            log.source_ip;
+          if (canonical) {
+            const currentApps = next[canonical] || [];
+            if (!currentApps.includes(log.app_name)) {
+              next[canonical] = [...currentApps, log.app_name].sort();
+              changed = true;
+            }
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+
+    // 4. Incrementally update appToHostsMap
+    setAppToHostsMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const log of newLogs) {
+        if (log.app_name) {
+          const canonical =
+            (log.source_ip && mergedAliasesRef.current[log.source_ip]) ||
+            (log.source_alias && mergedAliasesRef.current[log.source_alias]) ||
+            log.source_alias ||
+            log.source_ip;
+          if (canonical) {
+            const currentHosts = next[log.app_name] || [];
+            if (!currentHosts.includes(canonical)) {
+              next[log.app_name] = [...currentHosts, canonical].sort();
+              changed = true;
+            }
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
+  // Flush incoming buffered SSE logs to React state in a single batch
+  const flushIncomingLogs = useCallback(() => {
+    if (incomingBufferRef.current.length === 0) return;
+
+    const toFlush = incomingBufferRef.current;
+    incomingBufferRef.current = [];
+
+    // Incrementally update facets with new incoming logs
+    updateFacetsWithNewLogs(toFlush);
+
+    setLogs((prev) => {
+      // toFlush is in arrival order (oldest first, newest last)
+      // Reverse toFlush so newest log is at the top (index 0)
+      const next = [...toFlush.slice().reverse(), ...prev];
+      if (next.length > MAX_BUFFER_SIZE) {
+        return next.slice(0, MAX_BUFFER_SIZE);
+      }
+      return next;
+    });
+
+    setLastSelectedLogIndex((prev) => (prev !== null ? prev + toFlush.length : null));
+
+    if (!isAutoScrollRef.current) {
+      setMissedLogsCount((prev) => prev + toFlush.length);
+      // Anchor scroll position by compensating for prepended items' height (28px each)
+      pendingScrollAdjustmentRef.current += toFlush.length * 28;
+    } else if (parentRef.current) {
+      requestAnimationFrame(() => {
+        if (parentRef.current && isAutoScrollRef.current) {
+          parentRef.current.scrollTop = 0;
+        }
+      });
+    }
+  }, [updateFacetsWithNewLogs]);
 
   // Load initial logs on mount or on filter apply
   const loadInitialLogs = useCallback(async () => {
@@ -139,6 +357,12 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       setIsLoadingHistory(true);
       historicalOffsetRef.current = 0;
       setHasMoreLogs(true);
+      if (flushTimerRef.current !== null) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      incomingBufferRef.current = [];
+      pendingScrollAdjustmentRef.current = 0;
       const res = await fetchLogs({
         ...filters,
         limit: 500,
@@ -146,6 +370,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       });
       // Keep newest logs at the top (res.logs is ordered DESC)
       setLogs(res.logs);
+      updateFacetsWithNewLogs(res.logs);
       historicalOffsetRef.current = res.logs.length;
       if (res.logs.length < 500 || (res.total !== undefined && res.logs.length >= res.total)) {
         setHasMoreLogs(false);
@@ -154,7 +379,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       setLastSelectedLogIndex(null);
       // Auto-scroll to top after initial load
       setTimeout(() => {
-        if (parentRef.current) {
+        if (parentRef.current && isAutoScrollRef.current) {
           parentRef.current.scrollTop = 0;
         }
       }, 50);
@@ -163,7 +388,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     } finally {
       setIsLoadingHistory(false);
     }
-  }, [filters]);
+  }, [filters, updateFacetsWithNewLogs]);
 
   const loadMoreLogs = useCallback(async () => {
     if (isLoadingMoreRef.current || !hasMoreLogs || isLoadingHistory) return;
@@ -181,6 +406,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         setHasMoreLogs(false);
       }
       if (res.logs.length > 0) {
+        updateFacetsWithNewLogs(res.logs);
         setLogs((prev) => {
           const existingIds = new Set(prev.map((l) => l.id));
           const uniqueIncoming = res.logs.filter((l) => !existingIds.has(l.id));
@@ -199,7 +425,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       isLoadingMoreRef.current = false;
       setIsLoadingMore(false);
     }
-  }, [filters, hasMoreLogs, isLoadingHistory]);
+  }, [filters, hasMoreLogs, isLoadingHistory, updateFacetsWithNewLogs]);
 
   useEffect(() => {
     loadInitialLogs();
@@ -239,22 +465,27 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     es.addEventListener('log', (event: MessageEvent) => {
       try {
         const entry: LogEntry = JSON.parse(event.data);
-        setLogs((prev) => {
-          const next = [entry, ...prev];
-          if (next.length > MAX_BUFFER_SIZE) {
-            return next.slice(0, MAX_BUFFER_SIZE);
-          }
-          return next;
-        });
 
-        if (!isAutoScrollRef.current) {
-          setMissedLogsCount((prev) => prev + 1);
-        } else if (parentRef.current) {
-          requestAnimationFrame(() => {
-            if (parentRef.current && isAutoScrollRef.current) {
-              parentRef.current.scrollTop = 0;
-            }
-          });
+        // Client-Side Query Filtering on Ingest (Issue #2)
+        const currentQuery = filtersRef.current?.query;
+        if (currentQuery && !matchesSearchQuery(entry, currentQuery)) {
+          return;
+        }
+
+        // Buffer incoming SSE logs (Issue #1)
+        incomingBufferRef.current.push(entry);
+
+        if (incomingBufferRef.current.length >= 500) {
+          if (flushTimerRef.current !== null) {
+            clearTimeout(flushTimerRef.current);
+            flushTimerRef.current = null;
+          }
+          flushIncomingLogs();
+        } else if (flushTimerRef.current === null) {
+          flushTimerRef.current = setTimeout(() => {
+            flushTimerRef.current = null;
+            flushIncomingLogs();
+          }, BATCH_FLUSH_INTERVAL_MS);
         }
       } catch (e) {
         console.error('Error parsing SSE log event', e);
@@ -268,8 +499,13 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     return () => {
       es.close();
       eventSourceRef.current = null;
+      if (flushTimerRef.current !== null) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      incomingBufferRef.current = [];
     };
-  }, [filters.severity_max, filters.to, sourcesKey, appsKey]);
+  }, [filters.severity_max, filters.to, sourcesKey, appsKey, flushIncomingLogs]);
 
   // Scroll detection to pause auto-scroll when scrolling down, and load more when near bottom
   const handleScroll = () => {
@@ -299,6 +535,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   const resumeAutoScroll = () => {
     setAutoScroll(true);
     setMissedLogsCount(0);
+    pendingScrollAdjustmentRef.current = 0;
     if (parentRef.current) {
       if (typeof parentRef.current.scrollTo === 'function') {
         parentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
@@ -331,57 +568,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     }
   }, [lastVirtualItem, logs.length, hasMoreLogs, isLoadingHistory, loadMoreLogs]);
 
-  // Accumulate permanent set of known hosts and apps so filter choices never vanish (Item #32 & Fix 2-Click Issue)
-  const [accumulatedSources, setAccumulatedSources] = useState<string[]>([]);
-  const [accumulatedApps, setAccumulatedApps] = useState<string[]>([]);
-
-  useEffect(() => {
-    setAccumulatedSources((prev) => {
-      const aliasedIps = new Set(Object.keys(mergedAliases || {}));
-      const set = new Set<string>();
-
-      prev.forEach((s) => {
-        if (mergedAliases && mergedAliases[s]) {
-          set.add(mergedAliases[s]);
-        } else if (!aliasedIps.has(s)) {
-          set.add(s);
-        }
-      });
-
-      if (mergedAliases) {
-        Object.values(mergedAliases).forEach((alias) => {
-          if (alias && alias.trim()) set.add(alias.trim());
-        });
-      }
-
-      logs.forEach((log) => {
-        const canonical = (log.source_ip && mergedAliases && mergedAliases[log.source_ip]) || log.source_alias;
-        if (canonical && !aliasedIps.has(canonical)) {
-          set.add(canonical);
-        }
-      });
-
-      const next = Array.from(set).sort();
-      if (next.length === prev.length && next.every((v, i) => v === prev[i])) {
-        return prev;
-      }
-      return next;
-    });
-
-    setAccumulatedApps((prev) => {
-      const set = new Set(prev);
-      logs.forEach((log) => {
-        if (log.app_name) set.add(log.app_name);
-      });
-      const next = Array.from(set).sort();
-      if (next.length === prev.length && next.every((v, i) => v === prev[i])) {
-        return prev;
-      }
-      return next;
-    });
-  }, [logs, mergedAliases]);
-
-  // Merge accumulated sources & apps with current logs (ensuring all discovered items remain selectable)
+  // Merge accumulated sources & apps with aliases (ensuring all discovered items remain selectable)
   const allAvailableSources = useMemo(() => {
     const aliasedIps = new Set(Object.keys(mergedAliases || {}));
     const set = new Set<string>();
@@ -394,13 +581,6 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       }
     });
 
-    logs.forEach((log) => {
-      const canonical = (log.source_ip && mergedAliases && mergedAliases[log.source_ip]) || log.source_alias;
-      if (canonical && !aliasedIps.has(canonical)) {
-        set.add(canonical);
-      }
-    });
-
     if (mergedAliases) {
       Object.values(mergedAliases).forEach((alias) => {
         if (alias && alias.trim()) set.add(alias.trim());
@@ -408,19 +588,11 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     }
 
     return Array.from(set).sort();
-  }, [accumulatedSources, logs, mergedAliases]);
+  }, [accumulatedSources, mergedAliases]);
 
   const allAvailableApps = useMemo(() => {
-    const set = new Set(accumulatedApps);
-    logs.forEach((log) => {
-      if (log.app_name) set.add(log.app_name);
-    });
-    return Array.from(set).sort();
-  }, [accumulatedApps, logs]);
-
-  // Accumulate bidirectional mappings: host -> apps AND app -> hosts
-  const [hostToAppsMap, setHostToAppsMap] = useState<Record<string, string[]>>({});
-  const [appToHostsMap, setAppToHostsMap] = useState<Record<string, string[]>>({});
+    return Array.from(new Set(accumulatedApps)).sort();
+  }, [accumulatedApps]);
 
   // Fetch full database facets on mount so all historical hosts and apps are available
   useEffect(() => {
@@ -458,84 +630,66 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       });
   }, []);
 
+  // Remap host/app relations whenever aliases are added or modified
   useEffect(() => {
-    setHostToAppsMap((prev) => {
-      const nextMap: Record<string, Set<string>> = {};
-      Object.entries(prev).forEach(([h, apps]) => {
-        nextMap[h] = new Set(apps);
-      });
-      logs.forEach((l) => {
-        if (l.app_name) {
-          const canonicalHost = (l.source_ip && mergedAliases && mergedAliases[l.source_ip]) || l.source_alias || l.source_ip;
-          if (canonicalHost) {
-            if (!nextMap[canonicalHost]) nextMap[canonicalHost] = new Set();
-            nextMap[canonicalHost].add(l.app_name);
-          }
-        }
-      });
-      if (mergedAliases) {
-        Object.entries(mergedAliases).forEach(([ip, alias]) => {
-          if (ip && alias) {
-            if (nextMap[ip]) {
-              if (!nextMap[alias]) nextMap[alias] = new Set();
-              nextMap[ip].forEach((a) => nextMap[alias].add(a));
-              delete nextMap[ip];
-            }
-          }
-        });
-      }
-      const result: Record<string, string[]> = {};
+    if (!mergedAliases || Object.keys(mergedAliases).length === 0) return;
+
+    setAccumulatedSources((prev) => {
+      const aliasedIps = new Set(Object.keys(mergedAliases));
+      const set = new Set<string>();
       let changed = false;
-      const allKeys = Object.keys(nextMap);
-      if (allKeys.length !== Object.keys(prev).length) changed = true;
-      for (const k of allKeys) {
-        result[k] = Array.from(nextMap[k]).sort();
-        if (!prev[k] || prev[k].length !== result[k].length) {
+
+      prev.forEach((s) => {
+        if (mergedAliases[s]) {
+          set.add(mergedAliases[s]);
+          changed = true;
+        } else if (!aliasedIps.has(s)) {
+          set.add(s);
+        } else {
           changed = true;
         }
-      }
-      return changed ? result : prev;
+      });
+
+      Object.values(mergedAliases).forEach((alias) => {
+        if (alias && alias.trim() && !set.has(alias.trim())) {
+          set.add(alias.trim());
+          changed = true;
+        }
+      });
+
+      return changed ? Array.from(set).sort() : prev;
+    });
+
+    setHostToAppsMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      Object.entries(mergedAliases).forEach(([ip, alias]) => {
+        if (ip && alias && next[ip]) {
+          const existingForAlias = next[alias] || [];
+          next[alias] = Array.from(new Set([...existingForAlias, ...next[ip]])).sort();
+          delete next[ip];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
     });
 
     setAppToHostsMap((prev) => {
-      const nextMap: Record<string, Set<string>> = {};
-      Object.entries(prev).forEach(([app, hosts]) => {
-        nextMap[app] = new Set(hosts);
-      });
-      logs.forEach((l) => {
-        if (l.app_name) {
-          const canonicalHost = (l.source_ip && mergedAliases && mergedAliases[l.source_ip]) || l.source_alias || l.source_ip;
-          if (canonicalHost) {
-            if (!nextMap[l.app_name]) nextMap[l.app_name] = new Set();
-            nextMap[l.app_name].add(canonicalHost);
-          }
-        }
-      });
-      if (mergedAliases) {
-        Object.entries(mergedAliases).forEach(([ip, alias]) => {
-          if (ip && alias) {
-            Object.keys(nextMap).forEach((app) => {
-              if (nextMap[app].has(ip)) {
-                nextMap[app].delete(ip);
-                nextMap[app].add(alias);
-              }
-            });
-          }
-        });
-      }
-      const result: Record<string, string[]> = {};
       let changed = false;
-      const allKeys = Object.keys(nextMap);
-      if (allKeys.length !== Object.keys(prev).length) changed = true;
-      for (const k of allKeys) {
-        result[k] = Array.from(nextMap[k]).sort();
-        if (!prev[k] || prev[k].length !== result[k].length) {
-          changed = true;
+      const next = { ...prev };
+      Object.entries(mergedAliases).forEach(([ip, alias]) => {
+        if (ip && alias) {
+          Object.keys(next).forEach((app) => {
+            if (next[app]?.includes(ip)) {
+              next[app] = Array.from(new Set(next[app].map((h) => (h === ip ? alias : h)))).sort();
+              changed = true;
+            }
+          });
         }
-      }
-      return changed ? result : prev;
+      });
+      return changed ? next : prev;
     });
-  }, [logs, mergedAliases]);
+  }, [mergedAliases]);
 
   const activeSources: string[] = useMemo(() => {
     if (filters.sources && Array.isArray(filters.sources)) return filters.sources;
@@ -593,15 +747,9 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         apps.forEach((a) => set.add(a));
       }
     });
-    // Also check current buffer in case logs arrived matching active sources
-    logs.forEach((l) => {
-      if ((activeSources.includes(l.source_alias) || activeSources.includes(l.source_ip)) && l.app_name) {
-        set.add(l.app_name);
-      }
-    });
     const result = Array.from(set).sort();
     return result.length > 0 ? result : allAvailableApps;
-  }, [activeSources, allAvailableApps, hostToAppsMap, logs]);
+  }, [activeSources, allAvailableApps, hostToAppsMap]);
 
   // Scope available sources to only those hosting the selected app(s) if app(s) are chosen
   const availableSourcesForSelectedApps = useMemo(() => {
@@ -615,15 +763,9 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         hosts.forEach((h) => set.add(h));
       }
     });
-    // Also check current buffer in case logs arrived matching active apps
-    logs.forEach((l) => {
-      if (activeApps.includes(l.app_name) && l.source_alias) {
-        set.add(l.source_alias);
-      }
-    });
     const result = Array.from(set).sort();
     return result.length > 0 ? result : allAvailableSources;
-  }, [activeApps, allAvailableSources, appToHostsMap, logs]);
+  }, [activeApps, allAvailableSources, appToHostsMap]);
 
   // Multi-select with strict same-host constraint and Shift-click range support
   const toggleSelectLog = (log: LogEntry, index: number, e: React.MouseEvent) => {
@@ -706,6 +848,12 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   }, [logs, selectedLogIds]);
 
   const clearLogsBuffer = () => {
+    if (flushTimerRef.current !== null) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    incomingBufferRef.current = [];
+    pendingScrollAdjustmentRef.current = 0;
     setLogs([]);
     setSelectedLogIds(new Set());
     setLastSelectedLogIndex(null);
