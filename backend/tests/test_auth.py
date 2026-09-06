@@ -230,6 +230,47 @@ class TestAuthentication:
             assert res_other.status_code == 401
 
     @pytest.mark.asyncio
+    async def test_login_docker_bridge_trusted_proxy_gateway(self, monkeypatch):
+        """
+        When TRUSTED_PROXIES is unset and TRUST_DOCKER_PROXIES is enabled,
+        Docker bridge proxy gateways (e.g. 172.17.0.1 in 172.16.0.0/12) are trusted
+        so they do not mask all incoming user traffic under one IP.
+        """
+        monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
+        monkeypatch.setenv("TRUST_DOCKER_PROXIES", "true")
+
+        app = create_app()
+        # Direct connection comes from Docker gateway 172.17.0.1
+        proxy_transport = ASGITransport(app=app, client=("172.17.0.1", 50000))
+        async with AsyncClient(transport=proxy_transport, base_url="http://test") as proxy_client:
+            await proxy_client.post("/api/auth/setup", json={"password": "gateway_password"})
+
+            # Client 203.0.113.88 sends 5 failed attempts through 172.17.0.1
+            for _ in range(5):
+                res = await proxy_client.post(
+                    "/api/auth/login",
+                    json={"password": "wrong_password"},
+                    headers={"X-Forwarded-For": "203.0.113.88"},
+                )
+                assert res.status_code == 401
+
+            # 6th attempt from 203.0.113.88 is rate-limited
+            res_blocked = await proxy_client.post(
+                "/api/auth/login",
+                json={"password": "wrong_password"},
+                headers={"X-Forwarded-For": "203.0.113.88"},
+            )
+            assert res_blocked.status_code == 429
+
+            # A different client coming through the exact same gateway is NOT rate limited
+            res_other = await proxy_client.post(
+                "/api/auth/login",
+                json={"password": "wrong_password"},
+                headers={"X-Forwarded-For": "203.0.113.99"},
+            )
+            assert res_other.status_code == 401
+
+    @pytest.mark.asyncio
     async def test_auth_status_endpoint(self, client: AsyncClient, auth_cookie: dict):
         # Before setup
         res = await client.get("/api/auth/status")
@@ -376,6 +417,49 @@ class TestAdminPasswordChange:
             )
             assert new_login.status_code == 200
             assert SESSION_COOKIE_NAME in new_login.cookies
+
+    @pytest.mark.asyncio
+    async def test_session_issued_prior_to_password_change_rejected(self, client: AsyncClient):
+        # 1. Setup admin
+        await client.post("/api/auth/setup", json={"password": "InitialSecurePass123!"})
+        initial_token = client.cookies.get(SESSION_COOKIE_NAME)
+        assert initial_token is not None
+
+        # Verify initial session token works on protected endpoint
+        res_before = await client.get("/api/settings")
+        assert res_before.status_code == 200
+
+        # Wait briefly so that updated_at timestamp in admin_auth is strictly greater
+        import asyncio
+        await asyncio.sleep(1.05)
+
+        # 2. Change password while authenticated
+        change_res = await client.post(
+            "/api/auth/password",
+            json={
+                "current_password": "InitialSecurePass123!",
+                "new_password": "UpdatedPassword456!",
+            },
+        )
+        assert change_res.status_code == 200
+
+        # 3. Request using session token issued prior to password change must be rejected
+        transport = ASGITransport(app=create_app())
+        async with AsyncClient(transport=transport, base_url="http://test") as old_client:
+            old_client.cookies.set(SESSION_COOKIE_NAME, initial_token)
+            res_after = await old_client.get("/api/settings")
+            assert res_after.status_code == 401
+            assert "Session expired due to password change" in res_after.json()["detail"]
+
+        # 4. Request using a newly created session (logged in after password update) must succeed
+        async with AsyncClient(transport=transport, base_url="http://test") as new_client:
+            login_res = await new_client.post(
+                "/api/auth/login",
+                json={"password": "UpdatedPassword456!"},
+            )
+            assert login_res.status_code == 200
+            res_new_session = await new_client.get("/api/settings")
+            assert res_new_session.status_code == 200
 
 
 # ===================================================================

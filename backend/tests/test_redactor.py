@@ -120,3 +120,40 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfnNkGFOQCPO...
         result = redact(text)
         assert "my-secret-api-key-12345" not in result
         assert REDACTED in result
+
+    def test_redis_connection_string_without_username_redacted(self):
+        text = "Connecting to redis://:mypassword@localhost:6379/0..."
+        result = redact(text)
+        assert "mypassword" not in result
+        assert REDACTED in result
+        assert result == f"Connecting to redis://:{REDACTED}@localhost:6379/0..."
+
+    def test_sk_token_standalone_redacted(self):
+        token = "sk-proj-abc1234567890abcdef12345678"
+        text = f"API request using OpenAI key {token} failed"
+        result = redact(text)
+        assert token not in result
+        assert REDACTED in result
+        assert result == f"API request using OpenAI key {REDACTED} failed"
+
+    def test_github_pat_standalone_redacted(self):
+        # ghp_ followed by exactly 36 alphanumeric characters (total length 40)
+        token = "ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+        assert len(token) == 40
+        text = f"git clone error with token {token}"
+        result = redact(text)
+        assert token not in result
+        assert REDACTED in result
+        assert result == f"git clone error with token {REDACTED}"
+
+    def test_curl_auth_redacted(self):
+        text1 = "curl -u admin:s3cretPassword123 https://api.internal/v1"
+        result1 = redact(text1)
+        assert "s3cretPassword123" not in result1
+        assert result1 == f"curl -u admin:{REDACTED} https://api.internal/v1"
+
+        text2 = "curl --user deploy:verySecretKey456 https://api.internal/v1"
+        result2 = redact(text2)
+        assert "verySecretKey456" not in result2
+        assert result2 == f"curl --user deploy:{REDACTED} https://api.internal/v1"
+

@@ -103,11 +103,14 @@ export function renderInline(text: string): React.ReactNode[] {
     } else if (matchedToken.startsWith('[') && matchedToken.includes('](') && matchedToken.endsWith(')')) {
       const linkText = matchedToken.substring(1, matchedToken.indexOf(']('));
       const linkUrl = matchedToken.substring(matchedToken.indexOf('](') + 2, matchedToken.length - 1);
+      const trimmedUrl = linkUrl.trim();
+      const isSafeProtocol = /^(https?:\/\/|mailto:|#)/i.test(trimmedUrl);
+      const safeHref = isSafeProtocol ? trimmedUrl : '#';
       nodes.push(
         <a
           key={tokenKey}
-          href={linkUrl}
-          target="_blank"
+          href={safeHref}
+          target={safeHref === '#' ? undefined : '_blank'}
           rel="noopener noreferrer"
           className="text-accent-400 hover:underline"
         >

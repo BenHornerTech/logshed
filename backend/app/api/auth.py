@@ -40,19 +40,34 @@ def _clean_ip(ip_str: str) -> str:
 
 
 def _get_trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
-    """Parse comma-separated IPs/CIDRs from TRUSTED_PROXIES environment variable."""
+    """
+    Parse comma-separated IPs/CIDRs from TRUSTED_PROXIES environment variable.
+    If TRUSTED_PROXIES is unset or empty, supports TRUST_DOCKER_PROXIES (or TRUST_DOCKER_NETWORKS)
+    to trust standard Docker bridge subnets (172.16.0.0/12).
+    """
     trusted_env = os.environ.get("TRUSTED_PROXIES", "").strip()
-    if not trusted_env:
-        return []
-    networks = []
-    for part in trusted_env.split(","):
-        cleaned = _clean_ip(part)
-        if cleaned:
-            try:
-                networks.append(ipaddress.ip_network(cleaned, strict=False))
-            except ValueError:
-                pass
-    return networks
+    if trusted_env:
+        networks = []
+        for part in trusted_env.split(","):
+            cleaned = _clean_ip(part)
+            if cleaned:
+                try:
+                    networks.append(ipaddress.ip_network(cleaned, strict=False))
+                except ValueError:
+                    pass
+        return networks
+
+    # If TRUSTED_PROXIES is unset or empty, allow configuring standard Docker bridge subnets
+    trust_docker = (
+        os.environ.get("TRUST_DOCKER_PROXIES", "").strip().lower() in ("true", "1", "yes")
+        or os.environ.get("TRUST_DOCKER_NETWORKS", "").strip().lower() in ("true", "1", "yes")
+        or os.environ.get("TRUST_DOCKER_GATEWAY", "").strip().lower() in ("true", "1", "yes")
+    )
+    if trust_docker:
+        return [ipaddress.ip_network("172.16.0.0/12", strict=False)]
+
+    return []
+
 
 
 def _is_trusted_proxy(ip_str: str, trusted_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network]) -> bool:

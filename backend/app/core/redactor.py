@@ -128,15 +128,33 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
     ),
 
     # --- Connection Strings ---
-    # Database/service URLs with embedded credentials  (user:pass@host)
+    # Database/service URLs with embedded credentials (user:pass@host or :pass@host)
     (
         "connection_string",
         re.compile(
-            r"((?:mysql|postgres|postgresql|mongodb|redis|amqp|smtp|ftp|https?)"
-            r"://[^:]+:)[^@\s]+(@)",
+            r"((?:mysql|postgres|postgresql|mongodb|redis|amqp|smtp|ftp|https?)://(?:[^:]*:)?)[^@\s]+(@)",
             re.IGNORECASE,
         ),
         rf"\1{REDACTED}\2",
+    ),
+
+    # --- CLI & Command Auth ---
+    (
+        "curl_auth",
+        re.compile(r"(--?(?:u|user)\s+[^:\s]+:)\S+", re.IGNORECASE),
+        rf"\1{REDACTED}",
+    ),
+
+    # --- Standalone API & Platform Tokens ---
+    (
+        "sk_token",
+        re.compile(r"\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b"),
+        REDACTED,
+    ),
+    (
+        "github_token",
+        re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{36})\b"),
+        REDACTED,
     ),
 
     # --- Pushover / Generic Service Tokens ---

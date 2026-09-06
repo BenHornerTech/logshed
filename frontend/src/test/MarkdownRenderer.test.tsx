@@ -105,4 +105,32 @@ describe('MarkdownRenderer Component', () => {
     expect(screen.getByText(/alert\("XSS"\)/)).toBeInTheDocument();
     expect(container.querySelector('code')?.textContent).toBe('clean_code');
   });
+
+  it('sanitizes unsafe protocols in links to # to prevent XSS', () => {
+    const markdown = 'Click [attack](javascript:alert(1)) or [safe link](https://example.com) or [anchor](#top).';
+    render(<MarkdownRenderer content={markdown} />);
+
+    const attackLink = screen.getByRole('link', { name: 'attack' });
+    expect(attackLink).toHaveAttribute('href', '#');
+    expect(attackLink).not.toHaveAttribute('target');
+
+    const safeLink = screen.getByRole('link', { name: 'safe link' });
+    expect(safeLink).toHaveAttribute('href', 'https://example.com');
+    expect(safeLink).toHaveAttribute('target', '_blank');
+
+    const anchorLink = screen.getByRole('link', { name: 'anchor' });
+    expect(anchorLink).toHaveAttribute('href', '#top');
+  });
+
+  it('sanitizes data: and vbscript: URLs to #', () => {
+    const markdown = '[data attack](data:text/html,<script>alert(1)</script>) and [vb attack](vbscript:msgbox(1))';
+    render(<MarkdownRenderer content={markdown} />);
+
+    const dataLink = screen.getByRole('link', { name: 'data attack' });
+    expect(dataLink).toHaveAttribute('href', '#');
+
+    const vbLink = screen.getByRole('link', { name: 'vb attack' });
+    expect(vbLink).toHaveAttribute('href', '#');
+  });
 });
+

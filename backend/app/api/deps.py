@@ -4,6 +4,7 @@ All SQLite queries are dispatched via asyncio.to_thread() to keep the event loop
 """
 
 import asyncio
+import datetime
 import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar
@@ -40,6 +41,7 @@ async def get_current_user(request: Request) -> dict[str, Any]:
     """
     FastAPI dependency that validates the signed session cookie.
     Raises 401 Unauthorized if cookie is missing, invalid, or expired.
+    Also validates that the session was not issued prior to the latest admin password update.
     """
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
@@ -54,6 +56,37 @@ async def get_current_user(request: Request) -> dict[str, Any]:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired session. Please log in again.",
         )
+
+    iat = payload.get("iat")
+    if iat is not None:
+        def _get_admin_updated_at(conn: sqlite3.Connection) -> Optional[str]:
+            cursor = conn.cursor()
+            cursor.execute("SELECT updated_at FROM admin_auth WHERE id = 1")
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+        updated_at_str = await run_db_query(_get_admin_updated_at)
+        if updated_at_str:
+            try:
+                dt = datetime.datetime.fromisoformat(updated_at_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                updated_at_epoch = dt.timestamp()
+                iat_val = float(iat)
+                is_revoked = (
+                    int(iat_val) < int(updated_at_epoch)
+                    if (isinstance(iat, int) or iat_val.is_integer())
+                    else iat_val < updated_at_epoch
+                )
+                if is_revoked:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Session expired due to password change",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
 
     return payload
 
