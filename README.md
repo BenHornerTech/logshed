@@ -12,8 +12,7 @@ A lightweight, self-hosted homelab log aggregator and syslog server featuring re
   - **Docker Engine API**: Direct container tailing via local Unix socket (`/var/run/docker.sock`) or remote Docker host / proxy (`tcp://<host>:2375`) without external Docker SDK bloat.
 - **Keyed Multiline Assembly & Raw Log Fidelity**: Assembles stack traces, tracebacks, and multiline logs cleanly on a per-stream basis while preserving original raw message payloads.
 - **Fast Full-Text Search**: Instant search and filtering across hosts, containers, severity levels, and time windows.
-- **On-Demand AI Analysis**: User-initiated troubleshooting powered by your choice of LLM (OpenAI, Google Gemini, Ollama, LocalAI, etc.) with automatic **server-side** credential redaction before dispatch.
-- **Configurable Retention**: Automated background pruning with SQLite page vacuuming and storage trend metrics. Supports 1 to 365 days of retention (default: 30 days).
+- **Configurable Retention**: Automated background pruning with SQLite freelist page reuse and storage trend metrics. Supports 1 to 30 days of retention by default (default: 14 days), with configurable maximum via `MAX_RETENTION_DAYS`.
 
 ---
 
@@ -81,10 +80,12 @@ The following environment variables are supplied at container boot:
 | `TZ` | `UTC` | Container timezone. |
 | `COOKIE_SECURE` | `false` | Set to `true` if running behind an SSL reverse proxy that does not send `X-Forwarded-Proto`. |
 | `LOGSHED_SECRET_KEY` | *(auto-generated)* | 32-byte URL-safe base64 key for encrypting runtime settings at rest. |
+| `MAX_RETENTION_DAYS` | `30` | Maximum log retention period in days (minimum 1). Configures the upper bound in the UI slider. Advanced users can increase this to retain logs for longer periods. |
 
 > **Note**: Sensitive credentials (such as LLM API keys) and retention policies are configured entirely at runtime in the **Settings** panel within the web interface, encrypted at rest using AES-128-CBC / HMAC-SHA256 (Fernet).
 >
-> **Log Retention Disclaimer**: Retention is configurable between 1 and 365 days (default: 30 days). While extending retention up to 365 days is permitted, homelab users should consider hardware and performance implications: storing up to a year of logs substantially increases the SQLite database disk footprint and may increase query latencies on resource-constrained homelab hardware (such as Raspberry Pis or low-power mini PCs).
+> **Log Retention**: Retention is configurable between 1 and `MAX_RETENTION_DAYS` (default: 14 days, max: 30 days). Advanced users can increase `MAX_RETENTION_DAYS` via environment variable if homelab hardware and storage capacity allow. Retention pruning purges expired logs, compacts the FTS5 search index, and checkpoints the WAL without holding exclusive offline database locks; SQLite automatically reuses free database pages for incoming logs without requiring an intrusive offline VACUUM.
+
 >
 > **Log Redaction & AI Notice**: LogShed includes automatic server-side scrubbing to redact common secrets (passwords, bearer tokens, API keys, private keys, and connection strings) before dispatching prompts to LLM providers. However, automated credential scrubbing operates on a best-effort basis and may not catch every sensitive token or secret. Please review the editable prompt in the UI before sending—you are responsible for the contents and sensitive data you transmit to external AI providers.
 >

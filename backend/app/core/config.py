@@ -69,3 +69,20 @@ def get_cors_origins() -> list[str]:
             "http://127.0.0.1:3000",
         ]
     return []
+
+
+def get_max_retention_days() -> int:
+    """
+    Returns the maximum allowed log retention period in days.
+    Defaults to 30 days. Configurable via the MAX_RETENTION_DAYS environment variable.
+    Enforced to have a minimum value of at least 1 day.
+    """
+    raw = os.environ.get("MAX_RETENTION_DAYS")
+    if raw is not None:
+        try:
+            val = int(raw.strip())
+            return max(1, val)
+        except ValueError:
+            pass
+    return 30
+

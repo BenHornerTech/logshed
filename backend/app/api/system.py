@@ -5,8 +5,9 @@ System health, storage metrics, and retention maintenance API endpoints for LogS
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.api.deps import get_current_user, run_db_query
-from app.core.config import get_db_path
+from app.core.config import get_db_path, get_max_retention_days
 from app.core.pipeline import get_dropped_count, get_ingest_rate, get_queue
+
 from app.models import HealthResponse, PruneResponse, StorageMetricItem, StorageOverviewResponse
 from app.services.retention import execute_prune_async
 from app.services.storage_metrics import sample_storage_metrics
@@ -62,15 +63,18 @@ async def trigger_prune(user: dict = Depends(get_current_user)) -> PruneResponse
         row = cursor.fetchone()
         if row and row["value"]:
             try:
-                return int(row["value"])
+                val = int(row["value"])
+                max_days = get_max_retention_days()
+                return max(1, min(val, max_days))
             except ValueError:
                 pass
-        return 30
+        return min(14, get_max_retention_days())
 
     retention_days = await run_db_query(_get_retention_days)
     db_path = get_db_path()
 
-    result = await execute_prune_async(db_path, retention_days=retention_days, vacuum=True)
+    result = await execute_prune_async(db_path, retention_days=retention_days)
+
 
     metrics_raw = result["metrics"]
     metric_item = StorageMetricItem(

@@ -9,7 +9,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, run_db_query
+from app.core.config import get_max_retention_days
 from app.core.security import decrypt_value, encrypt_value, mask_secret
+
 from app.models import MessageResponse, SettingsResponse, SettingsUpdateRequest
 from app.services.ai_engine import DEFAULT_SYSTEM_PROMPT
 
@@ -47,11 +49,14 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
 
     ai_api_key_val = stored.get("ai_api_key", "")
 
-    retention_raw = stored.get("retention_days", "30")
+    retention_raw = stored.get("retention_days", "14")
     try:
         retention_days = int(retention_raw)
     except ValueError:
-        retention_days = 30
+        retention_days = 14
+
+    max_days = get_max_retention_days()
+    retention_days = max(1, min(retention_days, max_days))
 
     return SettingsResponse(
         ai_provider=stored.get("ai_provider") or "gemini",
@@ -60,6 +65,7 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
         ai_base_url=stored.get("ai_base_url") or None,
         ai_system_prompt=stored.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT,
         retention_days=retention_days,
+        max_retention_days=max_days,
         has_ai_api_key=bool(ai_api_key_val),
     )
 
@@ -74,7 +80,16 @@ async def update_settings(
     Sensitive keys are encrypted at rest with Fernet.
     Masked strings ('********') are preserved without overwriting existing secrets.
     """
+    if req.retention_days is not None:
+        max_days = get_max_retention_days()
+        if req.retention_days < 1 or req.retention_days > max_days:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Retention days must be between 1 and {max_days}",
+            )
+
     def _save_settings(conn):
+
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         cursor = conn.cursor()
 

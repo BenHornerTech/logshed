@@ -259,10 +259,12 @@ export const SettingsPanel: React.FC = () => {
         {settings && (
           <RetentionSlider
             retentionDays={settings.retention_days}
+            maxRetentionDays={settings.max_retention_days}
             onSaveRetention={handleSaveRetention}
             onPruneCompleted={loadAllData}
           />
         )}
+
         <StorageTrendChart history={storageMetrics?.history || []} />
       </section>
 

@@ -34,7 +34,9 @@ export interface SystemSettings {
   ai_base_url?: string | null;
   ai_system_prompt?: string;
   retention_days: number;
+  max_retention_days?: number;
 }
+
 
 export interface StorageMetricsSnapshot {
   recorded_at: string;

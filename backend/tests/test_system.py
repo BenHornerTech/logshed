@@ -273,7 +273,7 @@ class TestRetentionAndPruneWorker:
             count = conn.execute("SELECT COUNT(*) FROM logs WHERE message = 'old log pruned by worker'").fetchone()[0]
             assert count == 0
 
-    def test_prune_vacuum_reclaims_freelist(self, tmp_path: Path):
+    def test_prune_retains_freelist_for_reuse(self, tmp_path: Path):
         db_file = tmp_path / "logs.db"
         now = datetime.datetime.now(datetime.timezone.utc)
         old_time = (now - datetime.timedelta(days=40)).isoformat()
@@ -292,21 +292,45 @@ class TestRetentionAndPruneWorker:
             )
             conn.commit()
 
-        # Run execute_prune with vacuum=False
-        res_no_vac = execute_prune(db_file, retention_days=30, vacuum=False)
-        assert res_no_vac["deleted_logs"] == 1500
+        # Run execute_prune without VACUUM (retention_days=14)
+        res = execute_prune(db_file, retention_days=14)
+        assert res["deleted_logs"] == 1500
+        assert res["status"] == "ok"
 
         with get_connection(db_file) as conn:
-            # In SQLite WAL mode after deleting 1500 rows, freelist pages exist before vacuum
-            freelist_before = conn.execute("PRAGMA freelist_count;").fetchone()[0]
-            assert freelist_before > 0
+            # In SQLite WAL mode without offline VACUUM, freelist pages exist for reuse by new rows
+            freelist = conn.execute("PRAGMA freelist_count;").fetchone()[0]
+            assert freelist > 0
 
-        # Now run execute_prune with vacuum=True
-        res_vac = execute_prune(db_file, retention_days=30, vacuum=True)
-        assert res_vac["status"] == "ok"
+    def test_execute_prune_safety_clamps_zero_and_negative_days(self, tmp_path: Path):
+        """execute_prune must clamp retention_days <= 0 to at least 1 day so recent logs are preserved."""
+        db_file = tmp_path / "logs.db"
+        run_migrations(db_file)
+
+        # Seed recent logs (from today)
         with get_connection(db_file) as conn:
-            freelist_after = conn.execute("PRAGMA freelist_count;").fetchone()[0]
-            assert freelist_after == 0
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            for i in range(10):
+                conn.execute(
+                    """
+                    INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                    VALUES (?, ?, '192.168.1.1', 'gw', 'app', 1, 6, 'recent log', 'recent log')
+                    """,
+                    (now, now),
+                )
+            conn.commit()
+
+        # Calling prune with 0 or negative days must clamp to 1 and NOT delete today's logs
+        res_zero = execute_prune(db_file, retention_days=0)
+        assert res_zero["deleted_logs"] == 0
+
+        res_neg = execute_prune(db_file, retention_days=-5)
+        assert res_neg["deleted_logs"] == 0
+
+        with get_connection(db_file) as conn:
+            remaining = conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+            assert remaining == 10
+
 
     @pytest.mark.asyncio
     async def test_storage_metrics_worker_manual_trigger_single_row(self, tmp_path: Path):
@@ -491,6 +515,7 @@ class TestSettingsEncryptionAndKeyManagement:
         assert data["ai_api_key"] == "********"
         assert data["has_ai_api_key"] is True
         assert data["retention_days"] == 14
+        assert data["max_retention_days"] == 30
         assert data["ai_provider"] == "openai"
 
         update2 = {
@@ -507,17 +532,95 @@ class TestSettingsEncryptionAndKeyManagement:
             val = cursor.fetchone()[0]
             assert decrypt_value(val) == "sk-1234567890abcdef1234567890"
 
-        res_valid = await client.post("/api/settings", json={"retention_days": 365})
+        # By default, MAX_RETENTION_DAYS is 30
+        res_valid = await client.post("/api/settings", json={"retention_days": 30})
         assert res_valid.status_code == 200
 
-        res_invalid = await client.post("/api/settings", json={"retention_days": 366})
+        res_invalid = await client.post("/api/settings", json={"retention_days": 31})
         assert res_invalid.status_code == 422
 
         res_invalid_low = await client.post("/api/settings", json={"retention_days": 0})
         assert res_invalid_low.status_code == 422
 
-        res_invalid2 = await client.post("/api/settings", json={"retention_days": 3650})
+        res_invalid2 = await client.post("/api/settings", json={"retention_days": 365})
         assert res_invalid2.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_max_retention_days_env_override(
+        self, client: AsyncClient, auth_cookie: dict, monkeypatch: pytest.MonkeyPatch
+    ):
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        monkeypatch.setenv("MAX_RETENTION_DAYS", "90")
+
+        res_get = await client.get("/api/settings")
+        assert res_get.status_code == 200
+        assert res_get.json()["max_retention_days"] == 90
+
+        # With MAX_RETENTION_DAYS=90, 90 is valid but 91 is invalid
+        res_valid = await client.post("/api/settings", json={"retention_days": 90})
+        assert res_valid.status_code == 200
+
+        res_invalid = await client.post("/api/settings", json={"retention_days": 91})
+        assert res_invalid.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_default_retention_days_is_14(self, client: AsyncClient, auth_cookie: dict):
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        res_get = await client.get("/api/settings")
+        assert res_get.status_code == 200
+        assert res_get.json()["retention_days"] == 14
+        assert res_get.json()["max_retention_days"] == 30
+
+    @pytest.mark.asyncio
+    async def test_max_retention_days_clamps_active_retention_when_lower(
+        self, client: AsyncClient, auth_cookie: dict, monkeypatch: pytest.MonkeyPatch
+    ):
+        """When MAX_RETENTION_DAYS is set below default (e.g. 7), GET /api/settings must clamp retention_days to 7."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        monkeypatch.setenv("MAX_RETENTION_DAYS", "7")
+
+        res_get = await client.get("/api/settings")
+        assert res_get.status_code == 200
+        data = res_get.json()
+        assert data["max_retention_days"] == 7
+        assert data["retention_days"] == 7
+
+        # Updating to 7 succeeds, 8 fails
+        res_ok = await client.post("/api/settings", json={"retention_days": 7})
+        assert res_ok.status_code == 200
+
+        res_fail = await client.post("/api/settings", json={"retention_days": 8})
+        assert res_fail.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_max_retention_days_invalid_and_boundary_values(
+        self, client: AsyncClient, auth_cookie: dict, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Invalid strings fall back to default 30; values <= 0 are clamped to 1."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+
+        # Non-integer falls back to 30
+        monkeypatch.setenv("MAX_RETENTION_DAYS", "invalid-str")
+        res = await client.get("/api/settings")
+        assert res.json()["max_retention_days"] == 30
+
+        # Empty string falls back to 30
+        monkeypatch.setenv("MAX_RETENTION_DAYS", "")
+        res = await client.get("/api/settings")
+        assert res.json()["max_retention_days"] == 30
+
+        # Zero is clamped to 1
+        monkeypatch.setenv("MAX_RETENTION_DAYS", "0")
+        res = await client.get("/api/settings")
+        assert res.json()["max_retention_days"] == 1
+        assert res.json()["retention_days"] == 1
+
+        # Negative is clamped to 1
+        monkeypatch.setenv("MAX_RETENTION_DAYS", "-10")
+        res = await client.get("/api/settings")
+        assert res.json()["max_retention_days"] == 1
+        assert res.json()["retention_days"] == 1
+
 
 
 # ===================================================================

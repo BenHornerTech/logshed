@@ -18,8 +18,11 @@ Only the following are true environment variables, supplied at container start a
 - `PUID` and `PGID` — user and group IDs for the application to run as (defaults to `1000` if unset).
 - `LOGSHED_SECRET_KEY` — optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
 - `COOKIE_SECURE` — optional boolean (`true`/`false`, defaults to `false`). When `false` (the default), session cookies are issued without the `Secure` flag to allow direct HTTP access over local IP addresses in homelabs, or automatically detects HTTPS via `X-Forwarded-Proto` header or request scheme. Set to `true` when running behind an SSL-terminating reverse proxy that does not send `X-Forwarded-Proto`.
+- `MAX_RETENTION_DAYS` — Optional maximum log retention period in days (defaults to `30`, minimum `1`). Caps the retention period selectable in the UI. Advanced users can override this to retain logs for longer periods.
 
-All other configuration — AI provider, AI API key, AI base URL, AI model, and `retention_days` — is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
+
+All other configuration — AI provider, AI API key, AI base URL, AI model, and `retention_days` (default 14 days, up to `MAX_RETENTION_DAYS`) — is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
+
 
 ---
 
@@ -243,11 +246,12 @@ python -m app.cli reset-admin --password <new_password>
 | `DELETE` | `/api/aliases/{ip}` | Remove host alias | None |
 | **Settings** |  |  |  |
 | `GET` | `/api/settings` | Read application configuration (keys masked) | None |
-| `POST` | `/api/settings` | Update settings (encrypted at rest) | `{"ai_provider": "...", "ai_model": "...", "ai_api_key": "...", "ai_base_url": "...", "retention_days": 30}` |
+| `POST` | `/api/settings` | Update settings (encrypted at rest) | `{"ai_provider": "...", "ai_model": "...", "ai_api_key": "...", "ai_base_url": "...", "retention_days": 14}` |
 | **System & Maintenance** |  |  |  |
 | `GET` | `/api/health` | Container healthcheck & queue metrics | Returns DB status, queue depth, dropped log count |
-| `POST` | `/api/maintenance/prune` | Trigger manual retention prune & vacuum | None |
+| `POST` | `/api/maintenance/prune` | Trigger manual retention purge | None |
 | `GET` | `/api/system/storage` | Fetch live disk usage & 30-day history | `{"db_size_bytes": 18247000000, "disk_free_bytes": 450000000000, "disk_total_bytes": 1000000000000, "history": [{"recorded_at": "...", "db_size_bytes": 18247000000, "disk_free_bytes": 450000000000, "disk_total_bytes": 1000000000000, "total_logs_count": 26000000}]}` |
+
 
 ---
 
@@ -294,11 +298,12 @@ python -m app.cli reset-admin --password <new_password>
 * **Settings & Audit Panel:**
   * Encrypted API key management (Google Gemini, OpenAI / custom OpenAI-compatible endpoint like Ollama/vLLM).
   * **Storage & Retention Dashboard:**
-    * Log retention slider (1–365 days, default 30 days; retention up to 365 days is permitted as long as the homelab user accepts performance considerations for larger database footprint and query latency) with manual `"Prune & Vacuum Now"` trigger.
+    * Log retention slider (1–30 days by default, configurable up to MAX_RETENTION_DAYS, default 14 days) with manual `"Purge Expired Logs Now"` trigger.
     * **Current Storage Card:** Dual-metric display showing active Database Footprint (MB/GB) alongside a visual progress bar for Available Mount Disk Space.
     * **30-Day Storage Trend Chart:** Compact line/area chart (via `recharts` or lightweight SVG) plotting DB disk footprint and total log volume over the past 30 days.
-    * Real-time optimistic UI update on manual prune/vacuum showing immediate reclaimed space.
+    * Real-time optimistic UI update on manual purge showing immediate reclaimed space.
   * Interactive AI Audit Log table showing historical prompt dispatches, user notes, responses and token consumption.
+
 
 
 * **Build & Asset Distribution:**

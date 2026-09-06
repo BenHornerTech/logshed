@@ -6,16 +6,22 @@ import { PruneResponse } from '../../types.ts';
 
 interface RetentionSliderProps {
   retentionDays: number;
+  maxRetentionDays?: number;
   onSaveRetention: (days: number) => Promise<void>;
   onPruneCompleted?: () => void;
 }
 
 export const RetentionSlider: React.FC<RetentionSliderProps> = ({
   retentionDays,
+  maxRetentionDays = 30,
   onSaveRetention,
   onPruneCompleted,
 }) => {
-  const [days, setDays] = useState<number>(retentionDays);
+  const min = 1;
+  const max = Math.max(1, maxRetentionDays || 30);
+  const clampDays = (d: number) => Math.min(Math.max(d || 14, min), max);
+
+  const [days, setDays] = useState<number>(() => clampDays(retentionDays));
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
 
@@ -38,7 +44,7 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
   };
 
   const handlePruneNow = async () => {
-    if (!window.confirm('Trigger immediate database prune and vacuum now?')) return;
+    if (!window.confirm('Trigger immediate purge of expired logs now?')) return;
     try {
       setIsPruning(true);
       setErrorMsg(null);
@@ -46,27 +52,32 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
       setPruneResult(res);
       if (onPruneCompleted) onPruneCompleted();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Manual prune failed.');
+      setErrorMsg(err.message || 'Manual purge failed.');
     } finally {
       setIsPruning(false);
     }
   };
 
-  const min = 1;
-  const max = 365;
-  const presets = [7, 14, 30, 90, 180, 365];
+  // Base presets: [3, 7, 14, 30]
+  // Include higher presets up to maxRetentionDays if configured
+  const candidatePresets = [3, 7, 14, 30, 60, 90, 180, 365];
+  const presets = candidatePresets.filter((p) => p <= max);
+  if (!presets.includes(max)) {
+    presets.push(max);
+  }
+  presets.sort((a, b) => a - b);
 
   // Sync internal state if prop updates
   React.useEffect(() => {
-    setDays(retentionDays || 30);
-  }, [retentionDays]);
+    setDays((prev) => clampDays(retentionDays || prev));
+  }, [retentionDays, max, min]);
 
   return (
     <div className="bg-dark-900 border border-dark-700 rounded-xl p-5 shadow-md space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
           <Clock className="w-4 h-4 text-accent-500" />
-          <span>Log Retention & Vacuum Policy</span>
+          <span>Log Retention Policy</span>
         </h3>
         <span className="font-mono text-xs text-accent-400 font-bold">
           {days} Day{days === 1 ? '' : 's'}
@@ -94,7 +105,7 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
                 : 'bg-dark-950 text-slate-400 hover:text-slate-200 hover:bg-dark-800 border border-dark-700'
             }`}
           >
-            {preset} Days
+            {preset} Day{preset === 1 ? '' : 's'}
           </button>
         ))}
       </div>
@@ -111,14 +122,14 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
         />
         <div className="relative h-6 text-[10px] font-mono text-slate-500 mt-1 select-none">
           {presets.map((val) => {
-            const leftPercent = ((val - min) / (max - min)) * 100;
+            const leftPercent = max === min ? 0 : ((val - min) / (max - min)) * 100;
             return (
               <div
                 key={val}
                 style={{ left: `${leftPercent}%` }}
                 onClick={() => setDays(val)}
                 className="absolute -translate-x-1/2 flex flex-col items-center cursor-pointer group hover:text-accent-400 transition"
-                title={`Set retention to ${val} days`}
+                title={`Set retention to ${val} day${val === 1 ? '' : 's'}`}
               >
                 <div
                   className={`w-0.5 h-1.5 mb-0.5 transition ${
@@ -130,7 +141,7 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
                     days === val ? 'text-accent-400 font-bold' : 'group-hover:text-slate-300'
                   }`}
                 >
-                  {val === 365 ? '365d' : `${val}d`}
+                  {`${val}d`}
                 </span>
               </div>
             );
@@ -163,24 +174,24 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
           <button
             onClick={handlePruneNow}
             disabled={isPruning}
-            title="Immediately purge logs older than the configured retention policy, compact the search index, and truncate the SQLite WAL."
+            title="Immediately purge logs older than the configured retention policy, compact the search index, and checkpoint the SQLite WAL."
             className="bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800 font-medium px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition shadow-xs cursor-pointer disabled:cursor-not-allowed"
           >
             {isPruning ? (
               <>
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span>Pruning & Truncating WAL...</span>
+                <span>Purging & Compacting Index...</span>
               </>
             ) : (
               <>
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>Prune & Vacuum Now</span>
+                <span>Purge Expired Logs Now</span>
               </>
             )}
           </button>
           <div
             className="text-slate-500 hover:text-slate-300 transition cursor-help p-0.5"
-            title="Pruning runs automatically once every 24 hours. Click 'Prune & Vacuum Now' if you recently lowered your retention days and want to immediately purge older logs, compact the search index, and truncate the SQLite WAL to reclaim disk space."
+            title="Pruning runs automatically once every 24 hours. SQLite automatically reuses free database pages for incoming logs without requiring an exclusive offline VACUUM. Click 'Purge Expired Logs Now' if you recently lowered your retention days and want to immediately purge older logs, compact the search index, and checkpoint the WAL."
           >
             <Info className="w-4 h-4" />
           </div>
@@ -189,7 +200,7 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
 
       {/* Explanatory Caption */}
       <p className="text-[11px] text-slate-500 leading-relaxed">
-        Automated retention pruning runs daily every 24 hours. Manual prune purges logs older than the saved policy and reclaims disk space immediately.
+        Old logs are automatically cleaned up daily. Purging deletes them immediately and frees space for new logs.
       </p>
 
       {/* Prune Result Banner */}

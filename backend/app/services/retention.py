@@ -8,21 +8,23 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+from app.core.config import get_max_retention_days
 from app.core.migrations import get_connection
 from app.services.storage_metrics import record_metrics, prune_old_metrics
 
 logger = logging.getLogger(__name__)
 
-def execute_prune(db_path: str | Path, retention_days: int = 30, vacuum: bool = False) -> dict:
+def execute_prune(db_path: str | Path, retention_days: int = 14) -> dict:
     """
     Executes iterative batch pruning, FTS5 index compaction, WAL checkpointing,
-    optional VACUUM page defragmentation, and updates storage metrics.
+    and updates storage metrics.
     
     Returns a dict with:
         deleted_logs: Total number of log rows deleted
         deleted_metrics: Total number of old metric rows deleted
         metrics: Newly recorded storage metrics snapshot
     """
+    retention_days = max(1, retention_days)
     total_deleted = 0
     db_path_obj = Path(db_path)
 
@@ -60,29 +62,18 @@ def execute_prune(db_path: str | Path, retention_days: int = 30, vacuum: bool = 
             logger.warning(f"WAL checkpoint warning: {e}")
         finally:
             cursor.close()
-
-        # 4. Optional VACUUM outside active transactions
-        if vacuum:
-            try:
-                conn.commit()
-                prev_isolation = conn.isolation_level
-                conn.isolation_level = None
-                conn.execute("VACUUM;")
-                conn.isolation_level = prev_isolation
-            except sqlite3.Error as e:
-                logger.warning(f"VACUUM warning: {e}")
     finally:
         conn.close()
 
-    # 5. Prune storage metrics older than 30 days
+    # 4. Prune storage metrics older than 30 days
     deleted_metrics = prune_old_metrics(db_path_obj)
 
-    # 6. Take fresh storage metrics snapshot
+    # 5. Take fresh storage metrics snapshot
     metrics = record_metrics(db_path_obj)
 
     logger.info(
         f"Prune completed: deleted {total_deleted} logs, "
-        f"{deleted_metrics} old metrics, retention_days={retention_days}, vacuum={vacuum}"
+        f"{deleted_metrics} old metrics, retention_days={retention_days}"
     )
 
     return {
@@ -94,10 +85,11 @@ def execute_prune(db_path: str | Path, retention_days: int = 30, vacuum: bool = 
 
 
 async def execute_prune_async(
-    db_path: str | Path, retention_days: int = 30, vacuum: bool = False
+    db_path: str | Path, retention_days: int = 14
 ) -> dict:
     """Async wrapper executing prune on a thread."""
-    return await asyncio.to_thread(execute_prune, db_path, retention_days, vacuum)
+    return await asyncio.to_thread(execute_prune, db_path, retention_days)
+
 
 
 class PruneWorker:
@@ -151,15 +143,18 @@ class PruneWorker:
             row = cursor.fetchone()
             if row and row[0]:
                 try:
-                    return int(row[0])
+                    val = int(row[0])
+                    max_days = get_max_retention_days()
+                    return max(1, min(val, max_days))
                 except ValueError:
                     pass
         except Exception as e:
-            logger.warning(f"Failed to read retention_days from database, defaulting to 30: {e}")
+            logger.warning(f"Failed to read retention_days from database, defaulting to 14: {e}")
         finally:
             if conn:
                 conn.close()
-        return 30
+        return min(14, get_max_retention_days())
+
 
     async def stop(self) -> None:
         """Signal graceful shutdown."""

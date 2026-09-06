@@ -32,9 +32,11 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
       ai_model: 'gemini-3.7-flash',
       ai_api_key: '********',
       ai_base_url: null,
-      retention_days: 30,
+      retention_days: 14,
+      max_retention_days: 30,
       has_ai_api_key: true,
     });
+
     vi.spyOn(systemApi, 'fetchStorageMetrics').mockResolvedValue({
       db_size_bytes: 1000000,
       disk_free_bytes: 500000000,
@@ -171,9 +173,11 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
       ai_model: 'gemini-3.7-flash',
       ai_api_key: '********',
       ai_base_url: null,
-      retention_days: 30,
+      retention_days: 14,
+      max_retention_days: 30,
       has_ai_api_key: true,
     });
+
 
     render(<SettingsPanel />);
 

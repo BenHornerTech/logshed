@@ -4,7 +4,10 @@ Pydantic v2 schemas and models for LogShed API.
 
 from datetime import datetime
 from typing import Any, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.core.config import get_max_retention_days
+
 
 
 # ---------------------------------------------------------------------------
@@ -92,8 +95,17 @@ class SettingsResponse(BaseModel):
     ai_api_key: str = ""
     ai_base_url: Optional[str] = None
     ai_system_prompt: str = ""
-    retention_days: int = 30
+    retention_days: int = 14
+    max_retention_days: int = Field(default_factory=get_max_retention_days)
     has_ai_api_key: bool = False
+
+    @model_validator(mode="after")
+    def clamp_retention_days(self) -> "SettingsResponse":
+        if self.retention_days > self.max_retention_days:
+            self.retention_days = self.max_retention_days
+        elif self.retention_days < 1:
+            self.retention_days = 1
+        return self
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -105,14 +117,20 @@ class SettingsUpdateRequest(BaseModel):
     ai_system_prompt: Optional[str] = None
     retention_days: Optional[int] = Field(
         None,
-        ge=1,
-        le=365,
         description=(
-            "Log retention period in days (1-365, default 30). Homelab performance consideration: "
-            "Retaining logs up to 365 days significantly increases database disk usage and can impact "
-            "query performance on resource-constrained homelab hardware."
+            "Log retention period in days (1 to MAX_RETENTION_DAYS, default 14)."
         ),
     )
+
+    @field_validator("retention_days")
+    @classmethod
+    def validate_retention_days(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None:
+            max_days = get_max_retention_days()
+            if v < 1 or v > max_days:
+                raise ValueError(f"Retention days must be between 1 and {max_days}")
+        return v
+
 
 
 # ---------------------------------------------------------------------------

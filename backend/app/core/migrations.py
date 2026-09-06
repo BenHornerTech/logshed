@@ -160,6 +160,9 @@ CREATE TABLE system_settings (
     updated_at DATETIME NOT NULL,
     is_encrypted BOOLEAN DEFAULT 0
 );
+
+INSERT OR IGNORE INTO system_settings (key, value, updated_at, is_encrypted)
+VALUES ('retention_days', '14', datetime('now'), 0);
 ''')
 
 
@@ -208,3 +211,14 @@ def run_migrations(db_path: Union[str, Path]) -> None:
             conn.commit()
         except sqlite3.OperationalError:
             pass
+
+        # Ensure default retention_days setting exists
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO system_settings (key, value, updated_at, is_encrypted) "
+                "VALUES ('retention_days', '14', datetime('now'), 0);"
+            )
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
