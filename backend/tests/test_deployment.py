@@ -186,6 +186,7 @@ class TestDockerfileStatic:
         assert DOCKERFILE_PATH.exists(), "Dockerfile must exist"
         content = DOCKERFILE_PATH.read_text()
         assert "FROM node:20-alpine AS frontend-builder" in content or "FROM node:20-alpine" in content
+        assert "RUN npm ci" in content
         assert "npm run build" in content
         assert "FROM python:3.12-slim" in content
         assert "tini" in content
@@ -214,7 +215,9 @@ class TestEntrypointStatic:
         assert "1000" in content
         assert "docker.sock" in content
         assert "stat" in content
-        assert "chown -R appuser:appuser /data" in content
+        assert "usermod -aG root appuser" in content
+        assert "CURRENT_OWNER" in content
+        assert "chown appuser:appuser /data" in content
         assert "--workers 1" in content
         assert "gosu" in content
         assert "tini" in content

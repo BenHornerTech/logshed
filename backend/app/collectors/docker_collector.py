@@ -13,6 +13,7 @@ import datetime
 import json
 import logging
 import os
+import re
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -29,6 +30,11 @@ DOCKER_API_VERSION = "v1.43"
 _INITIAL_BACKOFF = 1.0
 _MAX_BACKOFF = 60.0
 _BACKOFF_FACTOR = 2.0
+
+# Container log tailer backoff parameters
+_CONTAINER_INITIAL_BACKOFF = 1.0
+_CONTAINER_MAX_BACKOFF = 15.0
+_CONTAINER_BACKOFF_FACTOR = 2.0
 
 
 def _parse_docker_host() -> tuple[str, Optional[str]]:
@@ -102,6 +108,63 @@ def _parse_docker_log_line(raw_bytes: bytes) -> str:
 
     # Fallback: treat entire bytes as text (tty mode)
     return raw_bytes.decode("utf-8", errors="replace").rstrip("\n\r")
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+_SEVERITY_LEVEL_MAP = {
+    "emerg": 0,
+    "emergency": 0,
+    "alert": 1,
+    "crit": 2,
+    "critical": 2,
+    "fatal": 2,
+    "panic": 2,
+    "err": 3,
+    "error": 3,
+    "warn": 4,
+    "warning": 4,
+    "notice": 5,
+    "log": 6,
+    "info": 6,
+    "informational": 6,
+    "debug": 7,
+    "trace": 7,
+    "verbose": 7,
+}
+
+_RE_KV = re.compile(r"""\b(?:level|lvl|severity)\s*=\s*["']?([a-zA-Z]+)["']?""")
+_RE_JSON = re.compile(r"""["'](?:level|severity)["']\s*:\s*["']([a-zA-Z]+)["']""")
+_RE_BRACKET = re.compile(r"""\[\s*([a-zA-Z]+)\s*\]""")
+_RE_COLON = re.compile(r"""(?:^|[\s\]])([a-zA-Z]+):(?:\s|$)""")
+_RE_AFTER_TS = re.compile(r"""^(?:[0-9T:.,Z+-]{8,}|\w{3}\s+\d+\s+[0-9:]{8})(?:\s+[0-9:.,Z+-]+)?\s+\[?([a-zA-Z]+)\]?\b""")
+
+
+def _detect_severity(raw_line: str) -> int:
+    """
+    Detect log severity from line content, falling back to RFC Info (severity 6).
+    Inspects common log formats (logfmt, JSON, brackets, prefix: colon, timestamps)
+    without misinterpreting informational messages emitted on Docker stderr.
+    """
+    clean = _ANSI_ESCAPE_RE.sub("", raw_line).strip()
+    if not clean:
+        return 6
+
+    if clean.startswith("Traceback (most recent call last):") or clean.startswith("Exception:"):
+        return 3
+    if clean.startswith("panic:"):
+        return 2
+
+    header = clean[:200]
+
+    for regex in (_RE_KV, _RE_JSON, _RE_BRACKET, _RE_COLON, _RE_AFTER_TS):
+        m = regex.search(header)
+        if m:
+            lvl = m.group(1).lower()
+            if lvl in _SEVERITY_LEVEL_MAP:
+                return _SEVERITY_LEVEL_MAP[lvl]
+
+    return 6
 
 
 def _make_log_entry(
@@ -212,67 +275,91 @@ async def _tail_container_logs(
     except Exception:
         pass  # Default to multiplexed if inspect fails
 
-    try:
-        async with client.stream("GET", url, params=params) as resp:
-            resp.raise_for_status()
-            buffer = b""
-            async for chunk in resp.aiter_bytes():
-                if cancel_event.is_set():
-                    return
-                buffer += chunk
+    backoff = _CONTAINER_INITIAL_BACKOFF
+    while not cancel_event.is_set():
+        try:
+            async with client.stream("GET", url, params=params) as resp:
+                resp.raise_for_status()
+                backoff = _CONTAINER_INITIAL_BACKOFF
+                buffer = b""
+                async for chunk in resp.aiter_bytes():
+                    if cancel_event.is_set():
+                        return
+                    buffer += chunk
 
-                if is_tty:
-                    # TTY mode: raw text, split by newline
-                    while b"\n" in buffer:
-                        line_bytes, buffer = buffer.split(b"\n", 1)
-                        if not line_bytes:
-                            continue
-                        message = line_bytes.decode("utf-8", errors="replace").rstrip("\r")
-                        if message:
-                            entry = _make_log_entry(container_name, container_id, message)
-                            await assembler.feed(stream_key, entry)
-                else:
-                    # Multiplexed mode: 8-byte header + payload
-                    # Header: stream_type(1) + padding(3) + size(4 big-endian)
-                    while len(buffer) >= 8:
-                        # Peek at the header to get payload size
-                        stream_type = buffer[0]
-                        if stream_type not in (0, 1, 2):
-                            # Invalid stream type — likely corrupted or
-                            # actually a TTY stream despite inspect saying otherwise.
-                            # Fall back to newline-delimited parsing for remainder.
-                            is_tty = True
-                            break
-                        payload_size = int.from_bytes(buffer[4:8], "big")
-                        # Sanity-check payload size to avoid OOM on corrupt frames
-                        if payload_size > 16 * 1024 * 1024:  # 16 MB max
-                            logger.warning(
-                                f"Docker frame claims {payload_size} bytes for "
-                                f"{container_name} — dropping frame"
-                            )
-                            buffer = b""
-                            break
-                        frame_total = 8 + payload_size
-                        if len(buffer) < frame_total:
-                            # Need more data to complete this frame
-                            break
-                        payload = buffer[8:frame_total]
-                        buffer = buffer[frame_total:]
-                        # Each payload may contain multiple newline-terminated lines
-                        text = payload.decode("utf-8", errors="replace")
-                        for line in text.splitlines():
-                            line = line.rstrip("\r")
-                            if line:
-                                entry = _make_log_entry(container_name, container_id, line)
+                    if is_tty:
+                        # TTY mode: raw text, split by newline
+                        while b"\n" in buffer:
+                            line_bytes, buffer = buffer.split(b"\n", 1)
+                            if not line_bytes:
+                                continue
+                            message = line_bytes.decode("utf-8", errors="replace").rstrip("\r")
+                            if message:
+                                severity = _detect_severity(message)
+                                entry = _make_log_entry(container_name, container_id, message, severity=severity)
                                 await assembler.feed(stream_key, entry)
-    except httpx.RemoteProtocolError:
-        # Container stopped or connection reset
-        logger.debug(f"Log stream ended for container {container_name} ({container_id[:12]})")
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        if not cancel_event.is_set():
-            logger.warning(f"Log stream error for {container_name}: {e}")
+                    else:
+                        # Multiplexed mode: 8-byte header + payload
+                        # Header: stream_type(1) + padding(3) + size(4 big-endian)
+                        while len(buffer) >= 8:
+                            # Peek at the header to get payload size
+                            stream_type = buffer[0]
+                            if stream_type not in (0, 1, 2):
+                                # Invalid stream type — likely corrupted or
+                                # actually a TTY stream despite inspect saying otherwise.
+                                # Fall back to newline-delimited parsing for remainder.
+                                is_tty = True
+                                break
+                            payload_size = int.from_bytes(buffer[4:8], "big")
+                            # Sanity-check payload size to avoid OOM on corrupt frames
+                            if payload_size > 16 * 1024 * 1024:  # 16 MB max
+                                logger.warning(
+                                    f"Docker frame claims {payload_size} bytes for "
+                                    f"{container_name} — dropping frame"
+                                )
+                                buffer = b""
+                                break
+                            frame_total = 8 + payload_size
+                            if len(buffer) < frame_total:
+                                # Need more data to complete this frame
+                                break
+                            payload = buffer[8:frame_total]
+                            buffer = buffer[frame_total:]
+                            # Parse content-aware severity from line, defaulting to RFC Info (6)
+                            text = payload.decode("utf-8", errors="replace")
+                            for line in text.splitlines():
+                                line = line.rstrip("\r")
+                                if line:
+                                    severity = _detect_severity(line)
+                                    entry = _make_log_entry(
+                                        container_name, container_id, line, severity=severity
+                                    )
+                                    await assembler.feed(stream_key, entry)
+
+            # Stream ended normally (EOF)
+            if cancel_event.is_set():
+                return
+            logger.debug(
+                f"Log stream ended for container {container_name} ({container_id[:12]}); "
+                f"reconnecting in {backoff:.1f}s..."
+            )
+        except asyncio.CancelledError:
+            raise
+        except (httpx.RemoteProtocolError, httpx.HTTPError, Exception) as e:
+            if cancel_event.is_set():
+                return
+            logger.debug(
+                f"Log stream disconnected for {container_name} ({container_id[:12]}): {e}. "
+                f"Reconnecting in {backoff:.1f}s..."
+            )
+
+        try:
+            await asyncio.wait_for(cancel_event.wait(), timeout=backoff)
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        backoff = min(backoff * _CONTAINER_BACKOFF_FACTOR, _CONTAINER_MAX_BACKOFF)
 
 
 class DockerTailer:

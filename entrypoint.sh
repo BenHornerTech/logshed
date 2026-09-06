@@ -36,7 +36,9 @@ fi
 # Detect socket GID and grant appuser access
 if [ -S "$DOCKER_SOCKET_PATH" ] || [ -e "$DOCKER_SOCKET_PATH" ]; then
     DOCKER_GID=$(stat -c '%g' "$DOCKER_SOCKET_PATH" 2>/dev/null || stat -f '%g' "$DOCKER_SOCKET_PATH" 2>/dev/null)
-    if [ -n "$DOCKER_GID" ] && [ "$DOCKER_GID" != "0" ]; then
+    if [ "$DOCKER_GID" = "0" ]; then
+        usermod -aG root appuser 2>/dev/null || true
+    elif [ -n "$DOCKER_GID" ]; then
         if ! getent group "$DOCKER_GID" >/dev/null 2>&1; then
             groupadd -o -g "$DOCKER_GID" docker-sock-group 2>/dev/null || true
         fi
@@ -49,7 +51,10 @@ fi
 
 # Ensure /data exists and is owned by appuser
 mkdir -p /data
-chown -R appuser:appuser /data
+CURRENT_OWNER=$(stat -c '%u:%g' /data 2>/dev/null || stat -f '%u:%g' /data 2>/dev/null)
+if [ "$CURRENT_OWNER" != "$PUID:$PGID" ]; then
+    chown appuser:appuser /data 2>/dev/null || true
+fi
 
 # Default port
 PORT=${PORT:-8080}

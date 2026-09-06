@@ -6,7 +6,7 @@ WORKDIR /frontend
 
 # Install dependencies
 COPY frontend/package*.json ./
-RUN npm ci || npm install
+RUN npm ci
 
 # Copy frontend source and compile SPA (outputs to ../backend/app/static)
 COPY frontend/ ./
