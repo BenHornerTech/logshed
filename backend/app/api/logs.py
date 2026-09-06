@@ -67,19 +67,37 @@ def _format_fts_query(query_str: str) -> str:
         # Column filters: app_name:nginx or app_name:"web server"
         if ":" in token:
             col, val = token.split(":", 1)
-            if val.startswith(('"', "'")) or val.endswith("*") or not val:
+            if val.startswith(('"', "'")) or not val:
                 formatted_tokens.append(token)
+            elif val.endswith("*"):
+                core = val[:-1]
+                clean_core = core.replace('"', '""')
+                if "." in clean_core:
+                    formatted_tokens.append(f'{col}:"{clean_core}"*')
+                else:
+                    formatted_tokens.append(f"{col}:{clean_core}*")
             else:
                 clean_val = val.replace('"', '""')
-                formatted_tokens.append(f"{col}:{clean_val}*")
+                if "." in clean_val:
+                    formatted_tokens.append(f'{col}:"{clean_val}"*')
+                else:
+                    formatted_tokens.append(f"{col}:{clean_val}*")
             continue
 
         # Regular word token: append wildcard if not already present
         if token.endswith("*"):
-            formatted_tokens.append(token)
+            core = token[:-1]
+            clean_core = core.replace('"', '""')
+            if "." in clean_core:
+                formatted_tokens.append(f'"{clean_core}"*')
+            else:
+                formatted_tokens.append(f"{clean_core}*")
         else:
             clean_token = token.replace('"', '""')
-            formatted_tokens.append(f"{clean_token}*")
+            if "." in clean_token:
+                formatted_tokens.append(f'"{clean_token}"*')
+            else:
+                formatted_tokens.append(f"{clean_token}*")
 
     return " ".join(formatted_tokens)
 
@@ -177,8 +195,10 @@ async def list_logs(
 
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-        # Total count query
-        count_sql = f"SELECT COUNT(*) FROM {from_table} {where_sql}"
+        # Total count query: cap count evaluation to avoid full table scans on broad queries
+        count_limit = max(1001, offset + limit + 1)
+        params["count_limit"] = count_limit
+        count_sql = f"SELECT COUNT(*) FROM (SELECT 1 FROM {from_table} {where_sql} LIMIT :count_limit)"
         # Log selection query
         select_sql = f"""
             SELECT logs.id, logs.timestamp, logs.received_at, logs.source_ip, logs.source_alias,
@@ -306,14 +326,26 @@ async def get_log_facets(
     """
     def _fetch_facets(conn):
         cursor = conn.cursor()
+        # Query distinct facets restricted to recent logs to avoid full table scan across millions of historical rows
         cursor.execute(
             """
             SELECT DISTINCT source_alias, source_ip, app_name
             FROM logs
-            WHERE (source_alias != '' OR source_ip != '') AND app_name != ''
+            WHERE timestamp >= datetime('now', '-7 days')
+              AND (source_alias != '' OR source_ip != '')
+              AND app_name != ''
             """
         )
         rows = cursor.fetchall()
+        if not rows:
+            cursor.execute(
+                """
+                SELECT DISTINCT source_alias, source_ip, app_name
+                FROM logs
+                WHERE (source_alias != '' OR source_ip != '') AND app_name != ''
+                """
+            )
+            rows = cursor.fetchall()
 
         cursor.execute("SELECT ip, alias FROM host_aliases")
         alias_rows = cursor.fetchall()

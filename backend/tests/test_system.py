@@ -410,6 +410,21 @@ class TestSystemHealthcheck:
         assert isinstance(data["ingest_rate"], (int, float))
         assert data["ingest_rate"] >= 0.0
 
+    @pytest.mark.asyncio
+    async def test_health_check_database_failure_returns_503(self, client: AsyncClient, monkeypatch):
+        from app.api import system as system_mod
+
+        async def failing_db_query(func):
+            raise sqlite3.OperationalError("database is locked or disk error")
+
+        monkeypatch.setattr(system_mod, "run_db_query", failing_db_query)
+
+        res = await client.get("/api/health")
+        assert res.status_code == 503
+        data = res.json()
+        assert data["status"] == "degraded"
+        assert data["db"] == "error"
+
 
 # ===================================================================
 # 4. Settings Encryption & Key Management

@@ -248,6 +248,41 @@ class TestLogQuerying:
         assert res_bad.status_code == 200
         assert res_bad.json()["total"] == 1
 
+    @pytest.mark.asyncio
+    async def test_fts_queries_with_dots_and_ip_addresses(
+        self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
+    ):
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+
+        entries = [
+            ("2026-08-30T10:00:00Z", "2026-08-30T10:00:01Z", "192.168.1.1", "gw-router", "nginx", 1, 3, "Incoming request from 192.168.1.1 accepted", "<11>nginx: Incoming request from 192.168.1.1 accepted"),
+            ("2026-08-30T10:01:00Z", "2026-08-30T10:01:01Z", "10.0.0.1", "backend-srv", "nginx", 1, 3, "Proxy pass to 10.0.0.1 failed", "<11>nginx: Proxy pass to 10.0.0.1 failed"),
+            ("2026-08-30T10:02:00Z", "2026-08-30T10:02:01Z", "10.0.0.2", "auth-srv", "auth", 1, 2, "User login from 10.0.0.1 authenticated", "<10>auth: User login from 10.0.0.1 authenticated"),
+        ]
+        with get_connection(db_file) as conn:
+            conn.executemany(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                entries,
+            )
+            conn.commit()
+
+        # 1. Search for IP address with dots (e.g. 192.168.1.1)
+        res_ip = await client.get("/api/logs", params={"query": "192.168.1.1"})
+        assert res_ip.status_code == 200
+        data_ip = res_ip.json()
+        assert data_ip["total"] == 1
+        assert "192.168.1.1" in data_ip["logs"][0]["message"]
+
+        # 2. Search for column filter and IP address (e.g. app_name:nginx AND 10.0.0.1)
+        res_col_and_ip = await client.get("/api/logs", params={"query": "app_name:nginx AND 10.0.0.1"})
+        assert res_col_and_ip.status_code == 200
+        data_col_and_ip = res_col_and_ip.json()
+        assert data_col_and_ip["total"] == 1
+        assert data_col_and_ip["logs"][0]["app_name"] == "nginx"
+        assert "10.0.0.1" in data_col_and_ip["logs"][0]["message"]
+
 
 # ===================================================================
 # 2. Surrounding Context

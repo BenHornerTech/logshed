@@ -287,7 +287,7 @@ python -m app.cli reset-admin --password <new_password>
 * **Settings & Audit Panel:**
   * Encrypted API key management (Google Gemini, OpenAI / custom OpenAI-compatible endpoint like Ollama/vLLM).
   * **Storage & Retention Dashboard:**
-    * Log retention slider (1–30 days) with manual `"Prune & Vacuum Now"` trigger.
+    * Log retention slider (1–365 days, default 30 days; retention up to 365 days is permitted as long as the homelab user accepts performance considerations for larger database footprint and query latency) with manual `"Prune & Vacuum Now"` trigger.
     * **Current Storage Card:** Dual-metric display showing active Database Footprint (MB/GB) alongside a visual progress bar for Available Mount Disk Space.
     * **30-Day Storage Trend Chart:** Compact line/area chart (via `recharts` or lightweight SVG) plotting DB disk footprint and total log volume over the past 30 days.
     * Real-time optimistic UI update on manual prune/vacuum showing immediate reclaimed space.
