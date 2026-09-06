@@ -104,7 +104,11 @@ CREATE TABLE ai_audit_log (
     model TEXT NOT NULL,
     prompt_sent TEXT NOT NULL,
     response_text TEXT NOT NULL,
-    tokens_used INTEGER NOT NULL DEFAULT 0
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    tokens_thoughts INTEGER NOT NULL DEFAULT 0,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    system_prompt TEXT
 );
 
 CREATE TABLE admin_auth (
@@ -225,11 +229,14 @@ python -m app.cli reset-admin --password <new_password>
 | **Log Management** |  |  |  |
 | `GET` | `/api/logs` | Search & filter logs. Severity filter follows RFC 5424 numeric ordering directly, where lower numbers are more severe (`WHERE severity <= :severity_max`, e.g., `severity_max=3` returns Emergency(0) through Error(3)) | `query`, `severity_max` (0-7), `app_name`, `source`, `from`, `to`, `limit`, `offset` |
 | `GET` | `/api/logs/stream` | Real-time Server-Sent Events (SSE) | `severity_max`, `source`, `app_name` |
-| `GET` | `/api/logs/{id}/context` | Fetch surrounding context lines scoped to the same `source_alias` and `app_name` | Query param: `lines=10` |
+| `GET` | `/api/logs/facets` | Fetch all distinct sources, apps, and their mappings | None |
+| `GET` | `/api/logs/{id}/context` | Fetch surrounding context lines scoped to the same `source_alias` and `app_name` | Query params: `lines=10`, `same_app: bool` |
 | **On-Demand AI Engine** |  |  |  |
 | `POST` | `/api/ai/preview` | Generate redacted preview and token estimate | `{"log_ids": [101, 102]}` |
 | `POST` | `/api/ai/diagnose` | Execute user-confirmed AI diagnosis | `{"log_ids": [101, 102], "user_context": "...", "provider": "gemini|openai", "model": "..."}` |
 | `GET` | `/api/ai/audit` | Fetch historical AI queries & token usage | Query params: `limit`, `offset` |
+| `DELETE` | `/api/ai/audit/{audit_id}` | Delete a single AI audit record | None |
+| `DELETE` | `/api/ai/audit` | Clear all AI audit records | None |
 | **Host Aliases** |  |  |  |
 | `GET` | `/api/aliases` | List IP-to-Host mappings | None |
 | `POST` | `/api/aliases` | Upsert host alias mapping | `{"ip": "...", "alias": "...", "notes": "..."}` |

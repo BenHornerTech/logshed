@@ -12,7 +12,7 @@ A lightweight, self-hosted homelab log aggregator and syslog server featuring re
   - **Docker Engine API**: Direct container tailing via local Unix socket (`/var/run/docker.sock`) or remote Docker host / proxy (`tcp://<host>:2375`) without external Docker SDK bloat.
 - **Keyed Multiline Assembly**: Assembles stack traces, tracebacks, and multiline logs cleanly on a per-stream basis.
 - **Fast Full-Text Search**: Instant search and filtering across hosts, containers, severity levels, and time windows.
-- **On-Demand AI Analysis**: User-initiated troubleshooting powered by your choice of LLM (OpenAI, Google Gemini, Ollama, LocalAI, etc.) with automatic client-side credential redaction before dispatch.
+- **On-Demand AI Analysis**: User-initiated troubleshooting powered by your choice of LLM (OpenAI, Google Gemini, Ollama, LocalAI, etc.) with automatic **server-side** credential redaction before dispatch.
 - **Configurable Retention**: Automated background pruning with SQLite page vacuuming and storage trend metrics. Supports 1 to 365 days of retention (default: 30 days).
 
 ---

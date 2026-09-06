@@ -99,7 +99,7 @@ async def preview_ai_prompt(
 ) -> AiPreviewResponse:
     """
     Generate a redacted preview of selected logs with token estimation.
-    Enforces that all selected logs belong to the exact same host alias and IP.
+    Supports single or multi-host log selections.
     Makes NO outbound LLM calls.
     """
     if len(req.log_ids) > 200:
