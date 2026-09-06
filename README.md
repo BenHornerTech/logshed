@@ -13,7 +13,7 @@ A lightweight, self-hosted homelab log aggregator and syslog server featuring re
 - **Keyed Multiline Assembly**: Assembles stack traces, tracebacks, and multiline logs cleanly on a per-stream basis.
 - **Fast Full-Text Search**: Instant search and filtering across hosts, containers, severity levels, and time windows.
 - **On-Demand AI Analysis**: User-initiated troubleshooting powered by your choice of LLM (OpenAI, Google Gemini, Ollama, LocalAI, etc.) with automatic client-side credential redaction before dispatch.
-- **Configurable Retention**: Automated background pruning with SQLite page vacuuming and storage trend metrics.
+- **Configurable Retention**: Automated background pruning with SQLite page vacuuming and storage trend metrics. Supports 1 to 365 days of retention (default: 30 days).
 
 ---
 
@@ -83,6 +83,8 @@ The following environment variables are supplied at container boot:
 | `LOGSHED_SECRET_KEY` | *(auto-generated)* | 32-byte URL-safe base64 key for encrypting runtime settings at rest. |
 
 > **Note**: Sensitive credentials (such as LLM API keys) and retention policies are configured entirely at runtime in the **Settings** panel within the web interface, encrypted at rest using AES-128-CBC / HMAC-SHA256 (Fernet).
+>
+> **Log Retention Disclaimer**: Retention is configurable between 1 and 365 days (default: 30 days). While extending retention up to 365 days is permitted, homelab users should consider hardware and performance implications: storing up to a year of logs substantially increases the SQLite database disk footprint and may increase query latencies on resource-constrained homelab hardware (such as Raspberry Pis or low-power mini PCs).
 
 ---
 
