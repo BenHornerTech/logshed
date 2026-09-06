@@ -10,7 +10,7 @@ A lightweight, self-hosted homelab log aggregator and syslog server featuring re
 - **Dual Ingestion**:
   - **Syslog**: Async UDP & TCP on port `1514` supporting RFC 3164 and RFC 5424 formats with automatic client IP tagging and hostname resolution.
   - **Docker Engine API**: Direct container tailing via local Unix socket (`/var/run/docker.sock`) or remote Docker host / proxy (`tcp://<host>:2375`) without external Docker SDK bloat.
-- **Keyed Multiline Assembly**: Assembles stack traces, tracebacks, and multiline logs cleanly on a per-stream basis.
+- **Keyed Multiline Assembly & Raw Log Fidelity**: Assembles stack traces, tracebacks, and multiline logs cleanly on a per-stream basis while preserving original raw message payloads.
 - **Fast Full-Text Search**: Instant search and filtering across hosts, containers, severity levels, and time windows.
 - **On-Demand AI Analysis**: User-initiated troubleshooting powered by your choice of LLM (OpenAI, Google Gemini, Ollama, LocalAI, etc.) with automatic **server-side** credential redaction before dispatch.
 - **Configurable Retention**: Automated background pruning with SQLite page vacuuming and storage trend metrics. Supports 1 to 365 days of retention (default: 30 days).
@@ -87,6 +87,8 @@ The following environment variables are supplied at container boot:
 > **Log Retention Disclaimer**: Retention is configurable between 1 and 365 days (default: 30 days). While extending retention up to 365 days is permitted, homelab users should consider hardware and performance implications: storing up to a year of logs substantially increases the SQLite database disk footprint and may increase query latencies on resource-constrained homelab hardware (such as Raspberry Pis or low-power mini PCs).
 >
 > **Log Redaction & AI Notice**: LogShed includes automatic server-side scrubbing to redact common secrets (passwords, bearer tokens, API keys, private keys, and connection strings) before dispatching prompts to LLM providers. However, automated credential scrubbing operates on a best-effort basis and may not catch every sensitive token or secret. Please review the editable prompt in the UI before sending—you are responsible for the contents and sensitive data you transmit to external AI providers.
+>
+> **Raw Logs & Timestamp Presentation**: In the LogShed console, every log row displays a dedicated timestamp column reflecting the arrival time or parsed syslog packet header time. Inside the log message payload itself, you may notice that some logs display an embedded application timestamp while others do not. This is by design: LogShed's goal is to preserve and display raw, authentic log messages. We intentionally avoid aggressive or destructive regex stripping of message bodies, as attempting to strip timestamps from raw lines risks corrupting custom log formats or messing up multiline splitting and stack trace reassembly.
 
 ---
 
