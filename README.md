@@ -85,6 +85,8 @@ The following environment variables are supplied at container boot:
 > **Note**: Sensitive credentials (such as LLM API keys) and retention policies are configured entirely at runtime in the **Settings** panel within the web interface, encrypted at rest using AES-128-CBC / HMAC-SHA256 (Fernet).
 >
 > **Log Retention Disclaimer**: Retention is configurable between 1 and 365 days (default: 30 days). While extending retention up to 365 days is permitted, homelab users should consider hardware and performance implications: storing up to a year of logs substantially increases the SQLite database disk footprint and may increase query latencies on resource-constrained homelab hardware (such as Raspberry Pis or low-power mini PCs).
+>
+> **Log Redaction & AI Notice**: LogShed includes automatic server-side scrubbing to redact common secrets (passwords, bearer tokens, API keys, private keys, and connection strings) before dispatching prompts to LLM providers. However, automated credential scrubbing operates on a best-effort basis and may not catch every sensitive token or secret. Please review the editable prompt in the UI before sending—you are responsible for the contents and sensitive data you transmit to external AI providers.
 
 ---
 

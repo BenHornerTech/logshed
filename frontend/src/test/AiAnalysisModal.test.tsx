@@ -150,6 +150,29 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     expect(screen.getByText(disclaimerText)).toBeInTheDocument();
   });
 
+  it('renders the log redaction notice reminding the user of their responsibility', async () => {
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    await screen.findByPlaceholderText('Redacted prompt...');
+
+    expect(screen.getByText('Redaction Notice:')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Automated credential scrubbing operates on a best-effort basis/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Please review the prompt above before sending/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/you are responsible for the contents and sensitive data you transmit to external AI providers/i)
+    ).toBeInTheDocument();
+  });
+
   it('dispatches prompt_override to diagnoseLogs when prompt was edited by operator', async () => {
     render(
       <AiAnalysisModal
