@@ -7,13 +7,17 @@ import datetime
 import logging
 import os
 from unittest.mock import patch
+import socket
 import pytest
 import httpx
 
 from app.core.pipeline import KeyedMultilineAssembler
 from app.collectors.docker_collector import (
     DockerTailer,
+    _build_client,
+    _demux_stream,
     _detect_severity,
+    _extract_docker_timestamp,
     _make_log_entry,
     _parse_docker_host,
     _parse_docker_log_line,
@@ -564,3 +568,1065 @@ class TestDetectSeverity:
         assert _detect_severity("Server configuration was transferred successfully.") == 6
         assert _detect_severity("DHCP Server leased IP 172.22.2.161 to Wii") == 6
         assert _detect_severity("") == 6
+
+
+# ===================================================================
+# 7. Accurate Resume on Docker Reconnect (Item 2)
+# ===================================================================
+
+class TestDockerTimestampAndAccurateResume:
+
+    def test_extract_docker_timestamp_rfc3339_nanoseconds(self):
+        """Extract RFC3339 nano timestamp and strip message cleanly."""
+        raw = "2026-09-07T10:15:30.123456789Z Service started on port 8080"
+        ts, msg = _extract_docker_timestamp(raw)
+        assert ts == "2026-09-07T10:15:30.123456789Z"
+        assert msg == "Service started on port 8080"
+
+    def test_extract_docker_timestamp_offset_and_empty_msg(self):
+        """Extract timestamp with timezone offset and handle empty message."""
+        raw = "2026-09-07T10:15:30.500+02:00 "
+        ts, msg = _extract_docker_timestamp(raw)
+        assert ts == "2026-09-07T10:15:30.500+02:00"
+        assert msg == ""
+
+        # Timestamp only, no trailing space
+        raw2 = "2026-09-07T10:15:30Z"
+        ts2, msg2 = _extract_docker_timestamp(raw2)
+        assert ts2 == "2026-09-07T10:15:30Z"
+        assert msg2 == ""
+
+    def test_extract_docker_timestamp_non_matching(self):
+        """Lines without Docker timestamp prefix are returned intact with ts=None."""
+        raw = "Ordinary log line without timestamp"
+        ts, msg = _extract_docker_timestamp(raw)
+        assert ts is None
+        assert msg == "Ordinary log line without timestamp"
+
+    def test_make_log_entry_custom_timestamp(self):
+        """_make_log_entry should preserve provided timestamp."""
+        ts = "2026-09-07T10:15:30.123456789Z"
+        entry = _make_log_entry("nginx", "c123", "Worker process started", severity=6, timestamp=ts)
+        assert entry["timestamp"] == ts
+        assert entry["message"] == "Worker process started"
+        assert entry["raw"] == "Worker process started"
+
+    @pytest.mark.asyncio
+    async def test_initial_attach_uses_tail_0_and_timestamps_true(self):
+        """Initial attach queries /logs with timestamps=true and tail=0, without since."""
+        assembler = KeyedMultilineAssembler()
+        cancel_event = asyncio.Event()
+        captured_params = []
+
+        class MockResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                cancel_event.set()
+                if False:
+                    yield b""
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+
+            def stream(self, method, url, **kwargs):
+                captured_params.append(kwargs.get("params", {}))
+                return MockResp()
+
+        client = MockClient()
+        await _tail_container_logs(
+            client,
+            "cid_init",
+            "app_init",
+            assembler,
+            cancel_event,
+        )
+
+        assert len(captured_params) >= 1
+        params = captured_params[0]
+        assert params.get("timestamps") == "true"
+        assert params.get("tail") == "0"
+        assert "since" not in params
+
+    @pytest.mark.asyncio
+    async def test_reconnect_resumes_with_since_last_seen_timestamp(self, monkeypatch):
+        """When reconnecting after disconnect, queries with since=<last_seen> instead of tail=0."""
+        monkeypatch.setattr("app.collectors.docker_collector._CONTAINER_INITIAL_BACKOFF", 0.01)
+        assembler = KeyedMultilineAssembler()
+        entries = []
+        captured_params = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        cancel_event = asyncio.Event()
+        call_count = 0
+
+        ts1 = "2026-09-07T10:15:30.100000000Z"
+        msg1 = f"{ts1} First line before drop\n".encode("utf-8")
+        frame1 = bytes([1, 0, 0, 0]) + len(msg1).to_bytes(4, "big") + msg1
+
+        ts2 = "2026-09-07T10:15:32.200000000Z"
+        msg2 = f"{ts2} Second line after resume\n".encode("utf-8")
+        frame2 = bytes([1, 0, 0, 0]) + len(msg2).to_bytes(4, "big") + msg2
+
+        class MockResp1:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield frame1
+                # Transient network reset
+                raise httpx.RemoteProtocolError("Connection reset")
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockResp2:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield frame2
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+
+            def stream(self, method, url, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                captured_params.append(kwargs.get("params", {}).copy())
+                if call_count == 1:
+                    return MockResp1()
+                return MockResp2()
+
+        last_seen_map = {}
+        client = MockClient()
+        await _tail_container_logs(
+            client,
+            "cid_resume",
+            "app_resume",
+            assembler,
+            cancel_event,
+            container_last_seen=last_seen_map,
+        )
+
+        assert call_count == 2
+        # First call: initial attach with tail=0
+        assert captured_params[0]["tail"] == "0"
+        assert "since" not in captured_params[0]
+
+        # Second call: reconnected with since as Unix epoch seconds and NO tail=0
+        dt1 = datetime.datetime.fromisoformat(ts1.replace("Z", "+00:00"))
+        assert captured_params[1]["since"] == str(int(dt1.timestamp()))
+        assert "tail" not in captured_params[1]
+        assert captured_params[1]["timestamps"] == "true"
+
+        # Both entries parsed, messages stripped cleanly
+        assert len(entries) == 2
+        assert entries[0]["message"] == "First line before drop"
+        assert entries[0]["timestamp"] == ts1
+        assert entries[1]["message"] == "Second line after resume"
+        assert entries[1]["timestamp"] == ts2
+
+        # Memory tracker updated
+        assert last_seen_map["cid_resume"] == ts2
+
+    @pytest.mark.asyncio
+    async def test_reconnect_since_http_400_resets_and_falls_back_to_tail_0(self, monkeypatch):
+        """If Docker daemon rejects since parameter with 400, falls back to tail=0 and clears timestamp."""
+        monkeypatch.setattr("app.collectors.docker_collector._CONTAINER_INITIAL_BACKOFF", 0.01)
+        assembler = KeyedMultilineAssembler()
+        cancel_event = asyncio.Event()
+        captured_params = []
+        call_count = 0
+
+        ts1 = "2026-09-07T10:15:32.200000000Z"
+        msg1 = f"{ts1} Line after fallback\n".encode("utf-8")
+        frame1 = bytes([1, 0, 0, 0]) + len(msg1).to_bytes(4, "big") + msg1
+
+        class MockResp400:
+            status_code = 400
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockResp200:
+            status_code = 200
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield frame1
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+
+            def stream(self, method, url, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                captured_params.append(kwargs.get("params", {}))
+                if call_count == 1:
+                    return MockResp400()
+                return MockResp200()
+
+        last_seen_map = {"cid_400": "2026-09-07T10:15:30.100000000Z"}
+        client = MockClient()
+        await _tail_container_logs(
+            client,
+            "cid_400",
+            "app_400",
+            assembler,
+            cancel_event,
+            container_last_seen=last_seen_map,
+        )
+
+        assert call_count == 2
+        # First call: attempted since
+        assert "since" in captured_params[0]
+        # Second call: fell back to tail=0
+        assert captured_params[1]["tail"] == "0"
+        assert "since" not in captured_params[1]
+        assert "cid_400" not in last_seen_map or last_seen_map["cid_400"] == ts1
+
+    @pytest.mark.asyncio
+    async def test_multiline_continuation_with_docker_timestamps(self):
+        """Multi-line exceptions with Docker timestamps on each line assemble correctly."""
+        assembler = KeyedMultilineAssembler()
+        queued_entries = []
+
+        with patch("app.core.pipeline.get_queue") as mock_get_q:
+            class DummyQ:
+                def put_nowait(self, item):
+                    queued_entries.append(item)
+            mock_get_q.return_value = DummyQ()
+
+            ts1 = "2026-09-07T10:15:30.100000000Z"
+            ts2 = "2026-09-07T10:15:30.101000000Z"
+            line1 = f"{ts1} Exception: connection failure\n".encode("utf-8")
+            line2 = f"{ts2}     at com.example.Db.connect(Db.java:10)\n".encode("utf-8")
+            frame = bytes([2, 0, 0, 0]) + len(line1 + line2).to_bytes(4, "big") + line1 + line2
+
+            cancel_event = asyncio.Event()
+
+            class MockResp:
+                def raise_for_status(self):
+                    pass
+                async def aiter_bytes(self):
+                    yield frame
+                    cancel_event.set()
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *args):
+                    pass
+
+            class MockClient:
+                async def get(self, url, **kwargs):
+                    class InspectResp:
+                        status_code = 200
+                        def json(self):
+                            return {"Config": {"Tty": False}}
+                    return InspectResp()
+                def stream(self, method, url, **kwargs):
+                    return MockResp()
+
+            await _tail_container_logs(
+                MockClient(),
+                "cid_trace",
+                "app_trace",
+                assembler,
+                cancel_event,
+            )
+
+            # Flush the assembler
+            await asyncio.sleep(0.2)
+            assert len(queued_entries) == 1
+            entry = queued_entries[0]
+            assert "Exception: connection failure" in entry["message"]
+            assert "    at com.example.Db.connect(Db.java:10)" in entry["message"]
+            # Timestamp prefix should NOT be present in the message
+            assert ts1 not in entry["message"]
+            assert ts2 not in entry["message"]
+
+
+# ===================================================================
+# 8. Remote TCP Keepalive & Read Timeout / Liveness (Item 5)
+# ===================================================================
+
+class TestDockerTcpKeepaliveAndLiveness:
+
+    def test_build_client_tcp_keepalive_socket_options(self):
+        """_build_client configures SO_KEEPALIVE on remote TCP hosts without UDS."""
+        client = _build_client("http://docker-proxy:2375/v1.43", uds_path=None)
+        assert client._transport is not None
+        socket_opts = getattr(client._transport._pool, "_socket_options", None)
+        assert socket_opts is not None
+        # Check that SOL_SOCKET SO_KEEPALIVE is present in socket_opts
+        has_keepalive = any(
+            opt[0] == socket.SOL_SOCKET and opt[1] == socket.SO_KEEPALIVE and opt[2] == 1
+            for opt in socket_opts
+        )
+        assert has_keepalive is True
+
+    def test_build_client_uds_does_not_set_tcp_options(self):
+        """_build_client for Unix domain socket does not set TCP keepalives."""
+        client = _build_client("http://localhost/v1.43", uds_path="/var/run/docker.sock")
+        socket_opts = getattr(client._transport._pool, "_socket_options", None)
+        assert socket_opts is None
+
+    def test_build_client_read_timeout_and_env(self, monkeypatch):
+        """_build_client respects explicit read_timeout and DOCKER_READ_TIMEOUT env var."""
+        # Explicit read_timeout
+        client1 = _build_client("http://proxy:2375/v1.43", uds_path=None, read_timeout=12.5)
+        assert client1.timeout.read == 12.5
+
+        # From env var
+        monkeypatch.setenv("DOCKER_READ_TIMEOUT", "45.0")
+        client2 = _build_client("http://proxy:2375/v1.43", uds_path=None)
+        assert client2.timeout.read == 45.0
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_detects_half_open_connection_and_reconnects(self, monkeypatch, caplog):
+        """When no bytes arrive and Docker ping fails, heartbeat raises ReadTimeout and reconnects."""
+        caplog.set_level(logging.WARNING)
+        monkeypatch.setattr("app.collectors.docker_collector._CONTAINER_INITIAL_BACKOFF", 0.01)
+        assembler = KeyedMultilineAssembler()
+        cancel_event = asyncio.Event()
+        attempts = 0
+
+        class MockHungResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                # Hangs indefinitely simulating half-open TCP socket
+                await asyncio.sleep(10)
+                if False:
+                    yield b""
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockNormalResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                msg = b"Recovered after dead connection\n"
+                frame = bytes([1, 0, 0, 0]) + len(msg).to_bytes(4, "big") + msg
+                yield frame
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                if url == "/_ping":
+                    # Simulate proxy unreachable
+                    raise httpx.ConnectError("Connection to docker-socket-proxy timed out")
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+
+            def stream(self, method, url, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    return MockHungResp()
+                return MockNormalResp()
+
+        # Run with short heartbeat interval of 0.05s
+        await _tail_container_logs(
+            MockClient(),
+            "cid_dead",
+            "app_dead",
+            assembler,
+            cancel_event,
+            heartbeat_interval=0.05,
+        )
+
+        assert attempts == 2
+        assert "Docker keepalive heartbeat failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_idle_container_with_healthy_ping_remains_connected(self):
+        """When container is quiet but ping succeeds, heartbeat does not disconnect."""
+        assembler = KeyedMultilineAssembler()
+        cancel_event = asyncio.Event()
+        ping_count = 0
+
+        class MockQuietResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                # Idle for 0.12s, then yields 1 log and completes
+                await asyncio.sleep(0.12)
+                msg = b"Log after silence\n"
+                frame = bytes([1, 0, 0, 0]) + len(msg).to_bytes(4, "big") + msg
+                yield frame
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                nonlocal ping_count
+                if url == "/_ping":
+                    ping_count += 1
+                    class PingResp:
+                        status_code = 200
+                    return PingResp()
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+
+            def stream(self, method, url, **kwargs):
+                return MockQuietResp()
+
+        # Heartbeat every 0.04s, so ~2 pings occur during 0.12s silence
+        await _tail_container_logs(
+            MockClient(),
+            "cid_quiet",
+            "app_quiet",
+            assembler,
+            cancel_event,
+            heartbeat_interval=0.04,
+        )
+
+        assert ping_count >= 1
+        assert cancel_event.is_set()
+
+
+# ===================================================================
+# 9. Multiplexed Stream Frame Resync (Item 13)
+# ===================================================================
+
+class TestDockerDemuxFrameResync:
+
+    def test_demux_stream_valid_frames(self):
+        """Parse sequential stdout and stderr frames cleanly."""
+        msg1 = b"stdout message"
+        frame1 = bytes([1, 0, 0, 0]) + len(msg1).to_bytes(4, "big") + msg1
+        msg2 = b"stderr error details"
+        frame2 = bytes([2, 0, 0, 0]) + len(msg2).to_bytes(4, "big") + msg2
+
+        frames, remaining = _demux_stream(frame1 + frame2)
+        assert len(frames) == 2
+        assert frames[0] == (1, msg1)
+        assert frames[1] == (2, msg2)
+        assert remaining == b""
+
+    def test_demux_stream_corrupted_stream_type_resyncs(self, caplog):
+        """Corrupted stream type byte is skipped with warning, recovering valid frame."""
+        caplog.set_level(logging.WARNING)
+        valid_msg = b"recovered frame"
+        valid_frame = bytes([1, 0, 0, 0]) + len(valid_msg).to_bytes(4, "big") + valid_msg
+
+        corrupted_buffer = b"\x99\xff\xee" + valid_frame
+        frames, remaining = _demux_stream(corrupted_buffer)
+
+        assert len(frames) == 1
+        assert frames[0] == (1, valid_msg)
+        assert remaining == b""
+        assert "unexpected header (stream_type=153)" in caplog.text
+
+    def test_demux_stream_corrupted_padding_resyncs(self, caplog):
+        """Invalid padding bytes (non-zero) are skipped to resync."""
+        caplog.set_level(logging.WARNING)
+        valid_msg = b"clean frame"
+        valid_frame = bytes([2, 0, 0, 0]) + len(valid_msg).to_bytes(4, "big") + valid_msg
+
+        # stream_type is 1, but padding is 0x05, 0x00, 0x00
+        bad_header = b"\x01\x05\x00\x00\x00\x00\x00\x04test"
+        corrupted_buffer = bad_header + valid_frame
+
+        frames, remaining = _demux_stream(corrupted_buffer)
+        assert len(frames) == 1
+        assert frames[0] == (2, valid_msg)
+        assert remaining == b""
+
+    def test_demux_stream_invalid_huge_payload_resyncs(self, caplog):
+        """Payload claims > 16MB; discarded to avoid OOM and resyncs to next frame."""
+        caplog.set_level(logging.WARNING)
+        valid_msg = b"normal frame"
+        valid_frame = bytes([1, 0, 0, 0]) + len(valid_msg).to_bytes(4, "big") + valid_msg
+
+        # Frame claiming 50 MB
+        huge_header = bytes([1, 0, 0, 0]) + (50 * 1024 * 1024).to_bytes(4, "big")
+        corrupted_buffer = huge_header + valid_frame
+
+        frames, remaining = _demux_stream(corrupted_buffer)
+        assert len(frames) == 1
+        assert frames[0] == (1, valid_msg)
+        assert remaining == b""
+        assert "invalid payload size 52428800" in caplog.text
+
+    def test_demux_stream_partial_frame_buffering(self):
+        """Partial frame header or payload is buffered until complete."""
+        msg = b"buffered payload message"
+        full_frame = bytes([1, 0, 0, 0]) + len(msg).to_bytes(4, "big") + msg
+
+        # Feed first 4 bytes (partial header)
+        frames1, rem1 = _demux_stream(full_frame[:4])
+        assert len(frames1) == 0
+        assert rem1 == full_frame[:4]
+
+        # Feed remaining bytes
+        frames2, rem2 = _demux_stream(rem1 + full_frame[4:])
+        assert len(frames2) == 1
+        assert frames2[0] == (1, msg)
+        assert rem2 == b""
+
+    @pytest.mark.asyncio
+    async def test_corrupted_frame_does_not_mutate_is_tty(self):
+        """Corrupt frame header in _tail_container_logs does not permanently mutate is_tty to True."""
+        assembler = KeyedMultilineAssembler()
+        entries = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        cancel_event = asyncio.Event()
+
+        # Corrupted byte followed by valid frame 1, then another valid frame 2
+        msg1 = b"Frame 1 after corruption\n"
+        frame1 = bytes([1, 0, 0, 0]) + len(msg1).to_bytes(4, "big") + msg1
+        msg2 = b"Frame 2 multiplexed intact\n"
+        frame2 = bytes([2, 0, 0, 0]) + len(msg2).to_bytes(4, "big") + msg2
+
+        payload = b"\xde\xad\xbe\xef" + frame1 + frame2
+
+        class MockResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield payload
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockResp()
+
+        await _tail_container_logs(
+            MockClient(),
+            "cid_resync",
+            "app_resync",
+            assembler,
+            cancel_event,
+        )
+
+        # Both frames should be successfully extracted despite corruption at byte 0
+        assert len(entries) == 2
+        assert entries[0]["message"] == "Frame 1 after corruption"
+        assert entries[1]["message"] == "Frame 2 multiplexed intact"
+
+    def test_demux_stream_multiple_corruptions_between_valid_frames(self):
+        """Corrupted bytes between two valid frames are cleanly skipped."""
+        msg1 = b"First valid"
+        frame1 = bytes([1, 0, 0, 0]) + len(msg1).to_bytes(4, "big") + msg1
+        msg2 = b"Second valid"
+        frame2 = bytes([2, 0, 0, 0]) + len(msg2).to_bytes(4, "big") + msg2
+
+        garbage = b"\x00\x03\x99\xff\xee\x12\x34\x56\x78\x9a"
+        frames, remaining = _demux_stream(frame1 + garbage + frame2)
+
+        assert len(frames) == 2
+        assert frames[0] == (1, msg1)
+        assert frames[1] == (2, msg2)
+        assert remaining == b""
+
+    def test_extract_docker_timestamp_subsecond_variations(self):
+        """Handle 0, 3, 6, and 9 subsecond decimal variations."""
+        for ts_in in [
+            "2026-09-07T10:15:30Z",
+            "2026-09-07T10:15:30.123Z",
+            "2026-09-07T10:15:30.123456Z",
+            "2026-09-07T10:15:30.123456789Z",
+        ]:
+            line = f"{ts_in} test payload"
+            ts, msg = _extract_docker_timestamp(line)
+            assert ts == ts_in
+            assert msg == "test payload"
+
+    @pytest.mark.asyncio
+    async def test_tty_mode_with_timestamps_and_reconnect(self, monkeypatch):
+        """TTY container mode extracts timestamps and accurately resumes with since."""
+        monkeypatch.setattr("app.collectors.docker_collector._CONTAINER_INITIAL_BACKOFF", 0.01)
+        assembler = KeyedMultilineAssembler()
+        entries = []
+        captured_params = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        cancel_event = asyncio.Event()
+        attempts = 0
+
+        ts1 = "2026-09-07T10:15:30.100Z"
+        raw1 = f"{ts1} TTY First line\r\n".encode("utf-8")
+        ts2 = "2026-09-07T10:15:32.200Z"
+        raw2 = f"{ts2} TTY Second line\r\n".encode("utf-8")
+
+        class MockTtyResp1:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield raw1
+                raise httpx.RemoteProtocolError("TTY drop")
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockTtyResp2:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield raw2
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockTtyClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": True}}
+                return InspectResp()
+
+            def stream(self, method, url, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                captured_params.append(kwargs.get("params", {}).copy())
+                if attempts == 1:
+                    return MockTtyResp1()
+                return MockTtyResp2()
+
+        last_seen = {}
+        await _tail_container_logs(
+            MockTtyClient(),
+            "cid_tty",
+            "app_tty",
+            assembler,
+            cancel_event,
+            container_last_seen=last_seen,
+        )
+
+        assert attempts == 2
+        dt1 = datetime.datetime.fromisoformat(ts1.replace("Z", "+00:00"))
+        assert captured_params[1]["since"] == str(int(dt1.timestamp()))
+        assert "tail" not in captured_params[1]
+
+        assert len(entries) == 2
+        assert entries[0]["message"] == "TTY First line"
+        assert entries[0]["timestamp"] == ts1
+        assert entries[1]["message"] == "TTY Second line"
+        assert entries[1]["timestamp"] == ts2
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_disabled_when_zero_or_negative(self):
+        """Setting heartbeat_interval <= 0 disables background heartbeat monitor without error."""
+        assembler = KeyedMultilineAssembler()
+        cancel_event = asyncio.Event()
+        ping_called = False
+
+        class MockResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                await asyncio.sleep(0.05)
+                yield b"Plain message\n"
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                nonlocal ping_called
+                if url == "/_ping":
+                    ping_called = True
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": True}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockResp()
+
+        await _tail_container_logs(
+            MockClient(),
+            "cid_nohb",
+            "app_nohb",
+            assembler,
+            cancel_event,
+            heartbeat_interval=0,
+        )
+
+        assert ping_called is False
+        assert cancel_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_watch_events_heartbeat_failure_raises_read_timeout(self, monkeypatch):
+        """_watch_events detects silent events stream stall via ping failure and raises ReadTimeout."""
+        monkeypatch.setenv("DOCKER_HEARTBEAT_INTERVAL", "0.04")
+        assembler = KeyedMultilineAssembler()
+        tailer = DockerTailer(assembler)
+
+        class MockHungEventsResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_lines(self):
+                await asyncio.sleep(10)
+                if False:
+                    yield ""
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                if url == "/_ping":
+                    raise httpx.ConnectError("Docker socket proxy hung")
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockHungEventsResp()
+
+        with pytest.raises(httpx.ReadTimeout, match="Docker events keepalive heartbeat failed"):
+            await tailer._watch_events(MockClient())
+
+    @pytest.mark.asyncio
+    async def test_supervisor_stop_gracefully_terminates_idle_events_stream(self):
+        """When Docker tailer is stopped while waiting on quiet events, it terminates without hanging."""
+        assembler = KeyedMultilineAssembler()
+        tailer = DockerTailer(assembler)
+
+        class MockHungEventsResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_lines(self):
+                await asyncio.sleep(100)
+                yield ""
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockHungEventsResp()
+
+        watch_task = asyncio.create_task(tailer._watch_events(MockClient()))
+        await asyncio.sleep(0.05)
+
+        # Signal stop
+        await tailer.stop()
+
+        # Must exit within 1.0s without deadlocking
+        await asyncio.wait_for(watch_task, timeout=1.0)
+        assert watch_task.done()
+
+    @pytest.mark.asyncio
+    async def test_container_tailer_cancel_event_gracefully_terminates_idle_container(self):
+        """When container tailer is cancelled while stream is idle, it exits immediately without hanging."""
+        assembler = KeyedMultilineAssembler()
+        cancel_event = asyncio.Event()
+
+        class MockIdleResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                await asyncio.sleep(100)
+                yield b""
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockIdleResp()
+
+        tail_task = asyncio.create_task(
+            _tail_container_logs(
+                MockClient(),
+                "cid_idle_stop",
+                "app_idle_stop",
+                assembler,
+                cancel_event,
+                heartbeat_interval=30.0,
+            )
+        )
+        await asyncio.sleep(0.05)
+
+        # Trigger cancellation
+        cancel_event.set()
+
+        # Must terminate promptly without waiting for socket read or heartbeat
+        await asyncio.wait_for(tail_task, timeout=1.0)
+        assert tail_task.done()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_deduplicates_replayed_lines_with_identical_timestamp(self, monkeypatch):
+        """Docker daemon's inclusive 'since' replays the last seen log line; verify it is deduplicated."""
+        monkeypatch.setattr("app.collectors.docker_collector._CONTAINER_INITIAL_BACKOFF", 0.01)
+        assembler = KeyedMultilineAssembler()
+        entries = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        cancel_event = asyncio.Event()
+        attempts = 0
+
+        ts1 = "2026-09-07T10:15:30.100000000Z"
+        msg1 = f"{ts1} Line at boundary\n".encode("utf-8")
+        frame1 = bytes([1, 0, 0, 0]) + len(msg1).to_bytes(4, "big") + msg1
+
+        ts2 = "2026-09-07T10:15:32.200000000Z"
+        msg2 = f"{ts2} New line after resume\n".encode("utf-8")
+        frame2 = bytes([1, 0, 0, 0]) + len(msg2).to_bytes(4, "big") + msg2
+
+        class MockResp1:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield frame1
+                raise httpx.RemoteProtocolError("Connection dropped")
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockResp2:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                # Real Docker daemon replays frame1 because since is inclusive (>= ts1)
+                yield frame1
+                yield frame2
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    return MockResp1()
+                return MockResp2()
+
+        last_seen = {}
+        last_msgs = {}
+        await _tail_container_logs(
+            MockClient(),
+            "cid_dedup",
+            "app_dedup",
+            assembler,
+            cancel_event,
+            container_last_seen=last_seen,
+            container_last_messages=last_msgs,
+        )
+
+        assert attempts == 2
+        # Exactly 2 entries emitted: frame1 is NOT duplicated despite being replayed by Docker
+        assert len(entries) == 2
+        assert entries[0]["message"] == "Line at boundary"
+        assert entries[0]["timestamp"] == ts1
+        assert entries[1]["message"] == "New line after resume"
+        assert entries[1]["timestamp"] == ts2
+
+    @pytest.mark.asyncio
+    async def test_empty_log_line_with_timestamp_preserved(self):
+        """An empty log line emitted with a Docker timestamp is preserved as an entry with message=''."""
+        assembler = KeyedMultilineAssembler()
+        entries = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        cancel_event = asyncio.Event()
+
+        ts = "2026-09-07T10:15:30.123456789Z"
+        msg = f"{ts}\n".encode("utf-8")
+        frame = bytes([1, 0, 0, 0]) + len(msg).to_bytes(4, "big") + msg
+
+        class MockResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield frame
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockResp()
+
+        await _tail_container_logs(
+            MockClient(),
+            "cid_empty",
+            "app_empty",
+            assembler,
+            cancel_event,
+        )
+
+        assert len(entries) == 1
+        assert entries[0]["message"] == ""
+        assert entries[0]["timestamp"] == ts
+        assert entries[0]["severity"] == 6
+
+    @pytest.mark.asyncio
+    async def test_tty_trailing_buffer_without_newline_emitted_at_eof(self):
+        """In TTY mode, trailing buffer without trailing newline is emitted when stream terminates."""
+        assembler = KeyedMultilineAssembler()
+        entries = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        cancel_event = asyncio.Event()
+
+        ts = "2026-09-07T10:15:30.500Z"
+        raw = f"{ts} Final unbuffered status".encode("utf-8")
+
+        class MockTtyResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                # Ends without trailing newline
+                yield raw
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": True}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockTtyResp()
+
+        task = asyncio.create_task(
+            _tail_container_logs(
+                MockClient(),
+                "cid_tty_eof",
+                "app_tty_eof",
+                assembler,
+                cancel_event,
+                heartbeat_interval=0,
+            )
+        )
+        await asyncio.sleep(0.05)
+        cancel_event.set()
+        await task
+
+        assert len(entries) == 1
+        assert entries[0]["message"] == "Final unbuffered status"
+        assert entries[0]["timestamp"] == ts
+
+    def test_build_client_connection_pool_limits(self):
+        """_build_client configures higher pool limits to avoid starvation across containers."""
+        client_uds = _build_client("http://localhost/v1.43", "/var/run/docker.sock")
+        assert client_uds._transport._pool._max_connections == 500
+        assert client_uds._transport._pool._max_keepalive_connections == 100
+
+        client_tcp = _build_client("http://proxy:2375/v1.43", None)
+        assert client_tcp._transport._pool._max_connections == 500
+        assert client_tcp._transport._pool._max_keepalive_connections == 100
+
+
