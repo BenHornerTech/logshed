@@ -17,12 +17,25 @@ from app.core.pipeline import KeyedMultilineAssembler
 
 logger = logging.getLogger(__name__)
 
-def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
+def parse_syslog_message(
+    data: bytes,
+    source_ip: str,
+    now: datetime.datetime | None = None,
+    local_tz: datetime.tzinfo | None = None,
+) -> dict[str, Any]:
     """
     Parse a raw syslog message (bytes) into a structured dict.
     """
     raw_str = data.decode("utf-8", errors="replace").strip("\r\n")
-    now = datetime.datetime.now(datetime.timezone.utc)
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    else:
+        now = now.astimezone(datetime.timezone.utc)
+
+    if local_tz is None:
+        local_tz = datetime.datetime.now().astimezone().tzinfo or datetime.timezone.utc
     
     result = {
         "timestamp": now.isoformat(),
@@ -94,8 +107,12 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
                     ts_clean = timestamp.replace("Z", "+00:00")
                     dt = datetime.datetime.fromisoformat(ts_clean)
                     if dt.tzinfo is None:
-                        local_tz = datetime.datetime.now().astimezone().tzinfo
-                        dt_utc = dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+                        candidate_a = dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+                        candidate_b = dt.replace(tzinfo=datetime.timezone.utc)
+                        if abs((candidate_b - now).total_seconds()) < abs((candidate_a - now).total_seconds()):
+                            dt_utc = candidate_b
+                        else:
+                            dt_utc = candidate_a
                     else:
                         dt_utc = dt.astimezone(datetime.timezone.utc)
                     diff_seconds = (dt_utc - now).total_seconds()
@@ -132,22 +149,40 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
                 dt = datetime.datetime.strptime(f"{now.year} {ts_str_clean}", "%Y %b %d %H:%M:%S")
                 parsed_month = dt.month
                 # Year boundary heuristic: if parsed month is ahead of current month,
-                # the message likely came from the previous year
+                # the message likely came from the previous year.
+                # Conversely, if receiver is in December and sender in positive timezone emitted January,
+                # the message belongs to the next year.
                 if parsed_month > now.month:
                     dt = dt.replace(year=now.year - 1)
+                elif now.month == 12 and parsed_month == 1:
+                    dt = dt.replace(year=now.year + 1)
 
-                # RFC 3164 timestamps lack timezone information and are emitted in the sender's local time.
-                # First, attempt to localize using the host/container configured local timezone.
-                local_tz = datetime.datetime.now().astimezone().tzinfo
-                dt_utc = dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
-                
+                # RFC 3164 timestamps lack timezone information and are emitted either in
+                # the sender's local time or in UTC.
+                # Evaluate candidate interpretations of dt:
+                # Candidate A: dt interpreted in the container's local timezone converted to UTC.
+                # Candidate B: dt interpreted directly as UTC.
+                candidate_a = dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+                candidate_b = dt.replace(tzinfo=datetime.timezone.utc)
+
+                diff_a = abs((candidate_a - now).total_seconds())
+                diff_b = abs((candidate_b - now).total_seconds())
+
+                if diff_b < diff_a:
+                    dt_utc = candidate_b
+                else:
+                    dt_utc = candidate_a
+
                 # If the resulting UTC timestamp is in the future compared to arrival time (now),
                 # the sender is in a positive timezone ahead of the container's timezone.
                 # Compensate for the sender timezone offset difference.
                 diff_seconds = (dt_utc - now).total_seconds()
                 if diff_seconds > 60:
                     offset_hours = round(diff_seconds / 3600)
-                    dt_utc -= datetime.timedelta(hours=offset_hours)
+                    if offset_hours > 0:
+                        dt_utc -= datetime.timedelta(hours=offset_hours)
+                    if (dt_utc - now).total_seconds() > 60:
+                        dt_utc = now
                 
                 # Preserve microsecond arrival precision for proper sub-second ordering
                 dt_utc = dt_utc.replace(microsecond=now.microsecond)

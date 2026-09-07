@@ -5,6 +5,7 @@ Tests for RFC 3164 and RFC 5424 parsing, timestamp handling, network listeners, 
 import asyncio
 import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 import pytest
 
 from app.core.config import get_syslog_port
@@ -155,6 +156,101 @@ class TestSyslogParsing:
         result = parse_syslog_message(raw, "10.0.0.1")
         parsed_dt = datetime.datetime.fromisoformat(result["timestamp"])
         assert (parsed_dt - now).total_seconds() <= 60
+
+    def test_rfc3164_candidate_proximity_npm_utc_in_bst(self):
+        """User Issue 7: NPM in UTC emitting Sep 7 15:00:00 received at 15:00:01 UTC in Europe/London (BST, UTC+1).
+        Candidate B (UTC) is 1s away, whereas Candidate A (BST -> UTC) is 3601s away.
+        Candidate B must be chosen, resulting in 15:00:00 UTC."""
+        arrival_now = datetime.datetime(2026, 9, 7, 15, 0, 1, 8765, tzinfo=datetime.timezone.utc)
+        bst_tz = ZoneInfo("Europe/London")
+        raw = b"<78>Sep  7 15:00:00 crond[330276]: USER root pid 720626 cmd run-parts /etc/periodic/hourly"
+        result = parse_syslog_message(raw, "192.168.1.100", now=arrival_now, local_tz=bst_tz)
+
+        assert result["timestamp"] == "2026-09-07T15:00:00.008765+00:00"
+        assert result["received_at"] == "2026-09-07T15:00:01.008765+00:00"
+
+    def test_rfc3164_candidate_proximity_local_sender_in_bst(self):
+        """Sender emitting in container's local BST time (16:00:00) received at 15:00:01 UTC (16:00:01 BST).
+        Candidate A (BST -> UTC) is 1s away, whereas Candidate B (UTC) is 3599s in the future.
+        Candidate A must be chosen, resulting in 15:00:00 UTC."""
+        arrival_now = datetime.datetime(2026, 9, 7, 15, 0, 1, 8765, tzinfo=datetime.timezone.utc)
+        bst_tz = ZoneInfo("Europe/London")
+        raw = b"<14>Sep  7 16:00:00 myhost myapp: local time message"
+        result = parse_syslog_message(raw, "192.168.1.100", now=arrival_now, local_tz=bst_tz)
+
+        assert result["timestamp"] == "2026-09-07T15:00:00.008765+00:00"
+
+    def test_rfc3164_candidate_proximity_utc_sender_in_edt(self):
+        """Receiver in America/New_York (EDT, UTC-4). Sender in UTC sends 15:00:00.
+        Arrival at 15:00:01 UTC.
+        Candidate B (UTC) is 1s away; Candidate A (EDT -> UTC) is ~4 hours away.
+        Candidate B must be chosen."""
+        arrival_now = datetime.datetime(2026, 9, 7, 15, 0, 1, 8765, tzinfo=datetime.timezone.utc)
+        edt_tz = ZoneInfo("America/New_York")
+        raw = b"<14>Sep  7 15:00:00 myhost myapp: utc message"
+        result = parse_syslog_message(raw, "10.0.0.1", now=arrival_now, local_tz=edt_tz)
+
+        assert result["timestamp"] == "2026-09-07T15:00:00.008765+00:00"
+
+    def test_rfc3164_candidate_proximity_local_sender_in_edt(self):
+        """Receiver in America/New_York (EDT, UTC-4). Sender in EDT sends 11:00:00.
+        Arrival at 15:00:01 UTC (11:00:01 EDT).
+        Candidate A (EDT -> UTC) is 1s away; Candidate B (UTC) is ~4 hours away.
+        Candidate A must be chosen."""
+        arrival_now = datetime.datetime(2026, 9, 7, 15, 0, 1, 8765, tzinfo=datetime.timezone.utc)
+        edt_tz = ZoneInfo("America/New_York")
+        raw = b"<14>Sep  7 11:00:00 myhost myapp: edt message"
+        result = parse_syslog_message(raw, "10.0.0.1", now=arrival_now, local_tz=edt_tz)
+
+        assert result["timestamp"] == "2026-09-07T15:00:00.008765+00:00"
+
+    def test_rfc3164_sender_in_positive_timezone_offset_compensation(self):
+        """Sender in Tokyo (UTC+9) sends 19:00:00. Receiver in UTC receives at 10:00:01 UTC.
+        Positive offset heuristic compensates 9 hours to 10:00:00 UTC."""
+        arrival_now = datetime.datetime(2026, 9, 7, 10, 0, 1, 0, tzinfo=datetime.timezone.utc)
+        raw = b"<14>Sep  7 19:00:00 myhost myapp: tokyo message"
+        result = parse_syslog_message(raw, "10.0.0.1", now=arrival_now, local_tz=datetime.timezone.utc)
+
+        assert result["timestamp"] == "2026-09-07T10:00:00+00:00"
+
+    def test_rfc5424_naive_timestamp_candidate_proximity(self):
+        """RFC 5424 naive timestamp without timezone offset evaluated with candidate proximity."""
+        arrival_now = datetime.datetime(2026, 9, 7, 15, 0, 1, 0, tzinfo=datetime.timezone.utc)
+        bst_tz = ZoneInfo("Europe/London")
+        raw = b"<134>1 2026-09-07T15:00:00 myhost myapp 1234 ID47 - Application started"
+        result = parse_syslog_message(raw, "10.0.0.1", now=arrival_now, local_tz=bst_tz)
+
+        assert result["timestamp"] == "2026-09-07T15:00:00+00:00"
+
+    def test_rfc3164_naive_now_does_not_raise(self):
+        """Passing a naive datetime for `now` should not raise TypeError and parse successfully."""
+        naive_now = datetime.datetime(2026, 9, 7, 15, 0, 1)
+        raw = b"<14>Sep  7 15:00:00 myhost myapp: test naive now"
+        result = parse_syslog_message(raw, "10.0.0.1", now=naive_now)
+
+        assert result["timestamp"] == "2026-09-07T15:00:00+00:00"
+        assert result["received_at"] == "2026-09-07T15:00:01+00:00"
+
+    def test_rfc3164_non_utc_now_normalizes_to_utc(self):
+        """Passing an offset-aware non-UTC datetime for `now` should normalize received_at and timestamp to UTC."""
+        bst_tz = ZoneInfo("Europe/London")
+        local_now = datetime.datetime(2026, 9, 7, 16, 0, 1, tzinfo=bst_tz)  # 15:00:01 UTC
+        raw = b"<14>Sep  7 16:00:00 myhost myapp: test bst message"
+        result = parse_syslog_message(raw, "10.0.0.1", now=local_now, local_tz=bst_tz)
+
+        assert result["timestamp"] == "2026-09-07T15:00:00+00:00"
+        assert result["received_at"] == "2026-09-07T15:00:01+00:00"
+
+    def test_rfc3164_year_boundary_sender_in_new_year(self):
+        """When receiver is in December and sender in positive timezone emitted January,
+        timestamp year must roll forward to the next year."""
+        arrival_now = datetime.datetime(2026, 12, 31, 23, 59, 59, 0, tzinfo=datetime.timezone.utc)
+        raw = b"<14>Jan  1 00:59:59 myhost myapp: happy new year"
+        # local_tz is UTC, sender in UTC+1 emits Jan 1 00:59:59 (which is Dec 31 23:59:59 UTC)
+        result = parse_syslog_message(raw, "10.0.0.1", now=arrival_now, local_tz=datetime.timezone.utc)
+
+        assert result["timestamp"] == "2026-12-31T23:59:59+00:00"
+        assert result["received_at"] == "2026-12-31T23:59:59+00:00"
 
     def test_rfc5424_future_zulu_timestamp_clamped_to_arrival_time(self):
         """RFC 5424 timestamp ending in 'Z' that is far in the future must be clamped to arrival time."""
