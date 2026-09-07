@@ -118,17 +118,35 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down background workers...")
     logging.getLogger("app").removeHandler(internal_handler)
     if _docker_tailer:
-        await _docker_tailer.stop()
+        try:
+            await _docker_tailer.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping DockerTailer: {e}")
     if _syslog_server:
-        await _syslog_server.stop()
+        try:
+            await _syslog_server.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping SyslogServer: {e}")
     if _assembler:
-        await _assembler.flush_all()
+        try:
+            await _assembler.flush_all()
+        except Exception as e:
+            logger.warning(f"Error flushing multiline assembler: {e}")
     if _prune_worker:
-        await _prune_worker.stop()
+        try:
+            await _prune_worker.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping PruneWorker: {e}")
     if _metrics_worker:
-        await _metrics_worker.stop()
+        try:
+            await _metrics_worker.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping StorageMetricsWorker: {e}")
     if _queue_consumer:
-        await _queue_consumer.stop()
+        try:
+            await _queue_consumer.stop()
+        except Exception as e:
+            logger.error(f"Error stopping QueueConsumer: {e}")
 
     for task in _background_tasks:
         task.cancel()

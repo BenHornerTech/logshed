@@ -414,6 +414,226 @@ class TestRetentionAndPruneWorker:
         except (asyncio.CancelledError, Exception):
             pass
 
+    def test_wal_checkpoint_busy_falls_back_to_passive(self, tmp_path: Path, monkeypatch, caplog):
+        """
+        When PRAGMA wal_checkpoint(TRUNCATE) returns busy=1, execute_prune logs a warning
+        and falls back to PRAGMA wal_checkpoint(PASSIVE) without raising unhandled errors.
+        """
+        import logging
+        import app.services.retention as ret_mod
+
+        db_file = tmp_path / "logs.db"
+        orig_get_conn = ret_mod.get_connection
+        executed_statements = []
+
+        class MockCursor:
+            def __init__(self, real_cursor):
+                self._real = real_cursor
+                self.last_query = None
+
+            def execute(self, sql, params=None):
+                executed_statements.append(sql)
+                self.last_query = sql
+                if "PRAGMA wal_checkpoint(TRUNCATE)" in sql:
+                    return self
+                elif "PRAGMA wal_checkpoint(PASSIVE)" in sql:
+                    return self
+                if params is not None:
+                    return self._real.execute(sql, params)
+                return self._real.execute(sql)
+
+            def fetchone(self):
+                if self.last_query and "PRAGMA wal_checkpoint(TRUNCATE)" in self.last_query:
+                    # Return (busy=1, log_pages=15, checkpointed_pages=5)
+                    return (1, 15, 5)
+                elif self.last_query and "PRAGMA wal_checkpoint(PASSIVE)" in self.last_query:
+                    return (0, 15, 10)
+                return self._real.fetchone()
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        class MockConn:
+            def __init__(self, real_conn):
+                self._real = real_conn
+
+            def cursor(self):
+                return MockCursor(self._real.cursor())
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        monkeypatch.setattr(ret_mod, "get_connection", lambda p: MockConn(orig_get_conn(p)))
+
+        with caplog.at_level(logging.WARNING):
+            result = ret_mod.execute_prune(db_file, retention_days=14)
+
+        assert result["status"] == "ok"
+        # Must have attempted TRUNCATE and then fallen back to PASSIVE
+        assert any("PRAGMA wal_checkpoint(TRUNCATE)" in s for s in executed_statements)
+        assert any("PRAGMA wal_checkpoint(PASSIVE)" in s for s in executed_statements)
+        assert any("blocked by active readers" in record.message for record in caplog.records)
+
+    def test_wal_checkpoint_non_busy_does_not_fall_back(self, tmp_path: Path, monkeypatch):
+        """
+        When PRAGMA wal_checkpoint(TRUNCATE) returns busy=0, PASSIVE fallback is not triggered.
+        """
+        import app.services.retention as ret_mod
+
+        db_file = tmp_path / "logs.db"
+        orig_get_conn = ret_mod.get_connection
+        executed_statements = []
+
+        class MockCursor:
+            def __init__(self, real_cursor):
+                self._real = real_cursor
+                self.last_query = None
+
+            def execute(self, sql, params=None):
+                executed_statements.append(sql)
+                self.last_query = sql
+                if "PRAGMA wal_checkpoint" in sql:
+                    return self
+                if params is not None:
+                    return self._real.execute(sql, params)
+                return self._real.execute(sql)
+
+            def fetchone(self):
+                if self.last_query and "PRAGMA wal_checkpoint(TRUNCATE)" in self.last_query:
+                    # Succeeded without busy
+                    return (0, 10, 10)
+                return self._real.fetchone()
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        class MockConn:
+            def __init__(self, real_conn):
+                self._real = real_conn
+
+            def cursor(self):
+                return MockCursor(self._real.cursor())
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        monkeypatch.setattr(ret_mod, "get_connection", lambda p: MockConn(orig_get_conn(p)))
+
+        result = ret_mod.execute_prune(db_file, retention_days=14)
+        assert result["status"] == "ok"
+        assert any("PRAGMA wal_checkpoint(TRUNCATE)" in s for s in executed_statements)
+        assert not any("PRAGMA wal_checkpoint(PASSIVE)" in s for s in executed_statements)
+
+    def test_wal_checkpoint_active_reader_lock_real_sqlite(self, tmp_path: Path):
+        """
+        Real SQLite test: an active reader holding a read transaction during execute_prune
+        is handled gracefully without raising sqlite3.OperationalError or crashing.
+        """
+        db_file = tmp_path / "logs.db"
+        run_migrations(db_file)
+
+        # Seed log
+        with get_connection(db_file) as conn:
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            conn.execute(
+                "INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw) "
+                "VALUES (?, ?, '10.0.0.1', 'host', 'app', 1, 6, 'test log', 'test raw')",
+                (now, now),
+            )
+            conn.commit()
+
+        # Hold a read lock in a separate connection
+        reader_conn = get_connection(db_file)
+        try:
+            reader_conn.execute("BEGIN DEFERRED;")
+            reader_conn.execute("SELECT COUNT(*) FROM logs;").fetchone()
+
+            # Run execute_prune in another connection while reader holds read transaction
+            res = execute_prune(db_file, retention_days=14)
+            assert res["status"] == "ok"
+        finally:
+            reader_conn.close()
+
+    @pytest.mark.asyncio
+    async def test_lifespan_graceful_shutdown_drains_uncommitted_logs(self, tmp_path: Path):
+        """
+        Integration test: When FastAPI application shuts down via lifespan context manager,
+        any pending uncommitted logs in the queue are drained and committed to SQLite.
+        """
+        from app.main import create_app, lifespan
+        from app.core.pipeline import get_queue
+
+        db_file = tmp_path / "logs.db"
+        app = create_app()
+
+        async with lifespan(app):
+            # Enqueue 15 logs directly into the pipeline queue while app is running
+            q = get_queue()
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            for i in range(15):
+                q.put_nowait({
+                    "timestamp": now,
+                    "received_at": now,
+                    "source_ip": "10.0.0.1",
+                    "source_alias": "srv1",
+                    "app_name": "lifespan_test",
+                    "facility": 1,
+                    "severity": 6,
+                    "message": f"shutdown_lifespan_msg_{i}",
+                    "raw": f"shutdown_lifespan_msg_{i}",
+                })
+
+        # Exiting lifespan triggers the shutdown sequence including queue draining
+        with get_connection(db_file) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM logs WHERE app_name = 'lifespan_test'"
+            ).fetchone()[0]
+            assert count == 15
+
+    @pytest.mark.asyncio
+    async def test_lifespan_graceful_shutdown_drains_even_if_collector_stop_raises(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """
+        If a collector raises an unexpected exception during stop(), lifespan shutdown
+        isolates the error and guarantees that QueueConsumer.stop() drains uncommitted logs.
+        """
+        import app.main as main_mod
+        from app.main import create_app, lifespan
+        from app.core.pipeline import get_queue
+
+        db_file = tmp_path / "logs.db"
+        app = create_app()
+
+        class FaultyTailer:
+            async def stop(self):
+                raise RuntimeError("Docker socket severed")
+
+        async with lifespan(app):
+            # Inject faulty collector
+            monkeypatch.setattr(main_mod, "_docker_tailer", FaultyTailer())
+
+            q = get_queue()
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            for i in range(8):
+                q.put_nowait({
+                    "timestamp": now,
+                    "received_at": now,
+                    "source_ip": "10.0.0.1",
+                    "source_alias": "srv1",
+                    "app_name": "faulty_collector_test",
+                    "facility": 1,
+                    "severity": 6,
+                    "message": f"faulty_collector_msg_{i}",
+                    "raw": f"faulty_collector_msg_{i}",
+                })
+
+        with get_connection(db_file) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM logs WHERE app_name = 'faulty_collector_test'"
+            ).fetchone()[0]
+            assert count == 8
+
 
 # ===================================================================
 # 3. System Healthcheck

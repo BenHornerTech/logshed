@@ -271,96 +271,214 @@ class KeyedMultilineAssembler:
         for k in keys:
             self._flush_stream_internal(k)
 
+_QUEUE_SENTINEL = object()
+
+
 class QueueConsumer:
     """
     Background task that drains the shared queue and batch-inserts into SQLite.
     """
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, debounce_seconds: float = 0.05):
         self._db_path = Path(db_path)
+        self._debounce_seconds = debounce_seconds
+        self._started = False
         self._running = False
+        self._stopping = False
+        self._stop_event = asyncio.Event()
+        self._drain_done = asyncio.Event()
+        self._drain_lock = asyncio.Lock()
 
     async def run(self) -> None:
-        """Main loop: drain queue with deadline-based batching (up to 5000 records or 2s window)."""
+        """Main loop: drain queue with debounce-based batching (up to 5000 records or debounce window)."""
+        self._started = True
         self._running = True
+        self._stop_event.clear()
+        self._drain_done.clear()
         queue = get_queue()
-        
-        while self._running:
-            # Wait for the first item
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=0.5)
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
 
-            batch = [item]
-            batch_start = time.monotonic()
-
-            # Drain up to 5000 items within 2.0s window from the first item
-            while len(batch) < 5000:
-                elapsed = time.monotonic() - batch_start
-                remaining = 2.0 - elapsed
-                if remaining <= 0:
-                    break
-
-                # First try immediate drain of available items
+        try:
+            while self._running and not self._stopping:
+                # Wait for the first item
                 try:
-                    next_item = queue.get_nowait()
-                    batch.append(next_item)
+                    item = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
                     continue
-                except asyncio.QueueEmpty:
-                    pass
-
-                # If queue is empty, wait for next item up to remaining batch deadline
-                try:
-                    next_item = await asyncio.wait_for(queue.get(), timeout=remaining)
-                    batch.append(next_item)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
+                except asyncio.CancelledError:
                     break
 
-            if batch:
-                inserted = False
-                backoff = 0.5
-                while True:
+                if item is _QUEUE_SENTINEL:
+                    queue.task_done()
+                    break
+
+                batch = [item]
+                batch_start = time.monotonic()
+
+                # Drain up to 5000 items
+                while len(batch) < 5000 and self._running and not self._stopping:
+                    # First try immediate drain of available items
                     try:
-                        await asyncio.to_thread(self._insert_batch, batch)
-                        inserted = True
-                        break
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        if not self._running:
-                            logger.warning(
-                                f"Shutdown signaled while inserting batch of {len(batch)} logs: {e}."
-                            )
+                        next_item = queue.get_nowait()
+                        if next_item is _QUEUE_SENTINEL:
+                            queue.task_done()
+                            self._running = False
                             break
-                        logger.warning(
-                            f"Error inserting batch of {len(batch)} logs: {e}. Retrying in {backoff:.1f}s..."
+                        batch.append(next_item)
+                        continue
+                    except asyncio.QueueEmpty:
+                        pass
+
+                    # If queue is empty, wait for next item up to remaining debounce window
+                    elapsed = time.monotonic() - batch_start
+                    remaining = self._debounce_seconds - elapsed
+                    if remaining <= 0:
+                        break
+
+                    try:
+                        next_item = await asyncio.wait_for(queue.get(), timeout=remaining)
+                        if next_item is _QUEUE_SENTINEL:
+                            queue.task_done()
+                            self._running = False
+                            break
+                        batch.append(next_item)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        break
+
+                if batch:
+                    success = await self._flush_batch(batch, queue)
+                    if not success and (not self._running or self._stopping):
+                        break
+        finally:
+            self._running = False
+            try:
+                async with self._drain_lock:
+                    await self._drain_queue(queue)
+            finally:
+                self._drain_done.set()
+
+    async def _flush_batch(self, batch: list[dict], queue: asyncio.Queue) -> bool:
+        """Helper to insert batch with retry backoff and broadcast to SSE."""
+        if not batch:
+            return True
+        inserted = False
+        backoff = 0.05 if (not self._running or self._stopping) else 0.5
+        shutdown_retries = 0
+        max_shutdown_retries = 5
+
+        while True:
+            try:
+                await asyncio.to_thread(self._insert_batch, batch)
+                inserted = True
+                break
+            except asyncio.CancelledError:
+                # If cancelled during flush, attempt a shielded insert so in-flight logs are preserved
+                try:
+                    await asyncio.shield(asyncio.to_thread(self._insert_batch, batch))
+                    inserted = True
+                    break
+                except Exception:
+                    raise
+            except Exception as e:
+                if not self._running or self._stopping:
+                    shutdown_retries += 1
+                    if shutdown_retries >= max_shutdown_retries:
+                        logger.error(
+                            f"Shutdown drain failed to insert batch of {len(batch)} logs after {max_shutdown_retries} attempts: {e}."
                         )
-                        try:
-                            await asyncio.sleep(backoff)
-                        except asyncio.CancelledError:
-                            raise
-                        backoff = min(backoff * 2.0, 10.0)
-
-                if inserted:
-                    record_ingest(len(batch))
-                    # Broadcast to SSE subscribers on the event loop thread
-                    # (asyncio.Queue is NOT thread-safe, so this must not
-                    # happen inside _insert_batch which runs in a worker thread)
-                    from app.core.sse import sse_manager
-                    for entry in batch:
-                        await sse_manager.broadcast(entry)
-
-                    # Mark as done
-                    for _ in batch:
-                        queue.task_done()
+                        break
+                    logger.warning(
+                        f"Retry {shutdown_retries}/{max_shutdown_retries} during shutdown for batch of {len(batch)} logs: {e}. Retrying in {backoff:.2f}s..."
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2.0, 1.0)
                 else:
+                    logger.warning(
+                        f"Error inserting batch of {len(batch)} logs: {e}. Retrying in {backoff:.1f}s..."
+                    )
+                    try:
+                        await asyncio.sleep(backoff)
+                    except asyncio.CancelledError:
+                        try:
+                            await asyncio.shield(asyncio.to_thread(self._insert_batch, batch))
+                            inserted = True
+                            break
+                        except Exception:
+                            raise
+                    backoff = min(backoff * 2.0, 10.0)
+
+        if inserted:
+            record_ingest(len(batch))
+            # Broadcast to SSE subscribers on the event loop thread
+            from app.core.sse import sse_manager
+            for entry in batch:
+                await sse_manager.broadcast(entry)
+
+            # Mark as done
+            for _ in batch:
+                queue.task_done()
+            return True
+        else:
+            # Mark failed batch items as done so queue is not stuck
+            for _ in batch:
+                queue.task_done()
+            return False
+
+    async def _drain_queue(self, queue: asyncio.Queue) -> None:
+        """Drain all remaining items in queue in batches of up to 5000 and commit to SQLite."""
+        while not queue.empty():
+            batch = []
+            while len(batch) < 5000:
+                try:
+                    item = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if item is _QUEUE_SENTINEL:
+                    queue.task_done()
+                    continue
+                batch.append(item)
+            if batch:
+                success = await self._flush_batch(batch, queue)
+                if not success:
+                    # If flush failed after all retries, clean up remaining queue items
+                    while not queue.empty():
+                        try:
+                            rem = queue.get_nowait()
+                            queue.task_done()
+                        except asyncio.QueueEmpty:
+                            break
                     break
 
     async def stop(self) -> None:
-        """Signal graceful shutdown."""
-        self._running = False
+        """
+        Signal graceful shutdown, drain all remaining items in _log_queue,
+        commit them to SQLite in final batch(es), and exit only once the queue is empty.
+        """
+        logger.info("QueueConsumer stopping: draining pending logs...")
+        self._stopping = True
+        self._stop_event.set()
+        queue = get_queue()
+
+        try:
+            queue.put_nowait(_QUEUE_SENTINEL)
+        except asyncio.QueueFull:
+            pass
+
+        # Yield control briefly so any scheduled consumer.run() task can start/react
+        await asyncio.sleep(0)
+
+        if self._started:
+            try:
+                await asyncio.shield(self._drain_done.wait())
+            except asyncio.CancelledError:
+                await self._drain_done.wait()
+                raise
+        else:
+            async with self._drain_lock:
+                await self._drain_queue(queue)
+
+        if not queue.empty():
+            async with self._drain_lock:
+                await self._drain_queue(queue)
+        logger.info("QueueConsumer stopped: all pending logs drained and committed.")
 
     def _insert_batch(self, batch: list[dict]) -> None:
         """Synchronous: insert batch into SQLite in a transaction and assign generated row IDs."""

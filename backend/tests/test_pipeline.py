@@ -661,3 +661,183 @@ class TestQueueConsumer:
         assert "Newer 18:29 BST" in rows[0][0]
         assert "Older 18:11 BST" in rows[1][0]
         assert rows[0][1] > rows[1][1]
+
+    @pytest.mark.asyncio
+    async def test_shutdown_queue_drain_preserves_all_logs(self, db_path: Path):
+        """
+        During application shutdown, QueueConsumer.stop() signals shutdown, drains all remaining
+        items in _log_queue, commits them to SQLite in final batch(es), and drops 0 logs.
+        """
+        consumer = QueueConsumer(db_path)
+        q = get_queue()
+
+        # Enqueue 150 items into the shared queue
+        for i in range(150):
+            q.put_nowait(_make_entry(message=f"shutdown_drain_msg_{i}"))
+
+        # Start consumer and immediately stop it to simulate SIGTERM during active queue
+        consumer_task = asyncio.create_task(consumer.run())
+        await consumer.stop()
+        await consumer_task
+
+        # Queue must be completely drained
+        assert q.empty()
+
+        # All 150 items must be safely committed to SQLite
+        conn = get_connection(db_path)
+        count = conn.execute("SELECT COUNT(*) FROM logs WHERE message LIKE 'shutdown_drain_msg_%'").fetchone()[0]
+        conn.close()
+        assert count == 150
+        assert get_dropped_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_shutdown_queue_drain_when_consumer_not_running(self, db_path: Path):
+        """
+        If QueueConsumer.run() was not running or already stopped, calling stop() directly drains
+        any remaining items in _log_queue into SQLite.
+        """
+        consumer = QueueConsumer(db_path)
+        q = get_queue()
+
+        for i in range(30):
+            q.put_nowait(_make_entry(message=f"unstarted_drain_msg_{i}"))
+
+        # consumer.run() was never started
+        await consumer.stop()
+
+        assert q.empty()
+        conn = get_connection(db_path)
+        count = conn.execute("SELECT COUNT(*) FROM logs WHERE message LIKE 'unstarted_drain_msg_%'").fetchone()[0]
+        conn.close()
+        assert count == 30
+        assert get_dropped_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_low_rate_ingestion_flushes_with_low_latency_without_two_second_delay(self, db_path: Path):
+        """
+        In low-rate ingestion, QueueConsumer commits the batch after the brief debounce window (e.g. 50ms)
+        rather than waiting for a full 2.0-second timeout.
+        """
+        import time
+
+        consumer = QueueConsumer(db_path, debounce_seconds=0.05)
+        consumer_task = asyncio.create_task(consumer.run())
+        q = get_queue()
+
+        # Record monotonic time right before putting single log
+        start_time = time.monotonic()
+        q.put_nowait(_make_entry(message="low_latency_single_log"))
+
+        # Poll database for row to appear
+        found = False
+        elapsed = 0.0
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            elapsed = time.monotonic() - start_time
+            conn = get_connection(db_path)
+            row = conn.execute("SELECT id FROM logs WHERE message = 'low_latency_single_log'").fetchone()
+            conn.close()
+            if row is not None:
+                found = True
+                break
+
+        await consumer.stop()
+        await consumer_task
+
+        assert found is True
+        # Latency should be well under the previous 2.0-second delay (typically < 0.3s)
+        assert elapsed < 0.6
+
+    @pytest.mark.asyncio
+    async def test_shutdown_queue_drain_retries_transient_sqlite_lock(self, db_path: Path):
+        """
+        If SQLite encounters a transient OperationalError during shutdown drain,
+        QueueConsumer retries and successfully commits pending logs without drops.
+        """
+        import sqlite3
+
+        consumer = QueueConsumer(db_path)
+        q = get_queue()
+
+        for i in range(25):
+            q.put_nowait(_make_entry(message=f"transient_lock_msg_{i}"))
+
+        orig_insert = consumer._insert_batch
+        attempts = 0
+
+        def flaky_insert(batch):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return orig_insert(batch)
+
+        consumer._insert_batch = flaky_insert
+
+        await consumer.stop()
+
+        assert attempts >= 2
+        assert q.empty()
+
+        conn = get_connection(db_path)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM logs WHERE message LIKE 'transient_lock_msg_%'"
+        ).fetchone()[0]
+        conn.close()
+
+        assert count == 25
+        assert get_dropped_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_shutdown_queue_drain_exits_cleanly_when_db_permanently_fails(self, db_path: Path):
+        """
+        If database fails permanently during shutdown, all items are marked done,
+        queue is cleared, and the consumer exits cleanly without deadlocking.
+        """
+        import sqlite3
+
+        consumer = QueueConsumer(db_path)
+        q = get_queue()
+
+        for i in range(12):
+            q.put_nowait(_make_entry(message=f"perm_fail_msg_{i}"))
+
+        def broken_insert(batch):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        consumer._insert_batch = broken_insert
+
+        # stop() must not hang or deadlock even if DB writes permanently fail
+        await consumer.stop()
+
+        assert q.empty()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_queue_drain_concurrent_stop_calls(self, db_path: Path):
+        """
+        Multiple concurrent consumer.stop() calls must execute safely without race conditions
+        or SQLite lock contention.
+        """
+        consumer = QueueConsumer(db_path)
+        consumer_task = asyncio.create_task(consumer.run())
+        q = get_queue()
+
+        for i in range(40):
+            q.put_nowait(_make_entry(message=f"concurrent_stop_msg_{i}"))
+
+        # Launch concurrent stop() calls
+        await asyncio.gather(
+            consumer.stop(),
+            consumer.stop(),
+            consumer.stop(),
+        )
+        await consumer_task
+
+        assert q.empty()
+        conn = get_connection(db_path)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM logs WHERE message LIKE 'concurrent_stop_msg_%'"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 40
+

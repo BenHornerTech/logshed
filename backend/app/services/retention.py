@@ -58,6 +58,23 @@ def execute_prune(db_path: str | Path, retention_days: int = 14) -> dict:
         # 3. Checkpoint and truncate WAL
         try:
             cursor.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            row = cursor.fetchone()
+            if row:
+                busy, log_pages, checkpointed_pages = row[0], row[1], row[2]
+                if busy == 1:
+                    logger.warning(
+                        f"WAL checkpoint(TRUNCATE) blocked by active readers (busy=1, log_pages={log_pages}, checkpointed_pages={checkpointed_pages}). Falling back to PASSIVE checkpoint."
+                    )
+                    cursor.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                    passive_row = cursor.fetchone()
+                    if passive_row and passive_row[0] == 1:
+                        logger.warning(
+                            f"WAL checkpoint(PASSIVE) also blocked (busy=1, log_pages={passive_row[1]}, checkpointed_pages={passive_row[2]})."
+                        )
+                else:
+                    logger.debug(
+                        f"WAL checkpoint(TRUNCATE) succeeded (log_pages={log_pages}, checkpointed_pages={checkpointed_pages})."
+                    )
         except sqlite3.Error as e:
             logger.warning(f"WAL checkpoint warning: {e}")
         finally:
