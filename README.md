@@ -61,6 +61,14 @@ docker run -d \
   ghcr.io/yourusername/logshed:latest
 ```
 
+### Unraid Deployment
+
+An official Unraid Community Applications template is provided in `unraid-template.xml`.
+
+> **Important Storage Recommendation for Unraid**:
+> When configuring the container path `/data`, always map it to a **direct cache pool path** (such as `/mnt/cache/appdata/logshed` or `/mnt/<pool_name>/appdata/logshed`).
+> **Avoid using `/mnt/user/appdata/logshed`**: Unraid's `/mnt/user/` FUSE user-share layer (`shfs`) does not reliably support POSIX shared memory (`mmap`) or SQLite advisory file locking under concurrent WAL checkpoint operations. Pointing directly to your SSD cache pool bypasses FUSE, guarantees native POSIX locking, and prevents spinning up parity array disks.
+
 ---
 
 ## Configuration

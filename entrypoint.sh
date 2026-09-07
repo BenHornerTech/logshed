@@ -49,12 +49,13 @@ if [ -S "$DOCKER_SOCKET_PATH" ] || [ -e "$DOCKER_SOCKET_PATH" ]; then
     fi
 fi
 
-# Ensure /data exists and is owned by appuser
+# Ensure /data exists and is owned recursively by appuser
 mkdir -p /data
 CURRENT_OWNER=$(stat -c '%u:%g' /data 2>/dev/null || stat -f '%u:%g' /data 2>/dev/null)
 if [ "$CURRENT_OWNER" != "$PUID:$PGID" ]; then
-    chown appuser:appuser /data 2>/dev/null || true
+    chown -R appuser:appuser /data 2>/dev/null || true
 fi
+chown -R appuser:appuser /data 2>/dev/null || true
 
 # Default port
 PORT=${PORT:-8080}

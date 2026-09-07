@@ -154,7 +154,7 @@ class TestUnraidTemplate:
 
         data_path = next((p for p in paths if p.attrib.get("Target") == "/data"), None)
         assert data_path is not None
-        assert data_path.attrib.get("Default") == "/mnt/user/appdata/logshed"
+        assert data_path.attrib.get("Default") == "/mnt/cache/appdata/logshed"
         assert data_path.attrib.get("Mode") == "rw"
 
         sock_path = next((p for p in paths if p.attrib.get("Target") == "/var/run/docker.sock"), None)
@@ -217,7 +217,7 @@ class TestEntrypointStatic:
         assert "stat" in content
         assert "usermod -aG root appuser" in content
         assert "CURRENT_OWNER" in content
-        assert "chown appuser:appuser /data" in content
+        assert "chown -R appuser:appuser /data" in content
         assert "--workers 1" in content
         assert "gosu" in content
         assert "tini" in content

@@ -332,7 +332,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 ### 8.2 Unraid Template Directives
 
-* Map `/data` to cache-pool appdata: `/mnt/user/appdata/logshed` (avoids spinning up array parity disks on 2000ms writes).
+* Map `/data` to direct cache-pool appdata: `/mnt/cache/appdata/logshed` (avoids Unraid FUSE `shfs` locking/mmap issues on SQLite WAL and prevents spinning up array parity disks).
 * Map host port `1514` (UDP/TCP) to container `1514`.
 
 ### 8.3 Multi-Host & Remote Docker Deployment Architecture
