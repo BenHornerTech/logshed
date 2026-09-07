@@ -15,6 +15,7 @@ Only the following are true environment variables, supplied at container start a
 - `DOCKER_EXCLUDE_CONTAINERS` — Optional comma-separated list of container names or IDs to exclude from log tailing (e.g. `logshed,custom_redis`).
 - `TZ` — container timezone.
 - `PORT` — web/API port (defaults to `8080` if unset).
+- `SYSLOG_PORT` — Syslog listening port for UDP and TCP (defaults to `1514` if unset).
 - `PUID` and `PGID` — user and group IDs for the application to run as (defaults to `1000` if unset).
 - `LOGSHED_SECRET_KEY` — optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
 - `COOKIE_SECURE` — optional boolean (`true`/`false`, defaults to `false`). When `false` (the default), session cookies are issued without the `Secure` flag to allow direct HTTP access over local IP addresses in homelabs, or automatically detects HTTPS via `X-Forwarded-Proto` header or request scheme. Set to `true` when running behind an SSL-terminating reverse proxy that does not send `X-Forwarded-Proto`.
@@ -157,7 +158,7 @@ Daily task runs iterative batch pruning to prevent WAL expansion and lock conten
 
 ```
 
-* **Syslog Ingestion:** Async UDP and TCP on port `1514`. RFC 3164 and RFC 5424 parsing. Unparseable messages default to severity 6 (Info) preserving raw content.
+* **Syslog Ingestion:** Async UDP and TCP on port `1514` (configurable via `SYSLOG_PORT`). RFC 3164 and RFC 5424 parsing with RFC 6587 octet-counted and newline-delimited TCP framing. Unparseable messages default to severity 6 (Info) preserving raw content.
 * **Docker Ingestion:** Connects via `DOCKER_HOST`. Tails running containers and listens for Docker lifecycle events (`start`/`die`). Sets `source_alias="docker"` (or value of `DOCKER_SOURCE_ALIAS`) and `app_name=container_name`.
 * **Keyed Multiline Assembler:** Buffers continuation lines (e.g., lines starting with whitespace, `\t`, `Caused by:`, `Traceback`) mapped by stream key:
   * Syslog streams: `stream_key = f"{source_ip}:{app_name}"`
@@ -326,7 +327,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 ```
 
 
-* **Ports:** `8080/tcp` (Web UI & API), `1514/udp` and `1514/tcp` (Syslog).
+* **Ports:** `8080/tcp` (Web UI & API), `1514/udp` and `1514/tcp` (Syslog, configurable via `SYSLOG_PORT`).
 * **Volumes:** `/data` (Storage), `/var/run/docker.sock` (Host socket or omitted if using socket-proxy).
 
 ### 8.2 Unraid Template Directives

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import ai, aliases, auth, logs, settings, system
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
-from app.core.config import get_cors_origins, get_db_path, get_docker_host
+from app.core.config import get_cors_origins, get_db_path, get_docker_host, get_syslog_port
 from app.core.migrations import run_migrations
 from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer, InternalLogHandler
 from app.core.security import get_or_create_master_key
@@ -94,9 +94,10 @@ async def lifespan(app: FastAPI):
 
     # 6. Start Syslog Server (optional / non-fatal in dev/test)
     try:
-        _syslog_server = SyslogServer(assembler=_assembler, db_path=db_path, host="0.0.0.0", port=1514)
+        syslog_port = get_syslog_port()
+        _syslog_server = SyslogServer(assembler=_assembler, db_path=db_path, host="0.0.0.0", port=syslog_port)
         _background_tasks.append(asyncio.create_task(_supervise_worker(_syslog_server.start, "SyslogServer")))
-        logger.info("SyslogServer listener started on port 1514.")
+        logger.info(f"SyslogServer listener started on port {syslog_port}.")
     except Exception as e:
         logger.warning(f"SyslogServer could not be started: {e}")
 

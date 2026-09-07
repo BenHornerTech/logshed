@@ -421,21 +421,65 @@ class SyslogTCPProtocol(asyncio.Protocol):
 
     def data_received(self, data: bytes):
         self.buffer += data
-        while b"\n" in self.buffer:
-            line, self.buffer = self.buffer.split(b"\n", 1)
-            if line:
-                source_ip = self.peername[0] if self.peername else "unknown"
-                self._ensure_workers()
-                try:
-                    self.queue.put_nowait((line, source_ip))
-                except asyncio.QueueFull:
-                    from app.core.pipeline import increment_dropped_count
-                    increment_dropped_count(1)
-                    logger.warning("Syslog TCP queue full (5000 items). Message dropped.")
+        while self.buffer:
+            # Strip leading carriage returns or newlines between frames
+            if self.buffer.startswith(b"\r") or self.buffer.startswith(b"\n"):
+                self.buffer = self.buffer.lstrip(b"\r\n")
+                if not self.buffer:
+                    break
+
+            # RFC 6587 octet counting: <MSG-LEN> SP <MSG>
+            match = re.match(rb"^(\d+) ", self.buffer)
+            if match:
+                msg_len = int(match.group(1))
+                header_len = match.end()
+
+                if msg_len > MAX_TCP_BUFFER:
+                    logger.warning(
+                        f"Syslog TCP octet-counted frame length {msg_len} exceeds limit {MAX_TCP_BUFFER} from {self.peername}. Closing connection."
+                    )
+                    self.buffer = b""
+                    if self.transport:
+                        self.transport.close()
+                    break
+
+                if len(self.buffer) < header_len + msg_len:
+                    # Incomplete frame; wait for subsequent chunks
+                    break
+
+                frame = self.buffer[header_len : header_len + msg_len]
+                self.buffer = self.buffer[header_len + msg_len :]
+
+                if frame:
+                    source_ip = self.peername[0] if self.peername else "unknown"
+                    self._ensure_workers()
+                    try:
+                        self.queue.put_nowait((frame, source_ip))
+                    except asyncio.QueueFull:
+                        from app.core.pipeline import increment_dropped_count
+                        increment_dropped_count(1)
+                        logger.warning("Syslog TCP queue full (5000 items). Message dropped.")
+            else:
+                # Non-transparent framing: trailer/newline delimitation (\n)
+                if b"\n" in self.buffer:
+                    line, self.buffer = self.buffer.split(b"\n", 1)
+                    line = line.rstrip(b"\r")
+                    if line:
+                        source_ip = self.peername[0] if self.peername else "unknown"
+                        self._ensure_workers()
+                        try:
+                            self.queue.put_nowait((line, source_ip))
+                        except asyncio.QueueFull:
+                            from app.core.pipeline import increment_dropped_count
+                            increment_dropped_count(1)
+                            logger.warning("Syslog TCP queue full (5000 items). Message dropped.")
+                else:
+                    # No newline found and does not match octet framing; wait for more data
+                    break
 
         if len(self.buffer) > MAX_TCP_BUFFER:
             logger.warning(
-                f"Syslog TCP buffer exceeded {MAX_TCP_BUFFER} bytes without newline from {self.peername}. Closing connection."
+                f"Syslog TCP buffer exceeded {MAX_TCP_BUFFER} bytes without frame boundary from {self.peername}. Closing connection."
             )
             self.buffer = b""
             if self.transport:

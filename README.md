@@ -8,7 +8,7 @@ A lightweight, self-hosted homelab log aggregator and syslog server featuring re
 
 - **Platform-Agnostic & Lightweight**: Single container, single process with zero heavy external database dependencies (uses standard library SQLite with WAL mode + FTS5).
 - **Dual Ingestion**:
-  - **Syslog**: Async UDP & TCP on port `1514` supporting RFC 3164 and RFC 5424 formats with automatic client IP tagging and hostname resolution.
+  - **Syslog**: Async UDP & TCP on port `1514` (configurable via `SYSLOG_PORT`) supporting RFC 3164 and RFC 5424 formats, RFC 6587 octet-counted and newline-delimited TCP framing, with automatic client IP tagging and hostname resolution.
   - **Docker Engine API**: Direct container tailing via local Unix socket (`/var/run/docker.sock`) or remote Docker host / proxy (`tcp://<host>:2375`) without external Docker SDK bloat.
 - **Keyed Multiline Assembly & Raw Log Fidelity**: Assembles stack traces, tracebacks, and multiline logs cleanly on a per-stream basis while preserving original raw message payloads.
 - **Fast Full-Text Search**: Instant search and filtering across hosts, containers, severity levels, and time windows.
@@ -77,6 +77,7 @@ The following environment variables are supplied at container boot:
 | `PUID` | `1000` | Process user ID used by the internal non-root `appuser`. |
 | `PGID` | `1000` | Process group ID used by the internal non-root `appuser`. |
 | `PORT` | `8080` | HTTP port for the web dashboard and REST API. |
+| `SYSLOG_PORT` | `1514` | Syslog UDP and TCP listening port (1-65535). |
 | `TZ` | `UTC` | Container timezone. |
 | `COOKIE_SECURE` | `false` | Set to `true` if running behind an SSL reverse proxy that does not send `X-Forwarded-Proto`. |
 | `LOGSHED_SECRET_KEY` | *(auto-generated)* | 32-byte URL-safe base64 key for encrypting runtime settings at rest. |

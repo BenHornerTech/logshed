@@ -7,6 +7,7 @@ import datetime
 from pathlib import Path
 import pytest
 
+from app.core.config import get_syslog_port
 from app.core.migrations import get_connection, run_migrations
 from app.core.pipeline import KeyedMultilineAssembler
 from app.collectors.syslog import (
@@ -398,9 +399,227 @@ class TestSyslogNetworkAndProtocol:
         assert get_dropped_count() == initial_drops + 1
         await proto.stop()
 
+    @pytest.mark.asyncio
+    async def test_tcp_syslog_octet_counted_single_message(self, db_path: Path):
+        """TCP protocol parses single RFC 6587 octet-counted frame."""
+        received = []
+
+        class MockAssembler:
+            async def feed(self, stream_key: str, entry: dict):
+                received.append((stream_key, entry))
+
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(MockAssembler(), alias_cache)
+
+        class MockTransport:
+            def get_extra_info(self, name):
+                return ("10.0.0.8", 54321)
+            def close(self):
+                pass
+
+        proto.connection_made(MockTransport())
+
+        msg = b"<134>1 2024-01-15T10:30:00.000Z srv01 myapp 1234 ID47 - Octet-counted payload"
+        frame = f"{len(msg)} ".encode("ascii") + msg
+
+        proto.data_received(frame)
+        await asyncio.sleep(0.05)
+
+        assert len(received) == 1
+        assert received[0][0] == "10.0.0.8:myapp"
+        assert received[0][1]["message"] == "Octet-counted payload"
+        assert received[0][1]["hostname"] == "srv01"
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_tcp_syslog_octet_counted_batched_messages(self, db_path: Path):
+        """TCP protocol parses multiple RFC 6587 octet-counted frames in a single chunk (with and without newlines)."""
+        received = []
+
+        class MockAssembler:
+            async def feed(self, stream_key: str, entry: dict):
+                received.append((stream_key, entry))
+
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(MockAssembler(), alias_cache)
+
+        class MockTransport:
+            def get_extra_info(self, name):
+                return ("10.0.0.8", 54321)
+            def close(self):
+                pass
+
+        proto.connection_made(MockTransport())
+
+        msg1 = b"<14>Jan  1 10:00:00 host1 app1: msg 1"
+        msg2 = b"<14>Jan  1 10:00:01 host1 app1: msg 2"
+        # Back-to-back without newlines
+        batch1 = f"{len(msg1)} ".encode("ascii") + msg1 + f"{len(msg2)} ".encode("ascii") + msg2
+        proto.data_received(batch1)
+        await asyncio.sleep(0.05)
+
+        assert len(received) == 2
+        assert received[0][1]["message"] == "msg 1"
+        assert received[1][1]["message"] == "msg 2"
+
+        # Trailing / interleaved newlines
+        msg3 = b"<14>Jan  1 10:00:02 host1 app1: msg 3"
+        batch2 = b"\n" + f"{len(msg3)} ".encode("ascii") + msg3 + b"\r\n"
+        proto.data_received(batch2)
+        await asyncio.sleep(0.05)
+
+        assert len(received) == 3
+        assert received[2][1]["message"] == "msg 3"
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_tcp_syslog_octet_counted_fragmented_frames(self, db_path: Path):
+        """TCP protocol properly handles octet-counted frames split across multiple network packets."""
+        received = []
+
+        class MockAssembler:
+            async def feed(self, stream_key: str, entry: dict):
+                received.append((stream_key, entry))
+
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(MockAssembler(), alias_cache)
+
+        class MockTransport:
+            def get_extra_info(self, name):
+                return ("10.0.0.8", 54321)
+            def close(self):
+                pass
+
+        proto.connection_made(MockTransport())
+
+        msg = b"<14>Jan  1 10:00:00 host1 app1: long message arriving in fragments"
+        frame = f"{len(msg)} ".encode("ascii") + msg
+
+        # Split 1: length prefix split
+        proto.data_received(frame[:2])
+        await asyncio.sleep(0.02)
+        assert len(received) == 0
+
+        # Split 2: payload body split
+        proto.data_received(frame[2:20])
+        await asyncio.sleep(0.02)
+        assert len(received) == 0
+
+        # Split 3: remainder
+        proto.data_received(frame[20:])
+        await asyncio.sleep(0.05)
+
+        assert len(received) == 1
+        assert received[0][1]["message"] == "long message arriving in fragments"
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_tcp_syslog_octet_counted_absurd_length_disconnects(self, db_path: Path):
+        """TCP protocol disconnects and clears buffer if octet-counted frame length exceeds MAX_TCP_BUFFER."""
+        asm = KeyedMultilineAssembler()
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(asm, alias_cache)
+
+        class MockTransport:
+            def __init__(self):
+                self.closed = False
+            def get_extra_info(self, name):
+                return ("192.168.1.100", 514)
+            def close(self):
+                self.closed = True
+
+        transport = MockTransport()
+        proto.connection_made(transport)
+
+        # Length 99999 exceeds 65536
+        proto.data_received(b"99999 <14>message...")
+
+        assert transport.closed is True
+        assert proto.buffer == b""
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_tcp_syslog_mixed_framing_modes(self, db_path: Path):
+        """TCP protocol dynamically handles both octet-counted and newline-delimited frames."""
+        received = []
+
+        class MockAssembler:
+            async def feed(self, stream_key: str, entry: dict):
+                received.append((stream_key, entry))
+
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(MockAssembler(), alias_cache)
+
+        class MockTransport:
+            def get_extra_info(self, name):
+                return ("10.0.0.8", 54321)
+            def close(self):
+                pass
+
+        proto.connection_made(MockTransport())
+
+        # First send an octet-counted frame
+        msg1 = b"<14>Jan  1 10:00:00 host1 app1: octet message"
+        frame1 = f"{len(msg1)} ".encode("ascii") + msg1
+        proto.data_received(frame1)
+
+        # Next send a newline-delimited frame
+        frame2 = b"<14>Jan  1 10:00:01 host1 app1: newline message\n"
+        proto.data_received(frame2)
+
+        await asyncio.sleep(0.05)
+
+        assert len(received) == 2
+        assert received[0][1]["message"] == "octet message"
+        assert received[1][1]["message"] == "newline message"
+        await proto.stop()
+
 
 # ===================================================================
-# 3. Host Alias Cache & Resolution
+# 3. Syslog Configuration (SYSLOG_PORT)
+# ===================================================================
+
+class TestSyslogConfig:
+
+    def test_syslog_port_default(self, monkeypatch):
+        monkeypatch.delenv("SYSLOG_PORT", raising=False)
+        assert get_syslog_port() == 1514
+
+    def test_syslog_port_custom_valid(self, monkeypatch):
+        monkeypatch.setenv("SYSLOG_PORT", "514")
+        assert get_syslog_port() == 514
+
+        monkeypatch.setenv("SYSLOG_PORT", "15140")
+        assert get_syslog_port() == 15140
+
+        monkeypatch.setenv("SYSLOG_PORT", " 1514 ")
+        assert get_syslog_port() == 1514
+
+        monkeypatch.setenv("SYSLOG_PORT", "1")
+        assert get_syslog_port() == 1
+
+        monkeypatch.setenv("SYSLOG_PORT", "65535")
+        assert get_syslog_port() == 65535
+
+    def test_syslog_port_invalid_fallback(self, monkeypatch):
+        monkeypatch.setenv("SYSLOG_PORT", "0")
+        assert get_syslog_port() == 1514
+
+        monkeypatch.setenv("SYSLOG_PORT", "65536")
+        assert get_syslog_port() == 1514
+
+        monkeypatch.setenv("SYSLOG_PORT", "-514")
+        assert get_syslog_port() == 1514
+
+        monkeypatch.setenv("SYSLOG_PORT", "abc")
+        assert get_syslog_port() == 1514
+
+        monkeypatch.setenv("SYSLOG_PORT", "")
+        assert get_syslog_port() == 1514
+
+
+# ===================================================================
+# 4. Host Alias Cache & Resolution
 # ===================================================================
 
 class TestAliasCache:

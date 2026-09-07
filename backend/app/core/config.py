@@ -36,6 +36,22 @@ def get_port() -> int:
     except ValueError:
         return 8080
 
+def get_syslog_port() -> int:
+    """
+    Returns the configured Syslog UDP and TCP listening port.
+    Reads SYSLOG_PORT environment variable (default: 1514).
+    Validates that the port is an integer in the range 1 <= port <= 65535,
+    falling back to 1514 if unset or invalid.
+    """
+    raw = os.environ.get("SYSLOG_PORT", "1514")
+    try:
+        val = int(raw.strip())
+        if 1 <= val <= 65535:
+            return val
+    except (ValueError, TypeError):
+        pass
+    return 1514
+
 def get_docker_host() -> str:
     """Returns the Docker host socket or proxy address."""
     return os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")
