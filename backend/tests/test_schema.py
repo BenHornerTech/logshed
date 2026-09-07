@@ -111,6 +111,7 @@ class TestSchemaIntegrity:
             "idx_logs_app_time",
             "idx_logs_src_time",
             "idx_logs_source_ip",
+            "idx_logs_source_app_ip",
             "idx_storage_metrics_time",
         }
         assert expected.issubset(indexes)

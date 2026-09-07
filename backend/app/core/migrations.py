@@ -86,6 +86,7 @@ CREATE INDEX idx_logs_time_sev ON logs(timestamp DESC, severity);
 CREATE INDEX idx_logs_app_time ON logs(app_name, timestamp DESC);
 CREATE INDEX idx_logs_src_time ON logs(source_alias, timestamp DESC);
 CREATE INDEX idx_logs_source_ip ON logs(source_ip);
+CREATE INDEX idx_logs_source_app_ip ON logs(source_alias, app_name, source_ip);
 
 CREATE VIRTUAL TABLE logs_fts USING fts5(
     app_name,
@@ -211,6 +212,15 @@ def run_migrations(db_path: Union[str, Path]) -> None:
             conn.execute(
                 "UPDATE logs SET timestamp = received_at "
                 "WHERE timestamp > strftime('%Y-%m-%dT%H:%M:%S', 'now', '+1 minute') AND timestamp > received_at;"
+            )
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        # Ensure covering index for facets loose index skip-scan exists
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logs_source_app_ip ON logs(source_alias, app_name, source_ip);"
             )
             conn.commit()
         except sqlite3.OperationalError:

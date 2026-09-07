@@ -708,3 +708,120 @@ class TestLogStreamAndFacets:
         assert "nas-box" in data["app_to_hosts"]["smartd"]
         assert "nas-box" in data["app_to_hosts"]["zfs-scrub"]
         assert "192.168.1.50" not in data["app_to_hosts"]["smartd"]
+
+    @pytest.mark.asyncio
+    async def test_log_facets_preserves_infrequent_unaliased_hosts_beyond_seven_days(
+        self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
+    ):
+        """Issue 6: An unaliased host with only 1 log beyond 7 days (e.g. 25 days old) within retention must be discovered."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        recent_ts = (now_utc - datetime.timedelta(hours=1)).isoformat()
+        old_ts = (now_utc - datetime.timedelta(days=25)).isoformat()
+
+        test_entries = [
+            # Active host logging recently
+            {
+                "timestamp": recent_ts,
+                "received_at": recent_ts,
+                "source_ip": "10.0.0.1",
+                "source_alias": "primary-server",
+                "app_name": "nginx",
+                "facility": 1,
+                "severity": 6,
+                "message": "request handled",
+                "raw": "request handled",
+            },
+            # Infrequent UNALIASED host that logged only once 25 days ago
+            {
+                "timestamp": old_ts,
+                "received_at": old_ts,
+                "source_ip": "192.168.1.200",
+                "source_alias": "quarterly-backup-vm",
+                "app_name": "borgbackup",
+                "facility": 1,
+                "severity": 4,
+                "message": "backup completed",
+                "raw": "backup completed",
+            },
+            # Host that logged only with empty app_name
+            {
+                "timestamp": old_ts,
+                "received_at": old_ts,
+                "source_ip": "192.168.1.201",
+                "source_alias": "sensor-device",
+                "app_name": "",
+                "facility": 1,
+                "severity": 5,
+                "message": "temperature 22C",
+                "raw": "temperature 22C",
+            },
+        ]
+        _seed_logs(db_file, test_entries)
+
+        response = await client.get("/api/logs/facets")
+        assert response.status_code == 200
+        data = response.json()
+
+        # Both unaliased historical host and sensor device must be present in sources
+        assert "primary-server" in data["sources"]
+        assert "quarterly-backup-vm" in data["sources"]
+        assert "sensor-device" in data["sources"]
+
+        # Borgbackup app must be present
+        assert "nginx" in data["apps"]
+        assert "borgbackup" in data["apps"]
+
+        # Mappings
+        assert "nginx" in data["host_to_apps"]["primary-server"]
+        assert "borgbackup" in data["host_to_apps"]["quarterly-backup-vm"]
+        assert data["host_to_apps"]["sensor-device"] == []
+
+        assert "primary-server" in data["app_to_hosts"]["nginx"]
+        assert "quarterly-backup-vm" in data["app_to_hosts"]["borgbackup"]
+
+    @pytest.mark.asyncio
+    async def test_log_facets_preserves_host_when_alias_equals_ip(
+        self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
+    ):
+        """Edge case: When an alias in host_aliases equals the IP address, it must not be pruned from sources or host_to_apps."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        ts = (now_utc - datetime.timedelta(days=5)).isoformat()
+
+        test_entries = [
+            {
+                "timestamp": ts,
+                "received_at": ts,
+                "source_ip": "10.0.0.99",
+                "source_alias": "10.0.0.99",
+                "app_name": "coredns",
+                "facility": 1,
+                "severity": 6,
+                "message": "dns query",
+                "raw": "dns query",
+            }
+        ]
+        _seed_logs(db_file, test_entries)
+
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, notes, created_at) VALUES (?, ?, ?, ?)",
+                ("10.0.0.99", "10.0.0.99", "Self-referential alias note", ts),
+            )
+            conn.commit()
+
+        response = await client.get("/api/logs/facets")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert "10.0.0.99" in data["sources"]
+        assert "coredns" in data["apps"]
+        assert "coredns" in data["host_to_apps"]["10.0.0.99"]
+        assert "10.0.0.99" in data["app_to_hosts"]["coredns"]
+
+

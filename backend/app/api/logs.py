@@ -326,41 +326,106 @@ async def get_log_facets(
     """
     def _fetch_facets(conn):
         cursor = conn.cursor()
-        # Query distinct facets restricted to recent logs to avoid full table scan across millions of historical rows,
-        # unioned with logs for configured host aliases so infrequent hosts remain selectable.
+        # Fast loose index skip-scans (O(K log N) B-Tree seeks) over covering index.
+        # Eliminates the 7-day cutoff so that any host or app within retention (even with only 1 log)
+        # is retained, executing in single-digit milliseconds without scanning millions of rows.
+
+        # 1. Distinct sources
         cursor.execute(
             """
-            SELECT DISTINCT source_alias, source_ip, app_name
-            FROM logs
-            WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days')
-              AND (source_alias != '' OR source_ip != '')
-              AND app_name != ''
-            UNION
-            SELECT DISTINCT l.source_alias, l.source_ip, l.app_name
-            FROM host_aliases h
-            JOIN logs l ON (l.source_ip = h.ip OR l.source_alias = h.alias OR l.source_alias = h.ip)
-            WHERE (l.source_alias != '' OR l.source_ip != '') AND l.app_name != ''
+            WITH RECURSIVE distinct_sources AS (
+                SELECT MIN(source_alias) AS val FROM logs WHERE source_alias != ''
+                UNION ALL
+                SELECT (SELECT MIN(source_alias) FROM logs WHERE source_alias > s.val AND source_alias != '')
+                FROM distinct_sources s
+                WHERE s.val IS NOT NULL
+            )
+            SELECT val FROM distinct_sources WHERE val IS NOT NULL;
             """
         )
-        rows = cursor.fetchall()
-        if not rows:
-            cursor.execute(
-                """
-                SELECT DISTINCT source_alias, source_ip, app_name
-                FROM logs
-                WHERE (source_alias != '' OR source_ip != '') AND app_name != ''
-                """
+        sources = [r[0] for r in cursor.fetchall()]
+
+        # 2. Distinct fallback IPs for logs where source_alias is empty
+        cursor.execute(
+            """
+            WITH RECURSIVE distinct_ips AS (
+                SELECT MIN(source_ip) AS val FROM logs WHERE source_alias = '' AND source_ip != ''
+                UNION ALL
+                SELECT (SELECT MIN(source_ip) FROM logs WHERE source_alias = '' AND source_ip > s.val AND source_ip != '')
+                FROM distinct_ips s
+                WHERE s.val IS NOT NULL
             )
-            rows = cursor.fetchall()
+            SELECT val FROM distinct_ips WHERE val IS NOT NULL;
+            """
+        )
+        fallback_ips = [r[0] for r in cursor.fetchall()]
+
+        # 3. Distinct apps
+        cursor.execute(
+            """
+            WITH RECURSIVE distinct_apps AS (
+                SELECT MIN(app_name) AS val FROM logs WHERE app_name != ''
+                UNION ALL
+                SELECT (SELECT MIN(app_name) FROM logs WHERE app_name > a.val AND app_name != '')
+                FROM distinct_apps a
+                WHERE a.val IS NOT NULL
+            )
+            SELECT val FROM distinct_apps WHERE val IS NOT NULL;
+            """
+        )
+        apps_res = [r[0] for r in cursor.fetchall()]
+
+        # 4. Distinct (source_alias, app_name, source_ip) pairs via 2-column skip-scan
+        cursor.execute(
+            """
+            WITH RECURSIVE cte(s, a) AS (
+                SELECT
+                    (SELECT MIN(source_alias) FROM logs WHERE source_alias != '' AND app_name != ''),
+                    (SELECT MIN(app_name) FROM logs WHERE source_alias = (SELECT MIN(source_alias) FROM logs WHERE source_alias != '' AND app_name != '') AND app_name != '')
+                UNION ALL
+                SELECT
+                    CASE
+                        WHEN (SELECT MIN(app_name) FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '') IS NOT NULL
+                        THEN cte.s
+                        ELSE (SELECT MIN(source_alias) FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '')
+                    END,
+                    CASE
+                        WHEN (SELECT MIN(app_name) FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '') IS NOT NULL
+                        THEN (SELECT MIN(app_name) FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '')
+                        ELSE (SELECT MIN(app_name) FROM logs WHERE source_alias = (SELECT MIN(source_alias) FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '') AND app_name != '')
+                    END
+                FROM cte
+                WHERE cte.s IS NOT NULL
+            )
+            SELECT
+                s AS source_alias,
+                a AS app_name,
+                (SELECT source_ip FROM logs WHERE source_alias = cte.s AND app_name = cte.a LIMIT 1) AS source_ip
+            FROM cte
+            WHERE s IS NOT NULL;
+            """
+        )
+        pairs = cursor.fetchall()
+
+        # Edge case: Mappings for fallback IPs where source_alias was empty
+        if fallback_ips:
+            for ip in fallback_ips:
+                cursor.execute(
+                    "SELECT DISTINCT app_name FROM logs WHERE source_alias = '' AND source_ip = ? AND app_name != ''",
+                    (ip,),
+                )
+                for r in cursor.fetchall():
+                    pairs.append((ip, r[0], ip))
 
         cursor.execute("SELECT ip, alias FROM host_aliases")
         alias_rows = cursor.fetchall()
         aliases_map = {r["ip"]: r["alias"] for r in alias_rows if r["alias"]}
 
         sources_set = set()
-        apps_set = set()
+        apps_set = set(apps_res)
         host_to_apps: dict[str, set[str]] = {}
         app_to_hosts: dict[str, set[str]] = {}
+
         # Add all configured aliases
         for alias in aliases_map.values():
             if alias:
@@ -368,10 +433,23 @@ async def get_log_facets(
                 if alias not in host_to_apps:
                     host_to_apps[alias] = set()
 
-        for r in rows:
-            raw_alias = r["source_alias"]
-            ip = r["source_ip"]
-            app = r["app_name"]
+        # Add all distinct sources from logs (even if they logged without app_name)
+        for s in sources:
+            canonical = aliases_map.get(s, s)
+            sources_set.add(canonical)
+            if canonical not in host_to_apps:
+                host_to_apps[canonical] = set()
+
+        for ip in fallback_ips:
+            canonical = aliases_map.get(ip, ip)
+            sources_set.add(canonical)
+            if canonical not in host_to_apps:
+                host_to_apps[canonical] = set()
+
+        for r in pairs:
+            raw_alias = r[0]
+            app = r[1]
+            ip = r[2]
 
             # Canonical host resolution:
             # If the IP or raw_alias matches a configured host alias, use the alias.
@@ -392,20 +470,21 @@ async def get_log_facets(
                     app_to_hosts[app] = set()
                 app_to_hosts[app].add(canonical_host)
 
-        # Safety: Ensure no IP that has an alias remains in sources_set or host_to_apps
+        # Safety: Ensure no IP that has a distinct alias remains in sources_set or host_to_apps
         for ip, alias in aliases_map.items():
-            if ip in sources_set:
-                sources_set.remove(ip)
-            if ip in host_to_apps:
-                if alias in host_to_apps:
-                    host_to_apps[alias].update(host_to_apps[ip])
-                else:
-                    host_to_apps[alias] = set(host_to_apps[ip])
-                del host_to_apps[ip]
-            for app, hosts in app_to_hosts.items():
-                if ip in hosts:
-                    hosts.remove(ip)
-                    hosts.add(alias)
+            if ip != alias:
+                if ip in sources_set:
+                    sources_set.remove(ip)
+                if ip in host_to_apps:
+                    if alias in host_to_apps:
+                        host_to_apps[alias].update(host_to_apps[ip])
+                    else:
+                        host_to_apps[alias] = set(host_to_apps[ip])
+                    del host_to_apps[ip]
+                for app, hosts in app_to_hosts.items():
+                    if ip in hosts:
+                        hosts.remove(ip)
+                        hosts.add(alias)
 
         return {
             "sources": sorted(sources_set),
