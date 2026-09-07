@@ -349,8 +349,12 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     }
   }, [updateFacetsWithNewLogs]);
 
+  // In-flight query cancellation / stale response guard
+  const fetchRequestIdRef = useRef<number>(0);
+
   // Load initial logs on mount or on filter apply
-  const loadInitialLogs = useCallback(async () => {
+  const loadInitialLogs = useCallback(async (overrideFilters?: LogFilterParams) => {
+    const reqId = ++fetchRequestIdRef.current;
     try {
       setIsLoadingHistory(true);
       historicalOffsetRef.current = 0;
@@ -361,11 +365,19 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       }
       incomingBufferRef.current = [];
       pendingScrollAdjustmentRef.current = 0;
+
+      const activeFilters = overrideFilters !== undefined ? overrideFilters : filters;
       const res = await fetchLogs({
-        ...filters,
+        ...activeFilters,
         limit: 500,
         offset: 0,
       });
+
+      // Discard stale responses from superseded requests
+      if (reqId !== fetchRequestIdRef.current) {
+        return;
+      }
+
       // Keep newest logs at the top (res.logs is ordered DESC)
       setLogs(res.logs);
       updateFacetsWithNewLogs(res.logs);
@@ -382,9 +394,13 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         }
       }, 50);
     } catch (err) {
-      console.error('Failed to load initial logs', err);
+      if (reqId === fetchRequestIdRef.current) {
+        console.error('Failed to load initial logs', err);
+      }
     } finally {
-      setIsLoadingHistory(false);
+      if (reqId === fetchRequestIdRef.current) {
+        setIsLoadingHistory(false);
+      }
     }
   }, [filters, updateFacetsWithNewLogs]);
 
@@ -392,6 +408,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     if (isLoadingMoreRef.current || !hasMoreLogs || isLoadingHistory) return;
     isLoadingMoreRef.current = true;
     setIsLoadingMore(true);
+    const reqId = fetchRequestIdRef.current;
     try {
       const currentOffset = historicalOffsetRef.current;
       const res = await fetchLogs({
@@ -399,6 +416,12 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         limit: 500,
         offset: currentOffset,
       });
+
+      // Discard stale responses if filter changed while loading more
+      if (reqId !== fetchRequestIdRef.current) {
+        return;
+      }
+
       historicalOffsetRef.current = currentOffset + res.logs.length;
       if (res.logs.length < 500 || (res.total !== undefined && historicalOffsetRef.current >= res.total)) {
         setHasMoreLogs(false);
@@ -418,7 +441,9 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         });
       }
     } catch (err) {
-      console.error('Failed to load more historical logs', err);
+      if (reqId === fetchRequestIdRef.current) {
+        console.error('Failed to load more historical logs', err);
+      }
     } finally {
       isLoadingMoreRef.current = false;
       setIsLoadingMore(false);
@@ -820,6 +845,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   }, [logs, selectedLogIds]);
 
   const clearLogsBuffer = () => {
+    fetchRequestIdRef.current += 1;
     if (flushTimerRef.current !== null) {
       clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
@@ -833,6 +859,23 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     setHasMoreLogs(false);
   };
 
+  const handleResetFilters = useCallback(() => {
+    setFilters({});
+    setAutoScroll(true);
+    isAutoScrollRef.current = true;
+    setMissedLogsCount(0);
+    pendingScrollAdjustmentRef.current = 0;
+    setSelectedLogIds(new Set());
+    setLastSelectedLogIndex(null);
+    if (parentRef.current) {
+      if (typeof parentRef.current.scrollTo === 'function') {
+        parentRef.current.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+      } else {
+        parentRef.current.scrollTop = 0;
+      }
+    }
+  }, []);
+
   return (
     <div className="flex flex-col h-[calc(100vh-45px)] bg-dark-950 select-text overflow-hidden">
       {/* Search & Filter Bar */}
@@ -840,10 +883,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         filters={filters}
         onFilterChange={setFilters}
         onSearch={loadInitialLogs}
-        onReset={() => {
-          setFilters({});
-          loadInitialLogs();
-        }}
+        onReset={handleResetFilters}
         availableSources={availableSourcesForSelectedApps}
         availableApps={availableAppsForSelectedHosts}
       />

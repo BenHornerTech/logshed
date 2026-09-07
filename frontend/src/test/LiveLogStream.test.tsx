@@ -911,6 +911,117 @@ describe('LiveLogStream Component', () => {
     // Verify newly introduced source and app were incrementally accumulated
     expect(screen.getByRole('button', { name: 'storage-node' })).toBeInTheDocument();
   });
+
+  it('resets stream back to live view when Reset button is clicked and restores all logs', async () => {
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+      expect(screen.getByText('Container started cleanly')).toBeInTheDocument();
+    });
+
+    const filteredLog = sampleLogs[0]; // nginx
+    vi.spyOn(logsApi, 'fetchLogs').mockImplementation(async (params) => {
+      if (params?.sources && params.sources.includes('homelab-host')) {
+        return {
+          logs: [filteredLog],
+          total: 1,
+          limit: 500,
+          offset: 0,
+        };
+      }
+      return {
+        logs: [...sampleLogs],
+        total: sampleLogs.length,
+        limit: 500,
+        offset: 0,
+      };
+    });
+
+    // Click quick filter for homelab-host
+    fireEvent.click(screen.getByRole('button', { name: 'homelab-host' }));
+
+    // Reset button should appear
+    await waitFor(() => {
+      expect(screen.getByTitle('Reset all active filters')).toBeInTheDocument();
+    });
+
+    // Click Reset button
+    const resetBtn = screen.getByTitle('Reset all active filters');
+    fireEvent.click(resetBtn);
+
+    // Verify the stream refreshes and displays all logs again
+    await waitFor(() => {
+      expect(screen.getByText('Container started cleanly')).toBeInTheDocument();
+      expect(screen.getByText('Default deny rule matched WAN block')).toBeInTheDocument();
+      expect(screen.getByText('Auto-Scroll ON')).toBeInTheDocument();
+    });
+
+    // Reset button should now be gone
+    expect(screen.queryByTitle('Reset all active filters')).toBeNull();
+  });
+
+  it('prevents race conditions where a slow filtered fetch resolves after Reset is clicked', async () => {
+    let slowResolve: ((val: any) => void) | null = null;
+    let fastResolve: ((val: any) => void) | null = null;
+
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    vi.spyOn(logsApi, 'fetchLogs').mockImplementation(async (params) => {
+      if (params?.sources && params.sources.includes('homelab-host')) {
+        // Delayed filtered request
+        return new Promise((resolve) => {
+          slowResolve = () =>
+            resolve({
+              logs: [sampleLogs[0]],
+              total: 1,
+              limit: 500,
+              offset: 0,
+            });
+        });
+      }
+      // Live / reset request
+      return new Promise((resolve) => {
+        fastResolve = () =>
+          resolve({
+            logs: [...sampleLogs],
+            total: sampleLogs.length,
+            limit: 500,
+            offset: 0,
+          });
+      });
+    });
+
+    // Apply filter
+    fireEvent.click(screen.getByRole('button', { name: 'homelab-host' }));
+
+    // Before the filtered request finishes, user clicks Reset
+    await waitFor(() => {
+      expect(screen.getByTitle('Reset all active filters')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTitle('Reset all active filters'));
+
+    // Now fast reset resolves first
+    if (fastResolve) (fastResolve as () => void)();
+
+    await waitFor(() => {
+      expect(screen.getByText('Container started cleanly')).toBeInTheDocument();
+    });
+
+    // Now slow filtered request resolves AFTER reset has already finished
+    if (slowResolve) (slowResolve as () => void)();
+
+    // Give microtasks time to run
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The live logs MUST NOT be overwritten by the stale slow filtered response!
+    expect(screen.getByText('Container started cleanly')).toBeInTheDocument();
+    expect(screen.getByText('Default deny rule matched WAN block')).toBeInTheDocument();
+  });
 });
 
 describe('matchesSearchQuery Helper Function', () => {
