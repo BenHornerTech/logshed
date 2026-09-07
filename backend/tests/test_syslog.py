@@ -168,6 +168,93 @@ class TestSyslogParsing:
         assert diff <= 60
         assert result["timestamp"] != future_iso
 
+    def test_rfc3164_omitted_hostname_with_pid(self):
+        """RFC 3164 messages where hostname is omitted and MSG (TAG[PID]:) directly follows timestamp."""
+        raw = b"<78>Sep  7 14:15:00 crond[330276]: USER root pid 718623 cmd run-parts /etc/periodic/15min"
+        result = parse_syslog_message(raw, "192.168.1.50")
+
+        assert result["facility"] == 9       # 78 // 8 (cron)
+        assert result["severity"] == 6       # 78 % 8 (info)
+        assert result["app_name"] == "crond"
+        assert result["message"] == "USER root pid 718623 cmd run-parts /etc/periodic/15min"
+        assert "hostname" not in result
+        assert result["source_ip"] == "192.168.1.50"
+
+    def test_rfc3164_omitted_hostname_without_pid(self):
+        """RFC 3164 message where hostname is omitted and MSG (TAG:) directly follows timestamp."""
+        raw = b"<14>Jan  5 10:30:00 myapp: Something happened"
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["facility"] == 1
+        assert result["severity"] == 6
+        assert result["app_name"] == "myapp"
+        assert result["message"] == "Something happened"
+        assert "hostname" not in result
+
+    def test_rfc3164_omitted_hostname_no_colon_with_pid(self):
+        """RFC 3164 message where hostname is omitted and MSG has PID but no colon."""
+        raw = b"<14>Jan  5 10:30:00 myapp[123] Something happened"
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["facility"] == 1
+        assert result["severity"] == 6
+        assert result["app_name"] == "myapp"
+        assert result["message"] == "Something happened"
+        assert "hostname" not in result
+
+    def test_rfc3164_bracketed_tag_without_hostname(self):
+        """RFC 3164 message with bracketed process name (e.g. [kernel]) must not discard the bracketed token."""
+        raw = b"<14>Sep  7 14:15:00 [kernel] USB disconnected"
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["app_name"] == "kernel"
+        assert result["message"] == "USB disconnected"
+        assert "hostname" not in result
+
+    def test_rfc3164_bracketed_tag_with_colon(self):
+        """RFC 3164 message with bracketed process name and colon (e.g. [kernel]:)."""
+        raw = b"<14>Sep  7 14:15:00 [kernel]: USB disconnected"
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["app_name"] == "kernel"
+        assert result["message"] == "USB disconnected"
+        assert "hostname" not in result
+
+    def test_rfc3164_hostname_with_pid_no_colon(self):
+        """RFC 3164 message with hostname and process PID without colon must cleanly strip PID from app_name."""
+        raw = b"<14>Sep  7 14:15:00 myhost crond[330276] USER root pid 718623"
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["hostname"] == "myhost"
+        assert result["app_name"] == "crond"
+        assert result["message"] == "USER root pid 718623"
+
+    def test_rfc3164_nil_hostname(self):
+        """RFC 3164 message with '-' as NIL hostname should not treat '-' as hostname."""
+        raw = b"<14>Sep  7 14:15:00 - myapp: message content"
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert "hostname" not in result
+        assert result["app_name"] == "myapp"
+        assert result["message"] == "message content"
+
+    def test_rfc3164_single_word_message(self):
+        """RFC 3164 message with single word after timestamp."""
+        raw = b"<14>Sep  7 14:15:00 reboot"
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert "hostname" not in result
+        assert result["message"] == "reboot"
+
+    def test_rfc3164_ipv6_hostname(self):
+        """RFC 3164 message with IPv6 hostname."""
+        raw = b"<14>Sep  7 14:15:00 2001:db8::1 crond[123]: test message"
+        result = parse_syslog_message(raw, "10.0.0.1")
+
+        assert result["hostname"] == "2001:db8::1"
+        assert result["app_name"] == "crond"
+        assert result["message"] == "test message"
+
 
 # ===================================================================
 # 2. Network Listeners & Protocols
@@ -342,6 +429,53 @@ class TestSyslogNetworkAndProtocol:
 
         assert len(received) == 1
         assert received[0][1]["source_alias"] == "192.168.1.4"
+
+    @pytest.mark.asyncio
+    async def test_syslog_omitted_hostname_uses_configured_alias_or_ip(self, db_path: Path):
+        """Messages omitting hostname (e.g. crond[330276]:) should resolve via host_aliases or retain source_ip."""
+        received = []
+
+        class MockAssembler:
+            async def feed(self, stream_key: str, entry: dict):
+                received.append((stream_key, entry))
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('192.168.1.75', 'npm-server', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        alias_cache = AliasCache(db_path)
+        alias_cache.load_aliases()
+
+        proto = SyslogUDPProtocol(MockAssembler(), alias_cache)
+
+        # 1. From IP with alias configured: adopts 'npm-server'
+        proto.datagram_received(
+            b"<78>Sep  7 14:15:00 crond[330276]: USER root pid 718623 cmd run-parts /etc/periodic/15min",
+            ("192.168.1.75", 514),
+        )
+        # 2. From unaliased IP: retains source_ip ('192.168.1.76'), does NOT become 'crond[330276]'
+        proto.datagram_received(
+            b"<78>Sep  7 14:15:00 crond[330276]: USER root pid 718623 cmd run-parts /etc/periodic/15min",
+            ("192.168.1.76", 514),
+        )
+        await asyncio.sleep(0.05)
+
+        assert len(received) == 2
+        # Message 1:
+        assert received[0][1]["source_alias"] == "npm-server"
+        assert received[0][1]["app_name"] == "crond"
+        assert received[0][1]["message"] == "USER root pid 718623 cmd run-parts /etc/periodic/15min"
+        assert "hostname" not in received[0][1]
+
+        # Message 2:
+        assert received[1][1]["source_alias"] == "192.168.1.76"
+        assert received[1][1]["app_name"] == "crond"
+        assert received[1][1]["message"] == "USER root pid 718623 cmd run-parts /etc/periodic/15min"
+        assert "hostname" not in received[1][1]
 
     @pytest.mark.asyncio
     async def test_syslog_server_start_and_stop(self, db_path: Path):

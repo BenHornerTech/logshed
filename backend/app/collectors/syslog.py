@@ -155,24 +155,61 @@ def parse_syslog_message(data: bytes, source_ip: str) -> dict[str, Any]:
             except ValueError:
                 pass
                 
+            # Helper to parse RFC 3164 MSG part into app_name and message
+            def _parse_rfc3164_msg(msg_part: str) -> None:
+                # 1. TAG[PID]: CONTENT or TAG: CONTENT
+                m = re.match(r"^([^:\s\[]+?)(?:\[\d+\])?:\s*(.*)", msg_part)
+                if m:
+                    result["app_name"] = m.group(1)
+                    result["message"] = m.group(2)
+                    return
+                # 2. TAG[PID] CONTENT (PID without colon)
+                m = re.match(r"^([^:\s\[]+)\[\d+\]\s+(.*)", msg_part)
+                if m:
+                    result["app_name"] = m.group(1)
+                    result["message"] = m.group(2)
+                    return
+                # 3. [TAG]: CONTENT or [TAG] CONTENT (bracketed process tag, e.g. [kernel])
+                m = re.match(r"^\[([^\]]+)\]:?\s*(.*)", msg_part)
+                if m:
+                    result["app_name"] = m.group(1)
+                    result["message"] = m.group(2)
+                    return
+                # 4. TAG CONTENT (space-separated, no colon)
+                m = re.match(r"^([^:\s]+)\s+(.*)", msg_part)
+                if m:
+                    result["app_name"] = m.group(1)
+                    result["message"] = m.group(2)
+                    return
+                # 5. Fallback: single word or unparsed
+                result["message"] = msg_part
+
+            # RFC 3164 Section 4.1.2 / 4.1.3: The HOSTNAME field is optional.
+            # If omitted, MSG (TAG[PID]: or TAG:) immediately follows TIMESTAMP.
             parts = content.split(" ", 1)
-            if len(parts) == 2:
-                hostname = parts[0]
-                content = parts[1]
-                if hostname and hostname != "-":
-                    result["hostname"] = hostname
-                
-                app_match = re.match(r"^([^:\s]+?)(?:\[\d+\])?:\s*(.*)", content)
-                if app_match:
-                    result["app_name"] = app_match.group(1)
-                    result["message"] = app_match.group(2)
-                else:
-                    app_match2 = re.match(r"^([^:\s]+)\s+(.*)", content)
-                    if app_match2:
-                        result["app_name"] = app_match2.group(1)
-                        result["message"] = app_match2.group(2)
-                    else:
-                        result["message"] = content
+            first_token = parts[0]
+
+            is_nil_hostname = (len(parts) == 2 and first_token == "-")
+
+            # Determine if first_token is a valid HOSTNAME:
+            # A valid hostname never contains brackets ('[' or ']') and does not end with ':'
+            # (unless it is an IPv6 address ending in '::').
+            is_valid_hostname = (
+                len(parts) == 2
+                and bool(first_token)
+                and first_token != "-"
+                and "[" not in first_token
+                and "]" not in first_token
+                and not (first_token.endswith(":") and not first_token.endswith("::"))
+            )
+
+            if is_valid_hostname:
+                result["hostname"] = first_token
+                _parse_rfc3164_msg(parts[1])
+            elif is_nil_hostname:
+                _parse_rfc3164_msg(parts[1])
+            else:
+                _parse_rfc3164_msg(content)
                         
     return result
 
