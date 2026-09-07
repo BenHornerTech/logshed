@@ -205,9 +205,13 @@ def run_migrations(db_path: Union[str, Path]) -> None:
             else:
                 logger.debug(f"Skipping migration {target_version}, already applied.")
 
-        # Startup sanitization: ensure any legacy or future-dated timestamps are clamped to received_at
+        # Startup sanitization: defensively clamp future-dated timestamps using indexed timestamp bounds
+        # to avoid expensive full-table scans across historical logs on boot.
         try:
-            conn.execute("UPDATE logs SET timestamp = received_at WHERE timestamp > received_at;")
+            conn.execute(
+                "UPDATE logs SET timestamp = received_at "
+                "WHERE timestamp > strftime('%Y-%m-%dT%H:%M:%S', 'now', '+1 minute') AND timestamp > received_at;"
+            )
             conn.commit()
         except sqlite3.OperationalError:
             pass

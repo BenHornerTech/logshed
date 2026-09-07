@@ -3,6 +3,7 @@ Tests for logs API: FTS5 queries, multi-source/app filters, facets, surrounding 
 """
 
 import asyncio
+import datetime
 from pathlib import Path
 import sqlite3
 import pytest
@@ -479,32 +480,37 @@ class TestLogStreamAndFacets:
         client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
         db_file = tmp_path / "logs.db"
 
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        ts1 = (now_utc - datetime.timedelta(hours=3)).isoformat()
+        ts2 = (now_utc - datetime.timedelta(hours=2)).isoformat()
+        ts3 = (now_utc - datetime.timedelta(hours=1)).isoformat()
+
         test_entries = [
             {
-                "timestamp": "2026-08-29T10:00:00Z",
-                "received_at": "2026-08-29T10:00:01Z",
+                "timestamp": ts1,
+                "received_at": ts1,
                 "source_ip": "192.168.1.50",
                 "source_alias": "homelab-host",
                 "app_name": "nginx",
                 "facility": 1,
                 "severity": 3,
                 "message": "Nginx upstream error",
-                "raw": "<11>1 2026-08-29T10:00:00Z homelab-host nginx - - - error",
+                "raw": f"<11>1 {ts1} homelab-host nginx - - - error",
             },
             {
-                "timestamp": "2026-08-29T11:00:00Z",
-                "received_at": "2026-08-29T11:00:01Z",
+                "timestamp": ts2,
+                "received_at": ts2,
                 "source_ip": "192.168.1.60",
                 "source_alias": "pve-node1",
                 "app_name": "corosync",
                 "facility": 0,
                 "severity": 2,
                 "message": "Corosync quorum lost",
-                "raw": "<10>1 2026-08-29T11:00:00Z pve-node1 corosync - - - quorum lost",
+                "raw": f"<10>1 {ts2} pve-node1 corosync - - - quorum lost",
             },
             {
-                "timestamp": "2026-08-29T12:00:00Z",
-                "received_at": "2026-08-29T12:00:01Z",
+                "timestamp": ts3,
+                "received_at": ts3,
                 "source_ip": "172.22.2.4",
                 "source_alias": "NPM",
                 "app_name": "nginx-proxy",
@@ -519,7 +525,7 @@ class TestLogStreamAndFacets:
         with sqlite3.connect(str(db_file)) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO host_aliases (ip, alias, created_at) VALUES (?, ?, ?)",
-                ("172.22.2.4", "NPM", "2026-08-29T10:00:00Z"),
+                ("172.22.2.4", "NPM", ts1),
             )
 
         response = await client.get("/api/logs/facets")
@@ -547,3 +553,158 @@ class TestLogStreamAndFacets:
         assert "homelab-host" in data["app_to_hosts"]["nginx"]
         assert "pve-node1" in data["app_to_hosts"]["corosync"]
         assert "NPM" in data["app_to_hosts"]["nginx-proxy"]
+
+    @pytest.mark.asyncio
+    async def test_log_facets_unions_configured_host_aliases_with_recent_facets(
+        self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
+    ):
+        """Active configured host aliases (and their historical logs/apps) must union with recent 7-day facets."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        recent_ts = (now_utc - datetime.timedelta(hours=1)).isoformat()
+        old_ts = (now_utc - datetime.timedelta(days=20)).isoformat()
+
+        test_entries = [
+            # Recent log within 7 days from an unaliased active container
+            {
+                "timestamp": recent_ts,
+                "received_at": recent_ts,
+                "source_ip": "10.0.0.5",
+                "source_alias": "active-k8s",
+                "app_name": "coredns",
+                "facility": 1,
+                "severity": 6,
+                "message": "dns query answered",
+                "raw": "dns query answered",
+            },
+            # Historical log (> 7 days ago, e.g. 20 days ago) from a configured host alias that logs infrequently (e.g. monthly backup)
+            {
+                "timestamp": old_ts,
+                "received_at": old_ts,
+                "source_ip": "192.168.1.99",
+                "source_alias": "truenas-backup",
+                "app_name": "zfs-scrub",
+                "facility": 1,
+                "severity": 4,
+                "message": "Scrub finished with 0 errors",
+                "raw": "Scrub finished",
+            },
+        ]
+        _seed_logs(db_file, test_entries)
+
+        with sqlite3.connect(str(db_file)) as conn:
+            # 1. Configured host alias with historical logs (> 7 days old)
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES (?, ?, ?)",
+                ("192.168.1.99", "truenas-backup", recent_ts),
+            )
+            # 2. Configured host alias that has NEVER logged anything yet
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES (?, ?, ?)",
+                ("192.168.1.254", "switch-core", recent_ts),
+            )
+            conn.commit()
+
+        response = await client.get("/api/logs/facets")
+        assert response.status_code == 200
+        data = response.json()
+
+        # All 3 systems must be in sources
+        assert "active-k8s" in data["sources"]
+        assert "truenas-backup" in data["sources"]
+        assert "switch-core" in data["sources"]
+
+        # Apps should include both recent coredns and historical zfs-scrub
+        assert "coredns" in data["apps"]
+        assert "zfs-scrub" in data["apps"]
+
+        # host_to_apps mappings
+        assert "coredns" in data["host_to_apps"]["active-k8s"]
+        assert "zfs-scrub" in data["host_to_apps"]["truenas-backup"]
+        assert data["host_to_apps"]["switch-core"] == []
+
+        # app_to_hosts mappings
+        assert "active-k8s" in data["app_to_hosts"]["coredns"]
+        assert "truenas-backup" in data["app_to_hosts"]["zfs-scrub"]
+
+    @pytest.mark.asyncio
+    async def test_log_facets_canonicalizes_historical_raw_ip_logs(
+        self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
+    ):
+        """Historical logs containing raw IP in source_alias or source_ip must resolve to configured alias."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        recent_ts = (now_utc - datetime.timedelta(hours=1)).isoformat()
+        old_ts = (now_utc - datetime.timedelta(days=30)).isoformat()
+
+        test_entries = [
+            # Recent log for an unrelated host
+            {
+                "timestamp": recent_ts,
+                "received_at": recent_ts,
+                "source_ip": "10.0.0.1",
+                "source_alias": "gateway",
+                "app_name": "dnsmasq",
+                "facility": 1,
+                "severity": 6,
+                "message": "query",
+                "raw": "query",
+            },
+            # Historical log where source_alias was saved as raw IP (before alias was configured)
+            {
+                "timestamp": old_ts,
+                "received_at": old_ts,
+                "source_ip": "192.168.1.50",
+                "source_alias": "192.168.1.50",
+                "app_name": "smartd",
+                "facility": 1,
+                "severity": 4,
+                "message": "Disk healthy",
+                "raw": "Disk healthy",
+            },
+            # Historical log where source_ip is empty but source_alias is raw IP
+            {
+                "timestamp": old_ts,
+                "received_at": old_ts,
+                "source_ip": "",
+                "source_alias": "192.168.1.50",
+                "app_name": "zfs-scrub",
+                "facility": 1,
+                "severity": 4,
+                "message": "Scrub done",
+                "raw": "Scrub done",
+            },
+        ]
+        _seed_logs(db_file, test_entries)
+
+        with sqlite3.connect(str(db_file)) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES (?, ?, ?)",
+                ("192.168.1.50", "nas-box", recent_ts),
+            )
+            conn.commit()
+
+        response = await client.get("/api/logs/facets")
+        assert response.status_code == 200
+        data = response.json()
+
+        # "nas-box" must be in sources; raw IP "192.168.1.50" must NOT be in sources
+        assert "nas-box" in data["sources"]
+        assert "192.168.1.50" not in data["sources"]
+        assert "gateway" in data["sources"]
+
+        # Both apps from historical logs must appear and be mapped to "nas-box"
+        assert "smartd" in data["apps"]
+        assert "zfs-scrub" in data["apps"]
+        assert "smartd" in data["host_to_apps"]["nas-box"]
+        assert "zfs-scrub" in data["host_to_apps"]["nas-box"]
+        assert "192.168.1.50" not in data["host_to_apps"]
+
+        # app_to_hosts should map to "nas-box", not the raw IP
+        assert "nas-box" in data["app_to_hosts"]["smartd"]
+        assert "nas-box" in data["app_to_hosts"]["zfs-scrub"]
+        assert "192.168.1.50" not in data["app_to_hosts"]["smartd"]

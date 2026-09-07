@@ -2,6 +2,7 @@
 Tests for database schema, WAL pragmas, FTS5 sync triggers, and migration runner.
 """
 
+import datetime
 from pathlib import Path
 import sqlite3
 import pytest
@@ -320,15 +321,27 @@ class TestFTS5Sync:
         assert count_after == 0
 
     def test_startup_sanitization_clamps_future_timestamps(self, tmp_path: Path):
-        """run_migrations should sanitize any legacy corrupted or future-dated timestamps."""
+        """run_migrations should sanitize any future-dated timestamps without touching past logs."""
         db_file = tmp_path / "sanitize_test.db"
         run_migrations(db_file)
 
+        future_ts = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=2)).isoformat()
+        now_rec = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        past_ts = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).isoformat()
+        past_rec = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1, seconds=5)).isoformat()
+
         with get_connection(db_file) as conn:
-            # Insert a corrupted row with timestamp in the future (e.g. 18:11 when received at 17:11)
+            # Insert a corrupted row with timestamp in the future relative to now
             conn.execute(
                 """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
-                   VALUES ('2026-09-05T18:11:00+01:00', '2026-09-05T17:11:00.000000+00:00', '192.168.1.1', 'router', 'syslog', 1, 6, 'corrupted', 'raw')"""
+                   VALUES (?, ?, '192.168.1.1', 'router', 'syslog', 1, 6, 'corrupted', 'raw')""",
+                (future_ts, now_rec),
+            )
+            # Insert a historical row in the past (timestamp > received_at, but in past)
+            conn.execute(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                   VALUES (?, ?, '192.168.1.1', 'router', 'syslog', 1, 6, 'historical_past', 'raw')""",
+                (past_ts, past_rec),
             )
             conn.commit()
 
@@ -338,3 +351,46 @@ class TestFTS5Sync:
         with get_connection(db_file) as conn:
             row = conn.execute("SELECT timestamp, received_at FROM logs WHERE message = 'corrupted'").fetchone()
             assert row[0] == row[1]
+
+            row_past = conn.execute("SELECT timestamp, received_at FROM logs WHERE message = 'historical_past'").fetchone()
+            # Historical row in the past should NOT have been updated by bounded startup query
+            assert row_past[0] == past_ts
+
+    def test_startup_sanitization_query_uses_indexed_scan(self, db_path: Path):
+        """Startup clamping query must use idx_logs_time_sev to prevent full table scans."""
+        conn = get_connection(db_path)
+        cur = conn.cursor()
+        plan_rows = cur.execute(
+            "EXPLAIN QUERY PLAN UPDATE logs SET timestamp = received_at "
+            "WHERE timestamp > strftime('%Y-%m-%dT%H:%M:%S', 'now', '+1 minute') AND timestamp > received_at;"
+        ).fetchall()
+        conn.close()
+
+        plan_str = " ".join(str(r) for r in plan_rows)
+        assert "idx_logs_time_sev" in plan_str
+        assert "SCAN logs" not in plan_str
+
+    def test_facet_extraction_query_uses_indexes(self, db_path: Path):
+        """Facet extraction query must use indexes for recent logs and configured host alias joins."""
+        conn = get_connection(db_path)
+        cur = conn.cursor()
+        facet_plan = cur.execute(
+            """EXPLAIN QUERY PLAN
+            SELECT DISTINCT source_alias, source_ip, app_name
+            FROM logs
+            WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days')
+              AND (source_alias != '' OR source_ip != '')
+              AND app_name != ''
+            UNION
+            SELECT DISTINCT l.source_alias, l.source_ip, l.app_name
+            FROM host_aliases h
+            JOIN logs l ON (l.source_ip = h.ip OR l.source_alias = h.alias OR l.source_alias = h.ip)
+            WHERE (l.source_alias != '' OR l.source_ip != '') AND l.app_name != ''
+            """
+        ).fetchall()
+        conn.close()
+
+        plan_str = " ".join(str(r) for r in facet_plan)
+        assert "idx_logs_time_sev" in plan_str
+        assert "SEARCH l USING INDEX" in plan_str
+        assert "SCAN logs" not in plan_str

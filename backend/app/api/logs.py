@@ -326,14 +326,20 @@ async def get_log_facets(
     """
     def _fetch_facets(conn):
         cursor = conn.cursor()
-        # Query distinct facets restricted to recent logs to avoid full table scan across millions of historical rows
+        # Query distinct facets restricted to recent logs to avoid full table scan across millions of historical rows,
+        # unioned with logs for configured host aliases so infrequent hosts remain selectable.
         cursor.execute(
             """
             SELECT DISTINCT source_alias, source_ip, app_name
             FROM logs
-            WHERE timestamp >= datetime('now', '-7 days')
+            WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days')
               AND (source_alias != '' OR source_ip != '')
               AND app_name != ''
+            UNION
+            SELECT DISTINCT l.source_alias, l.source_ip, l.app_name
+            FROM host_aliases h
+            JOIN logs l ON (l.source_ip = h.ip OR l.source_alias = h.alias OR l.source_alias = h.ip)
+            WHERE (l.source_alias != '' OR l.source_ip != '') AND l.app_name != ''
             """
         )
         rows = cursor.fetchall()
@@ -368,9 +374,9 @@ async def get_log_facets(
             app = r["app_name"]
 
             # Canonical host resolution:
-            # If the IP is aliased, always use the alias.
+            # If the IP or raw_alias matches a configured host alias, use the alias.
             # Otherwise use raw_alias (which is already the IP for unaliased hosts).
-            canonical_host = aliases_map.get(ip) or raw_alias or ip
+            canonical_host = aliases_map.get(ip) or aliases_map.get(raw_alias) or raw_alias or ip
             if not canonical_host:
                 continue
 
@@ -393,6 +399,8 @@ async def get_log_facets(
             if ip in host_to_apps:
                 if alias in host_to_apps:
                     host_to_apps[alias].update(host_to_apps[ip])
+                else:
+                    host_to_apps[alias] = set(host_to_apps[ip])
                 del host_to_apps[ip]
             for app, hosts in app_to_hosts.items():
                 if ip in hosts:
