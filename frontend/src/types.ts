@@ -71,6 +71,8 @@ export interface PruneResponse {
 
 export interface AiPreviewRequest {
   log_ids: number[];
+  user_context?: string;
+  prompt_override?: string;
 }
 
 export interface AiPreviewResponse {

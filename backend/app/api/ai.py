@@ -2,6 +2,7 @@
 AI Preview, Analysis, and Audit Log API endpoints for LogShed.
 """
 
+import asyncio
 import datetime
 import logging
 from typing import Optional
@@ -148,13 +149,20 @@ async def preview_ai_prompt(
     redacted_logs_text = "\n".join(redacted_lines) if isinstance(redacted_lines, list) else str(redacted_lines)
     redacted_logs_text = truncate_logs_to_budget(redacted_logs_text)
 
-    full_prompt = build_analysis_prompt(
-        source_alias=source_alias,
-        app_name=app_name,
-        redacted_logs=redacted_logs_text,
-        log_count=len(rows),
-        host_notes=host_notes,
-    )
+    redacted_host_notes = str(redact(host_notes)) if host_notes else None
+    redacted_user_context = str(redact(req.user_context)) if req.user_context else None
+
+    if req.prompt_override and req.prompt_override.strip():
+        full_prompt = str(redact(req.prompt_override.strip()))
+    else:
+        full_prompt = build_analysis_prompt(
+            source_alias=source_alias,
+            app_name=app_name,
+            redacted_logs=redacted_logs_text,
+            log_count=len(rows),
+            user_context=redacted_user_context,
+            host_notes=redacted_host_notes,
+        )
 
     # Estimate token count (~3.5 characters per token including system prompt and framing overhead)
     estimated_tokens = max(1, int(len(full_prompt) // 3.5 + len(system_prompt) // 3.5 + 50))
@@ -244,6 +252,10 @@ async def diagnose_logs(
             else (settings.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT)
         )
 
+        redacted_host_notes = str(redact(host_notes)) if host_notes else None
+        redacted_user_context = str(redact(req.user_context)) if req.user_context else None
+        redacted_prompt_override = str(redact(req.prompt_override)) if req.prompt_override else None
+
         summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await execute_ai_analysis(
             provider=provider,
             model=model,
@@ -253,9 +265,9 @@ async def diagnose_logs(
             app_name=app_name,
             redacted_logs=redacted_logs,
             log_count=len(rows),
-            user_context=req.user_context,
-            host_notes=host_notes,
-            prompt_override=req.prompt_override,
+            user_context=redacted_user_context,
+            host_notes=redacted_host_notes,
+            prompt_override=redacted_prompt_override,
             system_prompt=system_prompt,
         )
 
@@ -274,7 +286,7 @@ async def diagnose_logs(
                     source_alias,
                     app_name,
                     len(rows),
-                    req.user_context or "",
+                    redacted_user_context or "",
                     model,
                     prompt_sent,
                     raw_response,
@@ -311,6 +323,16 @@ async def diagnose_logs(
         else:
             logger.warning(f"AI analysis request failed: {clean_err}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except (asyncio.TimeoutError, TimeoutError) as te:
+        clean_err = str(te) if str(te) else "Request timed out after deadline"
+        if is_debug_or_dev():
+            logger.warning(f"AI analysis request timed out: {clean_err}", exc_info=True)
+        else:
+            logger.warning(f"AI analysis request timed out: {clean_err}")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"AI analysis request timed out: {clean_err}",
+        )
     except Exception as exc:
         clean_err = str(redact(str(exc)[:500]))
         if is_debug_or_dev():

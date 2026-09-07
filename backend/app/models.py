@@ -199,6 +199,8 @@ class PruneResponse(BaseModel):
 class AiPreviewRequest(BaseModel):
     """Payload for generating redacted AI prompt preview."""
     log_ids: list[int] = Field(..., min_length=1, max_length=200)
+    user_context: Optional[str] = None
+    prompt_override: Optional[str] = None
 
 
 class AiPreviewResponse(BaseModel):

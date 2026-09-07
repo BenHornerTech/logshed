@@ -2,6 +2,7 @@
 Tests for AI engine, prompt construction, token estimation, Gemini/OpenAI dispatch, and audit logging.
 """
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -286,6 +287,38 @@ Multiple transaction queries deadlock on shared index.
                 model="gemini-2.5-flash",
                 prompt="Operator explicitly edited prompt payload",
                 system_prompt=None,
+                timeout=60.0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_with_openai_provider(self):
+        with patch("app.services.ai_engine.dispatch_openai_request", new_callable=AsyncMock) as mock_dispatch:
+            mock_dispatch.return_value = (
+                "## Summary\nOpenAI summary\n\n## Root Cause\nOpenAI cause\n\n## Actionable Remediation\nOpenAI fix",
+                120,
+                40,
+                0,
+                160,
+            )
+            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
+                provider="openai",
+                model="gpt-4o",
+                api_key="sk-test",
+                base_url="https://api.openai.com/v1",
+                source_alias="router",
+                app_name="dnsmasq",
+                redacted_logs="test log",
+                log_count=1,
+                timeout=45.0,
+            )
+            assert summary == "OpenAI summary"
+            mock_dispatch.assert_called_once_with(
+                api_key="sk-test",
+                model="gpt-4o",
+                prompt=prompt_sent,
+                base_url="https://api.openai.com/v1",
+                system_prompt=None,
+                timeout=45.0,
             )
 
     @pytest.mark.asyncio
@@ -345,6 +378,136 @@ Multiple transaction queries deadlock on shared index.
                     prompt="test prompt",
                 )
             mock_warn.assert_called_with("AI analysis request failed: API quota exceeded for project 12345", exc_info=True)
+
+    def test_build_analysis_prompt_redacts_secrets_in_user_context_and_host_notes(self):
+        prompt = ai_engine.build_analysis_prompt(
+            source_alias="router",
+            app_name="auth-service",
+            redacted_logs="[2026-08-29T12:00:01Z] [auth-service] normal log",
+            log_count=1,
+            user_context="Context with Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do_not_leak_this_token and token=supersecrettoken12345",
+            host_notes="Database server running postgresql://admin:supersecretpwd@db:5432/main with api_key=topsecretapikey1234",
+        )
+        assert "do_not_leak_this_token" not in prompt
+        assert "supersecrettoken12345" not in prompt
+        assert "supersecretpwd" not in prompt
+        assert "topsecretapikey1234" not in prompt
+        assert "[REDACTED]" in prompt
+        assert "Authorization: Bearer [REDACTED]" in prompt
+        assert "- Host Notes: Database server running postgresql://admin:[REDACTED]@db:5432/main with api_key=[REDACTED]" in prompt
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_redacts_prompt_override_user_context_and_host_notes(self):
+        with patch("app.services.ai_engine.dispatch_gemini_request", new_callable=AsyncMock) as mock_dispatch:
+            mock_dispatch.return_value = ("Summary", 50, 20, 0, 70)
+
+            # Test prompt_override scrubbing
+            await ai_engine.execute_ai_analysis(
+                provider="gemini",
+                model="gemini-2.5-flash",
+                api_key="key",
+                base_url=None,
+                source_alias="router",
+                app_name="dnsmasq",
+                redacted_logs="raw logs",
+                log_count=1,
+                prompt_override="Override with sk-proj-123456789012345678901234 and api_key=topsecretkey12345",
+            )
+            sent_prompt = mock_dispatch.call_args[1]["prompt"]
+            assert "sk-proj-123456789012345678901234" not in sent_prompt
+            assert "topsecretkey12345" not in sent_prompt
+            assert "[REDACTED]" in sent_prompt
+
+            # Test user_context and host_notes scrubbing
+            mock_dispatch.reset_mock()
+            await ai_engine.execute_ai_analysis(
+                provider="gemini",
+                model="gemini-2.5-flash",
+                api_key="key",
+                base_url=None,
+                source_alias="router",
+                app_name="dnsmasq",
+                redacted_logs="raw logs",
+                log_count=1,
+                user_context="Context with token=my_secret_token_12345",
+                host_notes="Notes with password=supersecretpass999",
+            )
+            sent_prompt = mock_dispatch.call_args[1]["prompt"]
+            assert "my_secret_token_12345" not in sent_prompt
+            assert "supersecretpass999" not in sent_prompt
+            assert "token=[REDACTED]" in sent_prompt
+            assert "password=[REDACTED]" in sent_prompt
+
+    @pytest.mark.asyncio
+    async def test_dispatch_gemini_request_timeout_raises_timeout_error(self):
+        async def slow_generate(*args, **kwargs):
+            await asyncio.sleep(0.5)
+            mock_resp = MagicMock()
+            mock_resp.text = "Slow response"
+            return mock_resp
+
+        with patch("app.services.ai_engine.genai") as mock_genai:
+            mock_client_instance = MagicMock()
+            mock_client_instance.aio.models.generate_content = slow_generate
+            mock_genai.Client.return_value = mock_client_instance
+
+            with pytest.raises(asyncio.TimeoutError):
+                await ai_engine.dispatch_gemini_request(
+                    api_key="test-key",
+                    model="gemini-2.5-flash",
+                    prompt="test prompt",
+                    timeout=0.02,
+                )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_openai_request_timeout_raises_timeout_error(self):
+        from openai import APITimeoutError
+        import httpx
+
+        mock_request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        mock_create = AsyncMock(side_effect=APITimeoutError(request=mock_request))
+        with patch("app.services.ai_engine.AsyncOpenAI") as mock_openai_cls:
+            mock_client_instance = MagicMock()
+            mock_client_instance.chat.completions.create = mock_create
+            mock_openai_cls.return_value = mock_client_instance
+
+            with pytest.raises(TimeoutError):
+                await ai_engine.dispatch_openai_request(
+                    api_key="sk-test",
+                    model="gpt-4o",
+                    prompt="test prompt",
+                    timeout=0.05,
+                )
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_with_openai_compatible_provider(self):
+        with patch("app.services.ai_engine.dispatch_openai_request", new_callable=AsyncMock) as mock_dispatch:
+            mock_dispatch.return_value = (
+                "## Summary\nLlama summary\n\n## Root Cause\nLlama cause\n\n## Actionable Remediation\nLlama fix",
+                100,
+                30,
+                0,
+                130,
+            )
+            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
+                provider="openai_compatible",
+                model="llama3.2",
+                api_key="ollama-key",
+                base_url="http://localhost:11434/v1",
+                source_alias="router",
+                app_name="dnsmasq",
+                redacted_logs="test log",
+                log_count=1,
+            )
+            assert summary == "Llama summary"
+            mock_dispatch.assert_called_once_with(
+                api_key="ollama-key",
+                model="llama3.2",
+                prompt=prompt_sent,
+                base_url="http://localhost:11434/v1",
+                system_prompt=None,
+                timeout=60.0,
+            )
 
 
 # ===================================================================
@@ -518,6 +681,57 @@ class TestAiPreviewAndGating:
         data = res.json()
         assert "[... Truncated older logs to fit token budget ...]" in data["redacted_prompt"]
         assert len(data["redacted_prompt"]) <= 105_000
+
+    @pytest.mark.asyncio
+    async def test_preview_redacts_host_notes_secrets(self, populated_db, auth_client):
+        conn = sqlite3.connect(populated_db)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO host_aliases (ip, alias, notes, created_at) VALUES (?, ?, ?, datetime('now'))",
+            ("192.168.1.50", "proxmox-01", "Host note with api_key=my_top_secret_key_12345 and password=pve_root_password_999"),
+        )
+        conn.commit()
+        conn.close()
+
+        res = await auth_client.post("/api/ai/preview", json={"log_ids": [3]})
+        assert res.status_code == 200
+        prompt = res.json()["redacted_prompt"]
+        assert "my_top_secret_key_12345" not in prompt
+        assert "pve_root_password_999" not in prompt
+        assert "- Host Notes: Host note with api_key=[REDACTED] and password=[REDACTED]" in prompt
+
+    @pytest.mark.asyncio
+    async def test_preview_redacts_user_context_secrets(self, populated_db, auth_client):
+        res = await auth_client.post(
+            "/api/ai/preview",
+            json={
+                "log_ids": [1],
+                "user_context": "Investigating with Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.do_not_leak_this_token and token=bearer_leak_token_99999",
+            },
+        )
+        assert res.status_code == 200
+        prompt = res.json()["redacted_prompt"]
+        assert "### Situational Context from Operator" in prompt
+        assert "do_not_leak_this_token" not in prompt
+        assert "bearer_leak_token_99999" not in prompt
+        assert "Authorization: Bearer [REDACTED]" in prompt
+        assert "token=[REDACTED]" in prompt
+
+    @pytest.mark.asyncio
+    async def test_preview_redacts_prompt_override_secrets(self, populated_db, auth_client):
+        res = await auth_client.post(
+            "/api/ai/preview",
+            json={
+                "log_ids": [1],
+                "prompt_override": "Custom prompt with api_key=override_secret_key_999 and curl -u user:topsecretpass http://example.com",
+            },
+        )
+        assert res.status_code == 200
+        prompt = res.json()["redacted_prompt"]
+        assert "override_secret_key_999" not in prompt
+        assert "topsecretpass" not in prompt
+        assert "api_key=[REDACTED]" in prompt
+        assert "-u user:[REDACTED]" in prompt
 
 
 # ===================================================================
@@ -863,3 +1077,89 @@ class TestAiDiagnoseWorkflow:
             json={"log_ids": list(range(1, 202))},
         )
         assert res.status_code in (400, 422)
+
+    @pytest.mark.asyncio
+    async def test_diagnose_redacts_user_context_prompt_override_and_host_notes_in_dispatch_and_audit(self, populated_db, auth_client):
+        conn = sqlite3.connect(populated_db)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO host_aliases (ip, alias, notes, created_at) VALUES (?, ?, ?, datetime('now'))",
+            ("192.168.1.1", "router", "Edge gateway with password=super_secret_router_pass_123"),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=(
+                "Summary.",
+                "Root cause.",
+                "Remediation.",
+                "Raw response",
+                "Scrubbed prompt sent",
+                100,
+                50,
+                0,
+                150,
+            ),
+        ) as mock_exec:
+            res = await auth_client.post(
+                "/api/ai/diagnose",
+                json={
+                    "log_ids": [1],
+                    "user_context": "Investigating with api_key=topsecretusercontext12345",
+                },
+            )
+            assert res.status_code == 200
+            audit_id = res.json()["audit_id"]
+
+            call_kwargs = mock_exec.call_args[1]
+            assert "super_secret_router_pass_123" not in call_kwargs["host_notes"]
+            assert "password=[REDACTED]" in call_kwargs["host_notes"]
+            assert "topsecretusercontext12345" not in call_kwargs["user_context"]
+            assert "api_key=[REDACTED]" in call_kwargs["user_context"]
+
+            # Verify audit log saved scrubbed user_context
+            audit_res = await auth_client.get("/api/ai/audit?limit=5")
+            assert audit_res.status_code == 200
+            matching = [item for item in audit_res.json()["items"] if item["id"] == audit_id]
+            assert len(matching) == 1
+            assert "topsecretusercontext12345" not in matching[0]["user_context"]
+            assert "api_key=[REDACTED]" in matching[0]["user_context"]
+
+            # Also test prompt_override redaction
+            mock_exec.reset_mock()
+            override_res = await auth_client.post(
+                "/api/ai/diagnose",
+                json={
+                    "log_ids": [1],
+                    "prompt_override": "Custom prompt with sk-proj-123456789012345678901234 and password=leaked_pwd_12345",
+                },
+            )
+            assert override_res.status_code == 200
+            override_audit_id = override_res.json()["audit_id"]
+
+            override_kwargs = mock_exec.call_args[1]
+            assert "sk-proj-123456789012345678901234" not in override_kwargs["prompt_override"]
+            assert "leaked_pwd_12345" not in override_kwargs["prompt_override"]
+            assert "[REDACTED]" in override_kwargs["prompt_override"]
+            assert "password=[REDACTED]" in override_kwargs["prompt_override"]
+
+    @pytest.mark.asyncio
+    async def test_diagnose_timeout_returns_504(self, populated_db, auth_client):
+        with patch("app.api.ai.execute_ai_analysis", side_effect=asyncio.TimeoutError("Gemini request timed out")), \
+             patch("app.api.ai.logger.warning") as mock_warn:
+            res = await auth_client.post("/api/ai/diagnose", json={"log_ids": [1, 2]})
+            assert res.status_code == 504
+            assert "timed out" in res.json()["detail"].lower()
+            mock_warn.assert_called_with("AI analysis request timed out: Gemini request timed out")
+
+    @pytest.mark.asyncio
+    async def test_diagnose_timeout_empty_message_returns_504(self, populated_db, auth_client):
+        with patch("app.api.ai.execute_ai_analysis", side_effect=asyncio.TimeoutError()), \
+             patch("app.api.ai.logger.warning") as mock_warn:
+            res = await auth_client.post("/api/ai/diagnose", json={"log_ids": [1, 2]})
+            assert res.status_code == 504
+            assert res.json()["detail"] == "AI analysis request timed out: Request timed out after deadline"
+            mock_warn.assert_called_with("AI analysis request timed out: Request timed out after deadline")

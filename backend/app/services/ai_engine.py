@@ -7,13 +7,14 @@ Uses the google-genai SDK for Gemini and the openai SDK for OpenAI-compatible
 endpoints, as required by SPEC §4.2 and AGENTS.md.
 """
 
+import asyncio
 import logging
 import re
 from typing import Any, Optional
 
 from google import genai
 from google.genai import types as genai_types
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APITimeoutError
 
 from app.core.config import is_debug_or_dev
 from app.core.redactor import redact
@@ -56,7 +57,7 @@ def build_analysis_prompt(
     ]
 
     if host_notes and host_notes.strip():
-        stripped_notes = host_notes.strip()
+        stripped_notes = str(redact(host_notes.strip()))
         if "\n" in stripped_notes or stripped_notes.startswith("- "):
             parts.append("- Host Notes:")
             for line in stripped_notes.splitlines():
@@ -74,7 +75,7 @@ def build_analysis_prompt(
     if user_context and user_context.strip():
         parts.extend([
             "### Situational Context from Operator",
-            user_context.strip(),
+            str(redact(user_context.strip())),
             "",
         ])
 
@@ -164,13 +165,16 @@ async def dispatch_gemini_request(
     try:
         client = genai.Client(api_key=api_key)
 
-        response = await client.aio.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=effective_system_prompt,
-                temperature=0.2,
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=effective_system_prompt,
+                    temperature=0.2,
+                ),
             ),
+            timeout=timeout,
         )
 
         text = response.text
@@ -199,7 +203,7 @@ async def dispatch_gemini_request(
 
         return text, tokens_in, tokens_out, tokens_thoughts, tokens_used
 
-    except ValueError:
+    except (ValueError, asyncio.TimeoutError, TimeoutError):
         raise
     except Exception as e:
         clean_err = str(redact(str(e)[:500]))
@@ -269,8 +273,10 @@ async def dispatch_openai_request(
 
         return text, tokens_in, tokens_out, tokens_thoughts, tokens_used
 
-    except ValueError:
+    except (ValueError, asyncio.TimeoutError, TimeoutError):
         raise
+    except APITimeoutError as te:
+        raise TimeoutError(f"OpenAI endpoint timed out: {te}") from te
     except Exception as e:
         clean_err = str(redact(str(e)[:500]))
         err_msg = f"OpenAI endpoint error: {clean_err}"
@@ -318,6 +324,7 @@ async def execute_ai_analysis(
     host_notes: Optional[str] = None,
     prompt_override: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    timeout: float = 60.0,
 ) -> tuple[str, str, str, str, str, int, int, int, int]:
     """
     Unified entrypoint to run on-demand AI analysis.
@@ -325,16 +332,19 @@ async def execute_ai_analysis(
     """
     redacted_logs = truncate_logs_to_budget(redacted_logs)
 
+    redacted_user_context = str(redact(user_context)) if user_context else None
+    redacted_host_notes = str(redact(host_notes)) if host_notes else None
+
     if prompt_override and prompt_override.strip():
-        prompt = prompt_override.strip()
+        prompt = str(redact(prompt_override.strip()))
     else:
         prompt = build_analysis_prompt(
             source_alias=source_alias,
             app_name=app_name,
             redacted_logs=redacted_logs,
             log_count=log_count,
-            user_context=user_context,
-            host_notes=host_notes,
+            user_context=redacted_user_context,
+            host_notes=redacted_host_notes,
         )
 
     norm_provider = (provider or "gemini").lower()
@@ -345,6 +355,7 @@ async def execute_ai_analysis(
             model=model or "gemini-2.5-flash",
             prompt=prompt,
             system_prompt=system_prompt,
+            timeout=timeout,
         )
     elif norm_provider in ("openai", "openai_compatible"):
         raw_text, tokens_in, tokens_out, tokens_thoughts, tokens_used = await dispatch_openai_request(
@@ -353,6 +364,7 @@ async def execute_ai_analysis(
             prompt=prompt,
             base_url=base_url,
             system_prompt=system_prompt,
+            timeout=timeout,
         )
     else:
         raise ValueError(f"Unsupported AI provider: {provider}")
