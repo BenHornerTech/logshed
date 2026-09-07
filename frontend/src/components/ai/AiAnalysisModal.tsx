@@ -3,7 +3,7 @@ import { Sparkles, Copy, Check, Shield, RefreshCw, AlertCircle, Info, RotateCcw 
 import { LogEntry, AiPreviewResponse, AiDiagnosisResponse } from '../../types.ts';
 import { previewAiPrompt, diagnoseLogs } from '../../api/ai.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
-import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, parseFullEnvelope } from '../../utils/aiPrompt.ts';
+import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, parseFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 
@@ -23,9 +23,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const [promptText, setPromptText] = useState<string>('');
-  const [isPromptEdited, setIsPromptEdited] = useState<boolean>(false);
   const [systemPrompt, setSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
-  const [isSystemPromptEdited, setIsSystemPromptEdited] = useState<boolean>(false);
   const [promptViewMode, setPromptViewMode] = useState<'analysis' | 'full'>('analysis');
 
   const [userContext, setUserContext] = useState<string>('');
@@ -53,8 +51,14 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
     return buildCombinedPrompt(preview.redacted_prompt, userContext);
   }, [preview, userContext]);
 
-  const hasEditedPrompt = isPromptEdited && Boolean(preview && promptText.trim() !== defaultPrompt.trim());
-  const hasEditedSystem = isSystemPromptEdited && Boolean(preview && systemPrompt.trim() !== (preview.system_prompt || DEFAULT_SYSTEM_PROMPT).trim());
+  const hasEditedPrompt = Boolean(
+    preview && normalizePrompt(promptText) !== normalizePrompt(defaultPrompt)
+  );
+  const hasEditedSystem = Boolean(
+    preview &&
+      normalizePrompt(systemPrompt) !==
+        normalizePrompt(preview.system_prompt || DEFAULT_SYSTEM_PROMPT)
+  );
   const isModified = hasEditedPrompt || hasEditedSystem;
 
   useEffect(() => {
@@ -67,9 +71,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       setAnalysisError(null);
       setUserContext('');
       setPromptText('');
-      setIsPromptEdited(false);
       setSystemPrompt(DEFAULT_SYSTEM_PROMPT);
-      setIsSystemPromptEdited(false);
       setPromptViewMode('analysis');
     }
   }, [isOpen, selectedLogs]);
@@ -110,9 +112,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       setModel(res.model);
       const initialSys = res.system_prompt || DEFAULT_SYSTEM_PROMPT;
       setSystemPrompt(initialSys);
-      setIsSystemPromptEdited(false);
       setPromptText(buildCombinedPrompt(res.redacted_prompt, userContext));
-      setIsPromptEdited(false);
     } catch (err: any) {
       setPreviewError(err.message || 'Failed to generate redacted AI preview.');
     } finally {
@@ -121,8 +121,10 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   };
 
   const handleUserContextChange = (newContext: string) => {
+    const prevDefault = buildCombinedPrompt(preview?.redacted_prompt || '', userContext);
     setUserContext(newContext);
-    if (!isPromptEdited && preview) {
+    // If promptText currently matches previous default, keep it in sync with newContext
+    if (preview && normalizePrompt(promptText) === normalizePrompt(prevDefault)) {
       setPromptText(buildCombinedPrompt(preview.redacted_prompt, newContext));
     }
   };
@@ -132,21 +134,15 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       const parsed = parseFullEnvelope(e.target.value, systemPrompt);
       setSystemPrompt(parsed.systemPrompt);
       setPromptText(parsed.userPrompt);
-      const originalSys = preview?.system_prompt || DEFAULT_SYSTEM_PROMPT;
-      setIsSystemPromptEdited(parsed.systemPrompt.trim() !== originalSys.trim());
-      setIsPromptEdited(parsed.userPrompt.trim() !== defaultPrompt.trim());
     } else {
       setPromptText(e.target.value);
-      setIsPromptEdited(e.target.value.trim() !== defaultPrompt.trim());
     }
   };
 
   const handleResetPrompt = () => {
     if (preview) {
       setPromptText(defaultPrompt);
-      setIsPromptEdited(false);
       setSystemPrompt(preview.system_prompt || DEFAULT_SYSTEM_PROMPT);
-      setIsSystemPromptEdited(false);
     }
   };
 
@@ -313,6 +309,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                       onClick={handleResetPrompt}
                       className="flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 transition cursor-pointer"
                       title="Reset prompt to original generated text"
+                      aria-label="Reset prompt to default"
                     >
                       <RotateCcw className="w-3 h-3" />
                       <span>Reset Prompt</span>

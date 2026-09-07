@@ -329,4 +329,128 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     expect(screen.getByText(/\(Max 200 logs allowed\)/i)).toBeInTheDocument();
     expect(aiApi.previewAiPrompt).not.toHaveBeenCalled();
   });
+
+  it('hides Reset Prompt button when user manually reverts changes back to default', async () => {
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    const promptTextarea = await screen.findByPlaceholderText('Redacted prompt...');
+    const originalPrompt = (promptTextarea as HTMLTextAreaElement).value;
+
+    expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
+
+    // Modify prompt
+    fireEvent.change(promptTextarea, {
+      target: { value: 'Changed prompt text' },
+    });
+    expect(screen.getByText('Reset Prompt')).toBeInTheDocument();
+
+    // Revert back to original prompt
+    fireEvent.change(promptTextarea, {
+      target: { value: originalPrompt },
+    });
+    expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
+  });
+
+  it('shows Reset Prompt button when system instructions are modified in full prompt view mode and resets on click', async () => {
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    await screen.findByPlaceholderText('Redacted prompt...');
+
+    // Switch to Full LLM Prompt mode
+    fireEvent.click(screen.getByRole('button', { name: 'Full LLM Prompt' }));
+
+    const fullPromptTextarea = screen.getByPlaceholderText('Full LLM prompt envelope...');
+    expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
+
+    // Modify only the system prompt portion in full view
+    const modifiedFullEnvelope =
+      '=== SYSTEM INSTRUCTIONS ===\nAltered system instructions.\n\n=== USER ANALYSIS PROMPT ===\n' +
+      samplePreview.redacted_prompt;
+
+    fireEvent.change(fullPromptTextarea, {
+      target: { value: modifiedFullEnvelope },
+    });
+
+    expect(screen.getByText('Reset Prompt')).toBeInTheDocument();
+
+    // Click Reset Prompt
+    fireEvent.click(screen.getByText('Reset Prompt'));
+    expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
+    expect((fullPromptTextarea as HTMLTextAreaElement).value).toContain(samplePreview.system_prompt);
+  });
+
+  it('does not display Reset Prompt when prompt text matches default with CRLF line endings', async () => {
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    const promptTextarea = await screen.findByPlaceholderText('Redacted prompt...');
+    const crlfPrompt = samplePreview.redacted_prompt.replace(/\n/g, '\r\n');
+
+    fireEvent.change(promptTextarea, {
+      target: { value: crlfPrompt },
+    });
+
+    expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
+  });
+
+  it('keeps prompt in sync with situational context when unedited, and shows Reset Prompt only when edited', async () => {
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    const promptTextarea = await screen.findByPlaceholderText('Redacted prompt...');
+    const contextTextarea = screen.getByPlaceholderText(/Occurred immediately following network switch/i);
+
+    // Initial load: Reset Prompt not shown
+    expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
+
+    // Type situational context
+    fireEvent.change(contextTextarea, {
+      target: { value: 'Container restarted 3 times' },
+    });
+
+    // Prompt updates automatically with context and Reset Prompt is NOT shown because it is not diverged
+    expect((promptTextarea as HTMLTextAreaElement).value).toContain('Container restarted 3 times');
+    expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
+
+    // Now manually edit prompt
+    fireEvent.change(promptTextarea, {
+      target: { value: 'Manually customized prompt content' },
+    });
+    expect(screen.getByText('Reset Prompt')).toBeInTheDocument();
+
+    // Further changes to situational context do NOT overwrite manual edits
+    fireEvent.change(contextTextarea, {
+      target: { value: 'Updated context while prompt is custom' },
+    });
+    expect((promptTextarea as HTMLTextAreaElement).value).toBe('Manually customized prompt content');
+    expect(screen.getByText('Reset Prompt')).toBeInTheDocument();
+
+    // Clicking Reset Prompt restores default prompt with current context and hides button
+    fireEvent.click(screen.getByText('Reset Prompt'));
+    expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
+    expect((promptTextarea as HTMLTextAreaElement).value).toContain('Updated context while prompt is custom');
+  });
 });
+

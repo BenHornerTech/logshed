@@ -5,6 +5,7 @@ import {
   USER_ANALYSIS_PROMPT_HEADER,
   buildFullEnvelope,
   parseFullEnvelope,
+  normalizePrompt,
 } from '../utils/aiPrompt.ts';
 
 describe('aiPrompt utilities', () => {
@@ -46,5 +47,16 @@ describe('aiPrompt utilities', () => {
     expect(DEFAULT_SYSTEM_PROMPT).toContain('redacted server/container logs');
     expect(DEFAULT_SYSTEM_PROMPT).not.toContain('sanitized');
     expect(DEFAULT_SYSTEM_PROMPT).not.toContain('analyze');
+  });
+
+  it('normalizePrompt trims whitespace and normalizes CRLF to LF', () => {
+    expect(normalizePrompt('  hello\r\nworld  \n')).toBe('hello\nworld');
+    expect(normalizePrompt(null)).toBe('');
+    expect(normalizePrompt(undefined)).toBe('');
+    expect(normalizePrompt('line1\nline2')).toBe('line1\nline2');
+    expect(normalizePrompt('line1\r\nline2')).toBe('line1\nline2');
+    expect(normalizePrompt(DEFAULT_SYSTEM_PROMPT.replace(/\n/g, '\r\n'))).toBe(
+      normalizePrompt(DEFAULT_SYSTEM_PROMPT)
+    );
   });
 });

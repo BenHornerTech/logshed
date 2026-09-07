@@ -19,11 +19,18 @@ export const SYSTEM_INSTRUCTIONS_HEADER = '=== SYSTEM INSTRUCTIONS ===';
 export const USER_ANALYSIS_PROMPT_HEADER = '=== USER ANALYSIS PROMPT ===';
 
 /**
+ * Normalize prompt text by stripping Windows CRLF line endings and trimming leading/trailing whitespace.
+ */
+export function normalizePrompt(text: string | null | undefined): string {
+  return (text || '').replace(/\r\n/g, '\n').trim();
+}
+
+/**
  * Assemble the complete prompt envelope for full LLM dispatch or copying.
  */
 export function buildFullEnvelope(systemPrompt: string, userPrompt: string): string {
-  const cleanSys = (systemPrompt || DEFAULT_SYSTEM_PROMPT).trim();
-  const cleanUser = (userPrompt || '').trim();
+  const cleanSys = normalizePrompt(systemPrompt || DEFAULT_SYSTEM_PROMPT);
+  const cleanUser = normalizePrompt(userPrompt || '');
   return `${SYSTEM_INSTRUCTIONS_HEADER}\n${cleanSys}\n\n${USER_ANALYSIS_PROMPT_HEADER}\n${cleanUser}`;
 }
 

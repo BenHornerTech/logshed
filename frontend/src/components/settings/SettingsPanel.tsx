@@ -20,7 +20,7 @@ import { fetchAiAudit, deleteAiAuditItem, clearAiAuditLog } from '../../api/ai.t
 import { changePassword } from '../../api/auth.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
 import { extractCleanSummary } from '../../utils/summary.ts';
-import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope } from '../../utils/aiPrompt.ts';
+import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 import { StorageCard } from './StorageCard.tsx';
@@ -54,9 +54,12 @@ export const SettingsPanel: React.FC = () => {
         aiModel !== (settings.ai_model || 'gemini-2.5-flash') ||
         aiApiKey !== (settings.ai_api_key || '') ||
         aiBaseUrl !== (settings.ai_base_url || '') ||
-        aiSystemPrompt !== (settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT) ||
+        normalizePrompt(aiSystemPrompt) !== normalizePrompt(settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT) ||
         internalLogLevel !== (settings.internal_log_level || 'WARNING'))
   );
+
+  // Track if AI system instructions differ from system default
+  const isAiSystemPromptModified = normalizePrompt(aiSystemPrompt) !== normalizePrompt(DEFAULT_SYSTEM_PROMPT);
 
   // Password reset state
   const [currentPwd, setCurrentPwd] = useState<string>('');
@@ -404,15 +407,17 @@ export const SettingsPanel: React.FC = () => {
                     System instructions that establish the LLM's diagnostic persona, reasoning guidelines, and response structure.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setAiSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
-                  className="flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 transition cursor-pointer"
-                  title="Reset instructions to system default"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>Reset to Default</span>
-                </button>
+                {isAiSystemPromptModified && (
+                  <button
+                    type="button"
+                    onClick={() => setAiSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
+                    className="flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 transition cursor-pointer"
+                    title="Reset instructions to system default"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Reset to Default</span>
+                  </button>
+                )}
               </div>
               <textarea
                 value={aiSystemPrompt}

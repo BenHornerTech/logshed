@@ -4,6 +4,7 @@ import { SettingsPanel } from '../components/settings/SettingsPanel.tsx';
 import * as settingsApi from '../api/settings.ts';
 import * as systemApi from '../api/system.ts';
 import * as aiApi from '../api/ai.ts';
+import { DEFAULT_SYSTEM_PROMPT } from '../utils/aiPrompt.ts';
 
 describe('SettingsPanel AI Audit Log & Disclaimer', () => {
   const mockAuditLogs = [
@@ -115,7 +116,7 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
     });
   });
 
-  it('resets AI System Instructions to default when Reset to Default is clicked', async () => {
+  it('only displays Reset to Default button when AI System Instructions are modified from default', async () => {
     render(<SettingsPanel />);
 
     await waitFor(() => {
@@ -123,15 +124,82 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
     });
 
     const sysTextarea = screen.getByPlaceholderText('Enter system instructions...');
+
+    // On initial load with default prompt, Reset to Default button should NOT be visible
+    expect(screen.queryByRole('button', { name: /Reset to Default/i })).toBeNull();
+
+    // Alter system instructions
     fireEvent.change(sysTextarea, {
       target: { value: 'Temporary altered instructions' },
     });
     expect((sysTextarea as HTMLTextAreaElement).value).toBe('Temporary altered instructions');
 
+    // Reset button should now appear
     const resetBtn = screen.getByRole('button', { name: /Reset to Default/i });
-    fireEvent.click(resetBtn);
+    expect(resetBtn).toBeInTheDocument();
 
+    // Clicking Reset button resets instructions and hides the button
+    fireEvent.click(resetBtn);
     expect((sysTextarea as HTMLTextAreaElement).value).toContain('expert systems engineer');
+    expect(screen.queryByRole('button', { name: /Reset to Default/i })).toBeNull();
+
+    // Modifying again shows button, then typing back default hides it without clicking
+    fireEvent.change(sysTextarea, {
+      target: { value: 'Another custom instruction' },
+    });
+    expect(screen.getByRole('button', { name: /Reset to Default/i })).toBeInTheDocument();
+
+    fireEvent.change(sysTextarea, {
+      target: { value: DEFAULT_SYSTEM_PROMPT },
+    });
+    expect(screen.queryByRole('button', { name: /Reset to Default/i })).toBeNull();
+  });
+
+  it('displays Reset to Default immediately on load when settings contain a custom system prompt', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({
+      ai_provider: 'gemini',
+      ai_model: 'gemini-3.7-flash',
+      ai_api_key: '********',
+      ai_base_url: null,
+      ai_system_prompt: 'Pre-existing custom system prompt from database',
+      retention_days: 14,
+      max_retention_days: 30,
+      has_ai_api_key: true,
+    });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/AI System Instructions/i)).toBeInTheDocument();
+    });
+
+    // Custom prompt loaded -> Reset to Default button should be visible immediately
+    const resetBtn = screen.getByRole('button', { name: /Reset to Default/i });
+    expect(resetBtn).toBeInTheDocument();
+
+    // Clicking it resets to DEFAULT_SYSTEM_PROMPT and hides the button
+    fireEvent.click(resetBtn);
+    const sysTextarea = screen.getByPlaceholderText('Enter system instructions...');
+    expect((sysTextarea as HTMLTextAreaElement).value).toBe(DEFAULT_SYSTEM_PROMPT);
+    expect(screen.queryByRole('button', { name: /Reset to Default/i })).toBeNull();
+  });
+
+  it('does not display Reset to Default when text matches default with Windows CRLF line endings', async () => {
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/AI System Instructions/i)).toBeInTheDocument();
+    });
+
+    const sysTextarea = screen.getByPlaceholderText('Enter system instructions...');
+    const crlfPrompt = DEFAULT_SYSTEM_PROMPT.replace(/\n/g, '\r\n');
+
+    fireEvent.change(sysTextarea, {
+      target: { value: crlfPrompt },
+    });
+
+    // Despite CRLF differences, semantic instructions match default so Reset button must NOT appear
+    expect(screen.queryByRole('button', { name: /Reset to Default/i })).toBeNull();
   });
 
   it('toggles between Analysis Prompt and Full LLM Prompt in historical audit modal', async () => {
