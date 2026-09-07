@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_current_user, run_db_query
-from app.core.config import is_debug_or_dev
+from app.core.config import DEFAULT_AI_MODEL, is_debug_or_dev
 from app.core.redactor import redact
 from app.core.security import decrypt_value
 from app.models import (
@@ -120,7 +120,8 @@ async def preview_ai_prompt(
         )
         settings_map = {r["key"]: r["value"] for r in cursor.fetchall()}
         provider = settings_map.get("ai_provider") or "gemini"
-        model = settings_map.get("ai_model") or "gemini-2.5-flash"
+        default_model = DEFAULT_AI_MODEL if provider == "gemini" else ("gpt-4o" if provider == "openai" else "llama3.2")
+        model = settings_map.get("ai_model") or default_model
         system_prompt = settings_map.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT
 
         host_notes = _get_aggregated_host_notes(conn, rows)
@@ -242,7 +243,7 @@ async def diagnose_logs(
         redacted_logs = "\n".join(redacted_lines) if isinstance(redacted_lines, list) else str(redacted_lines)
 
         provider = req.provider or settings.get("ai_provider") or "gemini"
-        default_model = "gemini-2.5-flash" if provider == "gemini" else "gpt-4o"
+        default_model = DEFAULT_AI_MODEL if provider == "gemini" else ("gpt-4o" if provider == "openai" else "llama3.2")
         model = req.model or settings.get("ai_model") or default_model
         api_key = settings.get("ai_api_key", "")
         base_url = settings.get("ai_base_url") or None

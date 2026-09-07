@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.core.config import get_max_retention_days
+from app.core.config import DEFAULT_AI_MODEL, get_max_retention_days
 
 
 
@@ -91,7 +91,7 @@ class LogFacetsResponse(BaseModel):
 class SettingsResponse(BaseModel):
     """Application runtime configuration response with masked secrets."""
     ai_provider: str = "gemini"
-    ai_model: str = "gemini-2.5-flash"
+    ai_model: str = DEFAULT_AI_MODEL
     ai_api_key: str = ""
     ai_base_url: Optional[str] = None
     ai_system_prompt: str = ""
@@ -147,6 +147,9 @@ class SettingsUpdateRequest(BaseModel):
                 raise ValueError(f"Invalid internal_log_level '{v}'. Must be one of: {valid_keys}")
             return to_canonical_log_level_name(v_clean)
         return v
+
+
+SettingsUpdate = SettingsUpdateRequest
 
 
 

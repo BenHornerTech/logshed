@@ -21,8 +21,10 @@ from app.core.security import (
     hash_password,
     reset_crypto_cache,
 )
+from app.core.config import DEFAULT_AI_MODEL
 from app.core.sse import sse_manager
 from app.main import create_app
+from app.models import SettingsResponse, SettingsUpdate, SettingsUpdateRequest
 from app.services import ai_engine
 
 
@@ -68,7 +70,7 @@ def populated_db(tmp_path: Path):
 
     enc_api_key = encrypt_value("test-gemini-key-12345")
     cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_provider', 'gemini', '2026-08-29T10:00:00Z', 0)")
-    cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_model', 'gemini-2.5-flash', '2026-08-29T10:00:00Z', 0)")
+    cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_model', 'gemini-3.7-flash', '2026-08-29T10:00:00Z', 0)")
     cursor.execute("INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_api_key', ?, '2026-08-29T10:00:00Z', 1)", (enc_api_key,))
 
     logs = [
@@ -188,7 +190,7 @@ Multiple transaction queries deadlock on shared index.
 
             text, tokens_in, tokens_out, tokens_thoughts, tokens = await ai_engine.dispatch_gemini_request(
                 api_key="test-key",
-                model="gemini-2.5-flash",
+                model="gemini-3.7-flash",
                 prompt="test prompt",
             )
             assert "DNS fail" in text
@@ -212,7 +214,7 @@ Multiple transaction queries deadlock on shared index.
             with pytest.raises(RuntimeError) as exc_info:
                 await ai_engine.dispatch_gemini_request(
                     api_key="test-key",
-                    model="gemini-2.5-flash",
+                    model="gemini-3.7-flash",
                     prompt="test prompt",
                 )
             assert "secret12345678" not in str(exc_info.value)
@@ -272,7 +274,7 @@ Multiple transaction queries deadlock on shared index.
             )
             summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
                 provider="gemini",
-                model="gemini-2.5-flash",
+                model="gemini-3.7-flash",
                 api_key="key",
                 base_url=None,
                 source_alias="router",
@@ -284,7 +286,7 @@ Multiple transaction queries deadlock on shared index.
             assert prompt_sent == "Operator explicitly edited prompt payload"
             mock_dispatch.assert_called_once_with(
                 api_key="key",
-                model="gemini-2.5-flash",
+                model="gemini-3.7-flash",
                 prompt="Operator explicitly edited prompt payload",
                 system_prompt=None,
                 timeout=60.0,
@@ -336,7 +338,7 @@ Multiple transaction queries deadlock on shared index.
             )
             summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
                 provider="gemini",
-                model="gemini-2.5-flash",
+                model="gemini-3.7-flash",
                 api_key="key",
                 base_url=None,
                 source_alias="router",
@@ -364,7 +366,7 @@ Multiple transaction queries deadlock on shared index.
             with pytest.raises(RuntimeError):
                 await ai_engine.dispatch_gemini_request(
                     api_key="test-key",
-                    model="gemini-2.5-flash",
+                    model="gemini-3.7-flash",
                     prompt="test prompt",
                 )
             mock_warn.assert_called_with("AI analysis request failed: API quota exceeded for project 12345")
@@ -374,7 +376,7 @@ Multiple transaction queries deadlock on shared index.
             with pytest.raises(RuntimeError):
                 await ai_engine.dispatch_gemini_request(
                     api_key="test-key",
-                    model="gemini-2.5-flash",
+                    model="gemini-3.7-flash",
                     prompt="test prompt",
                 )
             mock_warn.assert_called_with("AI analysis request failed: API quota exceeded for project 12345", exc_info=True)
@@ -404,7 +406,7 @@ Multiple transaction queries deadlock on shared index.
             # Test prompt_override scrubbing
             await ai_engine.execute_ai_analysis(
                 provider="gemini",
-                model="gemini-2.5-flash",
+                model="gemini-3.7-flash",
                 api_key="key",
                 base_url=None,
                 source_alias="router",
@@ -422,7 +424,7 @@ Multiple transaction queries deadlock on shared index.
             mock_dispatch.reset_mock()
             await ai_engine.execute_ai_analysis(
                 provider="gemini",
-                model="gemini-2.5-flash",
+                model="gemini-3.7-flash",
                 api_key="key",
                 base_url=None,
                 source_alias="router",
@@ -454,7 +456,7 @@ Multiple transaction queries deadlock on shared index.
             with pytest.raises(asyncio.TimeoutError):
                 await ai_engine.dispatch_gemini_request(
                     api_key="test-key",
-                    model="gemini-2.5-flash",
+                    model="gemini-3.7-flash",
                     prompt="test prompt",
                     timeout=0.02,
                 )
@@ -532,7 +534,7 @@ class TestAiPreviewAndGating:
             assert "do_not_leak_this_token" not in data["redacted_prompt"]
             assert "supersecret12345" not in data["redacted_prompt"]
             assert data["provider"] == "gemini"
-            assert data["model"] == "gemini-2.5-flash"
+            assert data["model"] == "gemini-3.7-flash"
             assert data["estimated_tokens"] > 0
             mock_exec.assert_not_called()
 
@@ -805,7 +807,7 @@ class TestAiDiagnoseWorkflow:
                     "log_ids": [1, 2],
                     "user_context": "Investigating network blip after update",
                     "provider": "gemini",
-                    "model": "gemini-2.5-flash",
+                    "model": "gemini-3.7-flash",
                 },
             )
             assert res.status_code == 200
@@ -813,7 +815,7 @@ class TestAiDiagnoseWorkflow:
             assert "DNS server encountered authentication failure" in data["summary"]
             assert "Invalid Bearer token supplied" in data["root_cause"]
             assert "Verify client authentication headers" in data["remediation"]
-            assert data["model_used"] == "gemini-2.5-flash"
+            assert data["model_used"] == "gemini-3.7-flash"
             assert data["tokens_in"] == 180
             assert data["tokens_out"] == 65
             assert data["tokens_thoughts"] == 0
@@ -823,7 +825,7 @@ class TestAiDiagnoseWorkflow:
             assert mock_exec.called
             call_kwargs = mock_exec.call_args[1]
             assert call_kwargs["provider"] == "gemini"
-            assert call_kwargs["model"] == "gemini-2.5-flash"
+            assert call_kwargs["model"] == "gemini-3.7-flash"
             assert call_kwargs["api_key"] == "test-gemini-key-12345"
             assert call_kwargs["source_alias"] == "router"
             assert call_kwargs["app_name"] == "dnsmasq"
@@ -1163,3 +1165,122 @@ class TestAiDiagnoseWorkflow:
             assert res.status_code == 504
             assert res.json()["detail"] == "AI analysis request timed out: Request timed out after deadline"
             mock_warn.assert_called_with("AI analysis request timed out: Request timed out after deadline")
+
+
+# ===================================================================
+# 7. Default Model Configuration & Fallback Tests (Issue 5)
+# ===================================================================
+
+class TestDefaultModelFallback:
+
+    def test_settings_response_default_model(self):
+        """SettingsResponse model defaults ai_model to DEFAULT_AI_MODEL ('gemini-3.7-flash')."""
+        assert DEFAULT_AI_MODEL == "gemini-3.7-flash"
+        resp = SettingsResponse()
+        assert resp.ai_model == "gemini-3.7-flash"
+
+    def test_settings_update_schema_definition(self):
+        """SettingsUpdate alias exists for SettingsUpdateRequest and accepts valid update fields."""
+        assert SettingsUpdate is SettingsUpdateRequest
+        req = SettingsUpdate(ai_model="gemini-3.7-flash")
+        assert req.ai_model == "gemini-3.7-flash"
+
+    @pytest.mark.asyncio
+    async def test_get_settings_fallback_when_not_in_db(self, populated_db, auth_client, tmp_path):
+        """GET /api/settings returns gemini-3.7-flash when ai_model is absent from database."""
+        db_file = tmp_path / "logs.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("DELETE FROM system_settings WHERE key = 'ai_model'")
+        conn.commit()
+        conn.close()
+
+        res = await auth_client.get("/api/settings")
+        assert res.status_code == 200
+        assert res.json()["ai_model"] == "gemini-3.7-flash"
+
+    @pytest.mark.asyncio
+    async def test_preview_fallback_when_not_in_db(self, populated_db, auth_client, tmp_path):
+        """POST /api/ai/preview falls back to gemini-3.7-flash when unset in database."""
+        db_file = tmp_path / "logs.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("DELETE FROM system_settings WHERE key = 'ai_model'")
+        conn.commit()
+        conn.close()
+
+        res = await auth_client.post("/api/ai/preview", json={"log_ids": [1, 2]})
+        assert res.status_code == 200
+        assert res.json()["model"] == "gemini-3.7-flash"
+
+    @pytest.mark.asyncio
+    async def test_preview_fallback_provider_specific(self, populated_db, auth_client, tmp_path):
+        """POST /api/ai/preview uses provider-appropriate default when ai_model unset."""
+        db_file = tmp_path / "logs.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("DELETE FROM system_settings WHERE key = 'ai_model'")
+        conn.execute("UPDATE system_settings SET value = 'openai' WHERE key = 'ai_provider'")
+        conn.commit()
+        conn.close()
+
+        res = await auth_client.post("/api/ai/preview", json={"log_ids": [1, 2]})
+        assert res.status_code == 200
+        assert res.json()["model"] == "gpt-4o"
+
+    @pytest.mark.asyncio
+    async def test_diagnose_fallback_when_not_in_db_and_no_override(self, populated_db, auth_client, tmp_path):
+        """POST /api/ai/diagnose falls back to gemini-3.7-flash when no model is specified."""
+        db_file = tmp_path / "logs.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("DELETE FROM system_settings WHERE key = 'ai_model'")
+        conn.commit()
+        conn.close()
+
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=("Summary", "Cause", "Fix", "raw", "prompt", 100, 50, 0, 150),
+        ) as mock_exec:
+            res = await auth_client.post("/api/ai/diagnose", json={"log_ids": [1, 2]})
+            assert res.status_code == 200
+            data = res.json()
+            assert data["model_used"] == "gemini-3.7-flash"
+            assert mock_exec.call_args[1]["model"] == "gemini-3.7-flash"
+
+    @pytest.mark.asyncio
+    async def test_diagnose_fallback_openai_compatible(self, populated_db, auth_client, tmp_path):
+        """POST /api/ai/diagnose falls back to llama3.2 for openai_compatible provider."""
+        db_file = tmp_path / "logs.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("DELETE FROM system_settings WHERE key = 'ai_model'")
+        conn.execute("UPDATE system_settings SET value = 'openai_compatible' WHERE key = 'ai_provider'")
+        conn.commit()
+        conn.close()
+
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=("Summary", "Cause", "Fix", "raw", "prompt", 100, 50, 0, 150),
+        ) as mock_exec:
+            res = await auth_client.post("/api/ai/diagnose", json={"log_ids": [1, 2]})
+            assert res.status_code == 200
+            data = res.json()
+            assert data["model_used"] == "llama3.2"
+            assert mock_exec.call_args[1]["model"] == "llama3.2"
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_fallback_when_model_is_none(self):
+        """execute_ai_analysis falls back to DEFAULT_AI_MODEL when model is None or empty."""
+        with patch("app.services.ai_engine.dispatch_gemini_request", new_callable=AsyncMock) as mock_dispatch:
+            mock_dispatch.return_value = ("Summary", 10, 10, 0, 20)
+            await ai_engine.execute_ai_analysis(
+                provider="gemini",
+                model=None,
+                api_key="key",
+                base_url=None,
+                source_alias="router",
+                app_name="app",
+                redacted_logs="log text",
+                log_count=1,
+            )
+            assert mock_dispatch.call_args[1]["model"] == "gemini-3.7-flash"
+
+

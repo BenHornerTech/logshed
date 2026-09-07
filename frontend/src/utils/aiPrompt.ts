@@ -2,6 +2,8 @@
  * Shared AI prompt constants and helper functions.
  */
 
+export const DEFAULT_AI_MODEL = 'gemini-3.7-flash';
+
 export const DEFAULT_SYSTEM_PROMPT = `You are an expert systems engineer, site reliability engineer (SRE), and Linux/Docker administrator.
 Review the following redacted server/container logs and provide a structured diagnosis in Markdown format.
 

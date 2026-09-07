@@ -16,7 +16,7 @@ from google import genai
 from google.genai import types as genai_types
 from openai import AsyncOpenAI, APITimeoutError
 
-from app.core.config import is_debug_or_dev
+from app.core.config import DEFAULT_AI_MODEL, is_debug_or_dev
 from app.core.redactor import redact
 
 logger = logging.getLogger(__name__)
@@ -352,7 +352,7 @@ async def execute_ai_analysis(
     if norm_provider == "gemini":
         raw_text, tokens_in, tokens_out, tokens_thoughts, tokens_used = await dispatch_gemini_request(
             api_key=api_key,
-            model=model or "gemini-2.5-flash",
+            model=model or DEFAULT_AI_MODEL,
             prompt=prompt,
             system_prompt=system_prompt,
             timeout=timeout,

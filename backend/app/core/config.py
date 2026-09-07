@@ -119,6 +119,7 @@ VALID_LOG_LEVELS: dict[str, Optional[int]] = {
     "0": None,
 }
 
+DEFAULT_AI_MODEL = "gemini-3.7-flash"
 DEFAULT_INTERNAL_LOG_LEVEL = logging.WARNING
 
 

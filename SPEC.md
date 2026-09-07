@@ -186,7 +186,7 @@ AI interactions are strictly user-initiated. No background workers or automated 
 
 ### 4.2 AI Provider Abstraction
 Unified client supporting Google Gemini (`google-genai` SDK) and OpenAI-compatible endpoints (`openai` SDK, configurable `base_url` for Ollama/vLLM/LocalAI).
-- **Model Configuration:** Configurable default model per provider (e.g., `gemini-2.5-flash`, `gpt-4o`, `llama3.2`), with an optional per-request override in the UI modal.
+- **Model Configuration:** Configurable default model per provider (e.g., `gemini-3.7-flash`, `gpt-4o`, `llama3.2`), with an optional per-request override in the UI modal.
 
 - **Prompt Construction:**
   - System prompt establishes role as an expert systems engineer and Linux/Docker administrator.

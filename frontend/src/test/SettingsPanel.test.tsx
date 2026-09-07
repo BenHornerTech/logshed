@@ -260,7 +260,7 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
     expect(saveBtn.className).toContain('cursor-not-allowed');
 
     // Edit Default Model Name
-    const modelInput = screen.getByPlaceholderText('gemini-2.5-flash');
+    const modelInput = screen.getByPlaceholderText('gemini-3.7-flash');
     fireEvent.change(modelInput, { target: { value: 'gemini-2.5-pro' } });
 
     // Active state: dirty, button is highlighted and enabled
@@ -286,6 +286,27 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
       expect(saveBtn).toBeDisabled();
       expect(saveBtn.className).toContain('opacity-40');
     });
+  });
+
+  it('renders default model placeholder and helper caption for active provider', async () => {
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/On-Demand AI Provider Configuration/i)).toBeInTheDocument();
+    });
+
+    // Gemini provider default placeholder and helper
+    expect(screen.getByPlaceholderText('gemini-3.7-flash')).toBeInTheDocument();
+    const geminiHelper = screen.getByText(/Default model for Google Gemini is/i);
+    expect(geminiHelper.textContent).toContain('gemini-3.7-flash');
+
+    // Switch to OpenAI
+    const providerSelect = screen.getByDisplayValue('Google Gemini');
+    fireEvent.change(providerSelect, { target: { value: 'openai' } });
+
+    expect(screen.getByPlaceholderText('gpt-4o')).toBeInTheDocument();
+    const openaiHelper = screen.getByText(/Default model for OpenAI is/i);
+    expect(openaiHelper.textContent).toContain('gpt-4o');
   });
 
   it('renders "Keys encrypted at rest" badge, card title, and explanatory Fernet caption', async () => {

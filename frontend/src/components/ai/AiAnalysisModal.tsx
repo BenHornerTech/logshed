@@ -3,7 +3,7 @@ import { Sparkles, Copy, Check, Shield, RefreshCw, AlertCircle, Info, RotateCcw 
 import { LogEntry, AiPreviewResponse, AiDiagnosisResponse } from '../../types.ts';
 import { previewAiPrompt, diagnoseLogs } from '../../api/ai.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
-import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, parseFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
+import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, parseFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 
@@ -28,7 +28,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
 
   const [userContext, setUserContext] = useState<string>('');
   const [provider, setProvider] = useState<string>('gemini');
-  const [model, setModel] = useState<string>('gemini-2.5-flash');
+  const [model, setModel] = useState<string>(DEFAULT_AI_MODEL);
 
   const [isDiagnosing, setIsDiagnosing] = useState<boolean>(false);
   const [analysisResult, setAnalysisResult] = useState<AiDiagnosisResponse | null>(null);
@@ -367,7 +367,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                   type="text"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                  placeholder={provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'openai' ? 'gpt-4o' : 'llama3.2'}
+                  placeholder={provider === 'gemini' ? DEFAULT_AI_MODEL : provider === 'openai' ? 'gpt-4o' : 'llama3.2'}
                   className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
                 />
               </div>

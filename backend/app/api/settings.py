@@ -9,7 +9,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, run_db_query
-from app.core.config import get_max_retention_days, get_internal_log_level, get_internal_log_level_name
+from app.core.config import DEFAULT_AI_MODEL, get_max_retention_days, get_internal_log_level, get_internal_log_level_name
 from app.core.security import decrypt_value, encrypt_value, mask_secret
 
 from app.models import MessageResponse, SettingsResponse, SettingsUpdateRequest
@@ -69,7 +69,7 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
 
     return SettingsResponse(
         ai_provider=stored.get("ai_provider") or "gemini",
-        ai_model=stored.get("ai_model") or "gemini-2.5-flash",
+        ai_model=stored.get("ai_model") or DEFAULT_AI_MODEL,
         ai_api_key=mask_secret(ai_api_key_val),
         ai_base_url=stored.get("ai_base_url") or None,
         ai_system_prompt=stored.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT,

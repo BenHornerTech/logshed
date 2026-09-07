@@ -20,7 +20,7 @@ import { fetchAiAudit, deleteAiAuditItem, clearAiAuditLog } from '../../api/ai.t
 import { changePassword } from '../../api/auth.ts';
 import { copyToClipboard } from '../../utils/clipboard.ts';
 import { extractCleanSummary } from '../../utils/summary.ts';
-import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
+import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 import { StorageCard } from './StorageCard.tsx';
@@ -36,7 +36,7 @@ export const SettingsPanel: React.FC = () => {
 
   // Form states
   const [aiProvider, setAiProvider] = useState<'gemini' | 'openai' | 'openai_compatible'>('gemini');
-  const [aiModel, setAiModel] = useState<string>('gemini-2.5-flash');
+  const [aiModel, setAiModel] = useState<string>(DEFAULT_AI_MODEL);
   const [aiApiKey, setAiApiKey] = useState<string>('');
   const [aiBaseUrl, setAiBaseUrl] = useState<string>('');
   const [aiSystemPrompt, setAiSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
@@ -51,7 +51,7 @@ export const SettingsPanel: React.FC = () => {
   const isDirty = Boolean(
     settings &&
       (aiProvider !== settings.ai_provider ||
-        aiModel !== (settings.ai_model || 'gemini-2.5-flash') ||
+        aiModel !== (settings.ai_model || DEFAULT_AI_MODEL) ||
         aiApiKey !== (settings.ai_api_key || '') ||
         aiBaseUrl !== (settings.ai_base_url || '') ||
         normalizePrompt(aiSystemPrompt) !== normalizePrompt(settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT) ||
@@ -94,7 +94,7 @@ export const SettingsPanel: React.FC = () => {
 
       // Populate form
       setAiProvider(settRes.ai_provider);
-      setAiModel(settRes.ai_model || 'gemini-2.5-flash');
+      setAiModel(settRes.ai_model || DEFAULT_AI_MODEL);
       setAiApiKey(settRes.ai_api_key || '');
       setAiBaseUrl(settRes.ai_base_url || '');
       setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
@@ -133,7 +133,7 @@ export const SettingsPanel: React.FC = () => {
       const settRes = await fetchSettings();
       setSettings(settRes);
       setAiProvider(settRes.ai_provider);
-      setAiModel(settRes.ai_model || 'gemini-2.5-flash');
+      setAiModel(settRes.ai_model || DEFAULT_AI_MODEL);
       setAiApiKey(settRes.ai_api_key || '');
       setAiBaseUrl(settRes.ai_base_url || '');
       setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
@@ -365,9 +365,12 @@ export const SettingsPanel: React.FC = () => {
                 type="text"
                 value={aiModel}
                 onChange={(e) => setAiModel(e.target.value)}
-                placeholder={aiProvider === 'gemini' ? 'gemini-2.5-flash' : aiProvider === 'openai' ? 'gpt-4o' : 'llama3.2'}
+                placeholder={aiProvider === 'gemini' ? DEFAULT_AI_MODEL : aiProvider === 'openai' ? 'gpt-4o' : 'llama3.2'}
                 className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
               />
+              <p className="text-[10px] text-slate-500 mt-1">
+                Default model for {aiProvider === 'gemini' ? 'Google Gemini' : aiProvider === 'openai' ? 'OpenAI' : 'local providers'} is <span className="font-mono text-slate-400">{aiProvider === 'gemini' ? DEFAULT_AI_MODEL : aiProvider === 'openai' ? 'gpt-4o' : 'llama3.2'}</span>.
+              </p>
             </div>
 
             <div>
