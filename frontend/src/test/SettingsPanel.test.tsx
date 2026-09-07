@@ -237,5 +237,35 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
       )
     ).toBeInTheDocument();
   });
+
+  it('renders internal log severity dropdown, marks form dirty on change, and saves internal_log_level', async () => {
+    const updateSpy = vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({ status: 'ok' });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Internal Application Logging')).toBeInTheDocument();
+    });
+
+    const select = screen.getByLabelText('Internal Log Severity Threshold') as HTMLSelectElement;
+    expect(select.value).toBe('WARNING');
+
+    // Change to ERROR
+    fireEvent.change(select, { target: { value: 'ERROR' } });
+    expect(select.value).toBe('ERROR');
+
+    const saveBtn = screen.getByRole('button', { name: /Save Application Settings/i });
+    expect(saveBtn).not.toBeDisabled();
+
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          internal_log_level: 'ERROR',
+        })
+      );
+    });
+  });
 });
 

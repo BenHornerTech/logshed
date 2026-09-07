@@ -29,4 +29,5 @@
   <Config Name="PUID" Target="PUID" Default="1000" Description="User ID for non-root execution." Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
   <Config Name="PGID" Target="PGID" Default="1000" Description="Group ID for non-root execution." Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
   <Config Name="Timezone" Target="TZ" Default="America/New_York" Description="Container timezone." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
+  <Config Name="Internal Log Level" Target="LOGSHED_INTERNAL_LOG_LEVEL" Default="WARNING" Description="Minimum severity level for LogShed internal application logs captured into LogShed (DEBUG, INFO, WARNING, ERROR, CRITICAL, or DISABLED)." Type="Variable" Display="advanced" Required="false" Mask="false">WARNING</Config>
 </Container>

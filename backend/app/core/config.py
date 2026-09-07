@@ -3,9 +3,10 @@ Application configuration for LogShed.
 Manages environment variables, filesystem paths, and defaults.
 """
 
+import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 def get_data_dir() -> Path:
     """Returns the configured data directory path."""
@@ -101,4 +102,80 @@ def get_max_retention_days() -> int:
         except ValueError:
             pass
     return 30
+
+
+VALID_LOG_LEVELS: dict[str, Optional[int]] = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "WARN": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+    "FATAL": logging.CRITICAL,
+    "DISABLED": None,
+    "OFF": None,
+    "NONE": None,
+    "FALSE": None,
+    "0": None,
+}
+
+DEFAULT_INTERNAL_LOG_LEVEL = logging.WARNING
+
+
+def parse_internal_log_level(val: Optional[Union[str, int]]) -> Optional[int]:
+    """
+    Parses a log level representation into an integer logging level or None if disabled.
+    Accepts string level names (DEBUG, INFO, WARNING, WARN, ERROR, CRITICAL, FATAL, DISABLED, OFF, NONE)
+    or integer levels.
+    Defaults to logging.WARNING if val is None or empty string.
+    Falls back to logging.WARNING if val is unrecognized.
+    """
+    if val is None:
+        return DEFAULT_INTERNAL_LOG_LEVEL
+    if isinstance(val, int):
+        return val
+    s = str(val).strip().upper()
+    if not s:
+        return DEFAULT_INTERNAL_LOG_LEVEL
+    if s in VALID_LOG_LEVELS:
+        return VALID_LOG_LEVELS[s]
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    return DEFAULT_INTERNAL_LOG_LEVEL
+
+
+def get_internal_log_level() -> Optional[int]:
+    """
+    Returns the configured logging level for LogShed's internal log handler.
+    Reads the LOGSHED_INTERNAL_LOG_LEVEL environment variable (default: WARNING).
+    Returns None if internal logging is disabled (e.g. 'DISABLED', 'OFF', 'NONE').
+    """
+    raw = os.environ.get("LOGSHED_INTERNAL_LOG_LEVEL")
+    return parse_internal_log_level(raw)
+
+
+def get_internal_log_level_name(level: Optional[int] = ...) -> str:
+    """
+    Returns the canonical string representation of an internal logging level.
+    If level is omitted, reads from current environment configuration.
+    """
+    if level is ...:
+        level = get_internal_log_level()
+    if level is None:
+        return "DISABLED"
+    name = logging.getLevelName(level)
+    if isinstance(name, str) and not name.startswith("Level "):
+        return name
+    return str(level)
+
+
+def to_canonical_log_level_name(val: Optional[Union[str, int]]) -> str:
+    """
+    Converts any log level representation (string name, alias, integer, None)
+    to its canonical string name: DEBUG, INFO, WARNING, ERROR, CRITICAL, or DISABLED.
+    """
+    parsed = parse_internal_log_level(val)
+    return get_internal_log_level_name(parsed)
 

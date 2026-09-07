@@ -11,6 +11,7 @@ import {
   Copy,
   Trash2,
   RotateCcw,
+  FileText,
 } from 'lucide-react';
 import { StorageMetricsResponse, AiAuditEntry } from '../../types.ts';
 import { fetchSettings, updateSettings, SettingsResponseData } from '../../api/settings.ts';
@@ -39,6 +40,7 @@ export const SettingsPanel: React.FC = () => {
   const [aiApiKey, setAiApiKey] = useState<string>('');
   const [aiBaseUrl, setAiBaseUrl] = useState<string>('');
   const [aiSystemPrompt, setAiSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
+  const [internalLogLevel, setInternalLogLevel] = useState<string>('WARNING');
 
   // Save feedback state
   const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
@@ -52,7 +54,8 @@ export const SettingsPanel: React.FC = () => {
         aiModel !== (settings.ai_model || 'gemini-2.5-flash') ||
         aiApiKey !== (settings.ai_api_key || '') ||
         aiBaseUrl !== (settings.ai_base_url || '') ||
-        aiSystemPrompt !== (settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT))
+        aiSystemPrompt !== (settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT) ||
+        internalLogLevel !== (settings.internal_log_level || 'WARNING'))
   );
 
   // Password reset state
@@ -92,6 +95,7 @@ export const SettingsPanel: React.FC = () => {
       setAiApiKey(settRes.ai_api_key || '');
       setAiBaseUrl(settRes.ai_base_url || '');
       setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
+      setInternalLogLevel(settRes.internal_log_level || 'WARNING');
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to load system settings.');
     } finally {
@@ -119,6 +123,7 @@ export const SettingsPanel: React.FC = () => {
         ai_api_key: aiApiKey,
         ai_base_url: aiBaseUrl || null,
         ai_system_prompt: aiSystemPrompt,
+        internal_log_level: internalLogLevel,
       });
 
       // Reload updated settings as baseline
@@ -129,6 +134,7 @@ export const SettingsPanel: React.FC = () => {
       setAiApiKey(settRes.ai_api_key || '');
       setAiBaseUrl(settRes.ai_base_url || '');
       setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
+      setInternalLogLevel(settRes.internal_log_level || 'WARNING');
 
       setSaveInlineSuccess(true);
       setTimeout(() => setSaveInlineSuccess(false), 3000);
@@ -268,8 +274,52 @@ export const SettingsPanel: React.FC = () => {
         <StorageTrendChart history={storageMetrics?.history || []} />
       </section>
 
-      {/* Settings Form: AI */}
+      {/* Settings Form: Logging & AI */}
       <form onSubmit={handleSaveSettings} className="space-y-6">
+        {/* Application Self-Logging Section */}
+        <section className="bg-dark-900 border border-dark-700 rounded-xl p-5 shadow-md space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <FileText className="w-4 h-4 text-accent-500" />
+                <span>Internal Application Logging</span>
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Configure minimum severity level for LogShed operational diagnostics captured into its database and stream.
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-dark-950 border border-dark-800 text-[11px] font-mono text-slate-400 shrink-0 self-start sm:self-auto">
+              <span>Source: <code className="text-accent-400">logshed</code></span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
+                Internal Log Severity Threshold
+              </label>
+              <select
+                aria-label="Internal Log Severity Threshold"
+                value={internalLogLevel}
+                onChange={(e) => setInternalLogLevel(e.target.value)}
+                className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+              >
+                <option value="WARNING">WARNING (Default - warnings &amp; errors)</option>
+                <option value="ERROR">ERROR (Errors &amp; critical failures only)</option>
+                <option value="CRITICAL">CRITICAL (Fatal system emergencies only)</option>
+                <option value="INFO">INFO (All standard informational notices)</option>
+                <option value="DEBUG">DEBUG (Detailed diagnostic traces)</option>
+                <option value="DISABLED">DISABLED (Do not ingest internal logs)</option>
+              </select>
+            </div>
+            <div className="flex items-center text-[11px] text-slate-400 sm:pt-4">
+              <span>
+                Logs at or above this level are captured into LogShed. Ingestion pipelines, database tasks, and SSE streams include recursion suppression to prevent loops.
+              </span>
+            </div>
+          </div>
+        </section>
+
         {/* AI Provider Section */}
         <section className="bg-dark-900 border border-dark-700 rounded-xl p-5 shadow-md space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">

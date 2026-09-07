@@ -89,9 +89,12 @@ The following environment variables are supplied at container boot:
 | `TZ` | `UTC` | Container timezone. |
 | `COOKIE_SECURE` | `false` | Set to `true` if running behind an SSL reverse proxy that does not send `X-Forwarded-Proto`. |
 | `LOGSHED_SECRET_KEY` | *(auto-generated)* | 32-byte URL-safe base64 key for encrypting runtime settings at rest. |
+| `LOGSHED_INTERNAL_LOG_LEVEL` | `WARNING` | Minimum severity level for LogShed internal application logs captured into its own database (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`, or `DISABLED`). |
 | `MAX_RETENTION_DAYS` | `30` | Maximum log retention period in days (minimum 1). Configures the upper bound in the UI slider. Advanced users can increase this to retain logs for longer periods. |
 
 > **Note**: Sensitive credentials (such as LLM API keys) and retention policies are configured entirely at runtime in the **Settings** panel within the web interface, encrypted at rest using AES-128-CBC / HMAC-SHA256 (Fernet).
+>
+> **Internal Self-Logging**: LogShed records its own operational diagnostics and errors directly into its database using source alias `logshed` (e.g. `logshed/syslog`, `logshed/main`). Only events at or above `LOGSHED_INTERNAL_LOG_LEVEL` (default: `WARNING`) are ingested. Ingestion pipeline internals, SSE subscribers, database checkpointers, and HTTP access loggers are automatically suppressed with re-entrancy locks to prevent recursive ingestion loops. Set to `DISABLED` to turn off internal log ingestion.
 >
 > **Log Retention**: Retention is configurable between 1 and `MAX_RETENTION_DAYS` (default: 14 days, max: 30 days). Advanced users can increase `MAX_RETENTION_DAYS` via environment variable if homelab hardware and storage capacity allow. Retention pruning purges expired logs, compacts the FTS5 search index, and checkpoints the WAL without holding exclusive offline database locks; SQLite automatically reuses free database pages for incoming logs without requiring an intrusive offline VACUUM.
 

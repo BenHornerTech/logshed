@@ -98,6 +98,7 @@ class SettingsResponse(BaseModel):
     retention_days: int = 14
     max_retention_days: int = Field(default_factory=get_max_retention_days)
     has_ai_api_key: bool = False
+    internal_log_level: str = "WARNING"
 
     @model_validator(mode="after")
     def clamp_retention_days(self) -> "SettingsResponse":
@@ -121,6 +122,10 @@ class SettingsUpdateRequest(BaseModel):
             "Log retention period in days (1 to MAX_RETENTION_DAYS, default 14)."
         ),
     )
+    internal_log_level: Optional[str] = Field(
+        None,
+        description="Internal application log capture level (DEBUG, INFO, WARNING, ERROR, CRITICAL, DISABLED).",
+    )
 
     @field_validator("retention_days")
     @classmethod
@@ -129,6 +134,18 @@ class SettingsUpdateRequest(BaseModel):
             max_days = get_max_retention_days()
             if v < 1 or v > max_days:
                 raise ValueError(f"Retention days must be between 1 and {max_days}")
+        return v
+
+    @field_validator("internal_log_level")
+    @classmethod
+    def validate_internal_log_level(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v_clean = v.strip().upper()
+            from app.core.config import VALID_LOG_LEVELS, to_canonical_log_level_name
+            if v_clean not in VALID_LOG_LEVELS:
+                valid_keys = ", ".join(sorted(VALID_LOG_LEVELS.keys()))
+                raise ValueError(f"Invalid internal_log_level '{v}'. Must be one of: {valid_keys}")
+            return to_canonical_log_level_name(v_clean)
         return v
 
 

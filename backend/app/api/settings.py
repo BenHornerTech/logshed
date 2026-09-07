@@ -9,7 +9,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, run_db_query
-from app.core.config import get_max_retention_days
+from app.core.config import get_max_retention_days, get_internal_log_level, get_internal_log_level_name
 from app.core.security import decrypt_value, encrypt_value, mask_secret
 
 from app.models import MessageResponse, SettingsResponse, SettingsUpdateRequest
@@ -58,6 +58,15 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
     max_days = get_max_retention_days()
     retention_days = max(1, min(retention_days, max_days))
 
+    env_level = get_internal_log_level()
+    env_level_name = get_internal_log_level_name(env_level)
+    stored_level = stored.get("internal_log_level")
+    if stored_level:
+        from app.core.config import to_canonical_log_level_name
+        internal_log_level = to_canonical_log_level_name(stored_level)
+    else:
+        internal_log_level = env_level_name
+
     return SettingsResponse(
         ai_provider=stored.get("ai_provider") or "gemini",
         ai_model=stored.get("ai_model") or "gemini-2.5-flash",
@@ -67,6 +76,7 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
         retention_days=retention_days,
         max_retention_days=max_days,
         has_ai_api_key=bool(ai_api_key_val),
+        internal_log_level=internal_log_level,
     )
 
 
@@ -110,6 +120,9 @@ async def update_settings(
         if req.retention_days is not None:
             updates.append(("retention_days", str(req.retention_days), 0))
 
+        if req.internal_log_level is not None:
+            updates.append(("internal_log_level", req.internal_log_level, 0))
+
         # Handle sensitive fields
         for sensitive_key in ("ai_api_key",):
             val = getattr(req, sensitive_key)
@@ -140,4 +153,12 @@ async def update_settings(
         conn.commit()
 
     await run_db_query(_save_settings)
+
+    if req.internal_log_level is not None:
+        try:
+            from app.main import configure_internal_log_handler
+            configure_internal_log_handler(req.internal_log_level)
+        except Exception:
+            pass
+
     return MessageResponse(status="ok")

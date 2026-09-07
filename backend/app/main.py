@@ -6,7 +6,7 @@ Configures lifespan events, CORS middleware, background ingestion workers, and A
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Union
 
 from pathlib import Path
 
@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import ai, aliases, auth, logs, settings, system
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
-from app.core.config import get_cors_origins, get_db_path, get_docker_host, get_syslog_port
+from app.core.config import get_cors_origins, get_db_path, get_docker_host, get_syslog_port, get_internal_log_level
 from app.core.migrations import run_migrations
 from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer, InternalLogHandler
 from app.core.security import get_or_create_master_key
@@ -38,7 +38,56 @@ _prune_worker: Optional[PruneWorker] = None
 _syslog_server: Optional[SyslogServer] = None
 _docker_tailer: Optional[DockerTailer] = None
 _assembler: Optional[KeyedMultilineAssembler] = None
+_internal_log_handler: Optional[InternalLogHandler] = None
 _background_tasks: list[asyncio.Task] = []
+
+
+def get_internal_log_handler() -> Optional[InternalLogHandler]:
+    """Returns the active InternalLogHandler instance, or None if uninitialized or disabled."""
+    return _internal_log_handler
+
+
+def configure_internal_log_handler(level: Optional[Union[int, str]]) -> Optional[InternalLogHandler]:
+    """
+    Dynamically configure or disable the active internal log handler on logger 'app'.
+    Accepts integer logging levels, string level names ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'),
+    or 'DISABLED' / 'OFF' / 'NONE' / None to disable internal logging.
+    """
+    global _internal_log_handler
+    from app.core.config import parse_internal_log_level
+    parsed = None if level is None else parse_internal_log_level(level)
+
+    app_logger = logging.getLogger("app")
+    if parsed is None:
+        if _internal_log_handler is not None:
+            _internal_log_handler.set_internal_level(None)
+            try:
+                app_logger.removeHandler(_internal_log_handler)
+            except Exception:
+                pass
+            _internal_log_handler = None
+        app_logger.setLevel(logging.NOTSET)
+        return None
+
+    if _internal_log_handler is None:
+        _internal_log_handler = InternalLogHandler(level=parsed)
+        if _internal_log_handler not in app_logger.handlers:
+            app_logger.addHandler(_internal_log_handler)
+    else:
+        _internal_log_handler.set_internal_level(parsed)
+        if _internal_log_handler not in app_logger.handlers:
+            app_logger.addHandler(_internal_log_handler)
+
+    # Permit DEBUG or INFO records to propagate through logger 'app' to handlers
+    # if a lower threshold is explicitly requested. Never raise app_logger's level to
+    # WARNING or ERROR as that would suppress normal informational console logs from LogShed.
+    if parsed < logging.WARNING:
+        app_logger.setLevel(parsed)
+    else:
+        app_logger.setLevel(logging.NOTSET)
+
+    return _internal_log_handler
+
 
 
 async def _supervise_worker(coro_fn, name: str, *args, **kwargs) -> None:
@@ -109,15 +158,38 @@ async def lifespan(app: FastAPI):
         logger.warning(f"DockerTailer could not be started: {e}")
 
     # 8. Attach internal log handler so application warnings and errors appear in LogShed
-    internal_handler = InternalLogHandler()
-    internal_handler.setLevel(logging.INFO)
-    logging.getLogger("app").addHandler(internal_handler)
+    persisted_level = None
+    try:
+        from app.core.migrations import get_connection
+
+        def _read_persisted_level():
+            with get_connection(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT value FROM system_settings WHERE key = 'internal_log_level'")
+                row = cursor.fetchone()
+                return row[0] if row and row[0] else None
+
+        persisted_level = await asyncio.to_thread(_read_persisted_level)
+    except Exception:
+        pass
+
+    active_level = persisted_level if persisted_level is not None else get_internal_log_level()
+    _internal_log_handler = configure_internal_log_handler(active_level)
+    if _internal_log_handler is not None and not _internal_log_handler.is_disabled:
+        logger.info(f"InternalLogHandler attached at level {logging.getLevelName(_internal_log_handler.level)}.")
+    else:
+        logger.info("InternalLogHandler disabled by configuration.")
 
     yield
 
     # Shutdown sequence
     logger.info("Shutting down background workers...")
-    logging.getLogger("app").removeHandler(internal_handler)
+    if _internal_log_handler is not None:
+        try:
+            logging.getLogger("app").removeHandler(_internal_log_handler)
+        except Exception:
+            pass
+        _internal_log_handler = None
     if _docker_tailer:
         try:
             await _docker_tailer.stop()

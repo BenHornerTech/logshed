@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 import traceback
-from typing import Optional
+from typing import Optional, Union
 from pathlib import Path
 from collections import defaultdict, deque
 
@@ -22,7 +22,8 @@ class InternalLogHandler(logging.Handler):
     """
     Python logging handler that captures internal application warnings and errors
     and feeds them directly into the LogShed ingestion pipeline.
-    Ignores noisy HTTP access logs to prevent self-referential loops.
+    Ignores noisy HTTP access logs, SSE broadcast tasks, and ingestion pipeline internals
+    to prevent self-referential loops.
     """
     IGNORED_LOGGERS = {
         "uvicorn.access",
@@ -30,11 +31,53 @@ class InternalLogHandler(logging.Handler):
         "httpx",
         "asyncio",
         "app.core.pipeline",
+        "app.core.sse",
+        "app.core.migrations",
         "app.services.retention",
         "app.services.storage_metrics",
     }
 
+    def __init__(self, level: Optional[Union[int, str]] = None):
+        super().__init__()
+        self._thread_local = threading.local()
+        self._is_disabled = False
+        if level is not None:
+            self.set_internal_level(level)
+        else:
+            from app.core.config import get_internal_log_level
+            configured_level = get_internal_log_level()
+            if configured_level is None:
+                self._is_disabled = True
+            else:
+                self.setLevel(configured_level)
+
+    def set_internal_level(self, level: Optional[Union[int, str]]) -> None:
+        """
+        Dynamically update the internal log handler filter level.
+        Accepts integer logging levels, string level names ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'),
+        or 'DISABLED' / 'OFF' / 'NONE' / None to disable internal log emission.
+        """
+        if level is None:
+            self._is_disabled = True
+            return
+
+        from app.core.config import parse_internal_log_level
+        parsed = parse_internal_log_level(level)
+        if parsed is None:
+            self._is_disabled = True
+        else:
+            self._is_disabled = False
+            self.setLevel(parsed)
+
+    @property
+    def is_disabled(self) -> bool:
+        """True if internal log emission is disabled."""
+        return self._is_disabled
+
     def emit(self, record: logging.LogRecord) -> None:
+        if self._is_disabled:
+            return
+
         if (
             record.name in self.IGNORED_LOGGERS
             or record.name.startswith("uvicorn.access")
@@ -42,52 +85,74 @@ class InternalLogHandler(logging.Handler):
         ):
             return
 
-        # Map Python log levels to RFC 5424 severity (0-7)
-        if record.levelno >= logging.CRITICAL:
-            severity = 2
-        elif record.levelno >= logging.ERROR:
-            severity = 3
-        elif record.levelno >= logging.WARNING:
-            severity = 4
-        elif record.levelno >= logging.INFO:
-            severity = 6
-        else:
-            severity = 7
+        # Check handler level filter (in case emit() is called directly or via custom handler dispatch)
+        if self.level and record.levelno < self.level:
+            return
 
-        msg = record.getMessage()
-        if record.exc_info:
-            msg += "\n" + "".join(traceback.format_exception(*record.exc_info))
-
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        app_subname = record.name.split(".")[-1] if "." in record.name else record.name
-        log_entry = {
-            "timestamp": now_iso,
-            "received_at": now_iso,
-            "source_ip": "127.0.0.1",
-            "source_alias": "logshed",
-            "app_name": f"logshed/{app_subname}",
-            "facility": 1,
-            "severity": severity,
-            "message": msg,
-            "raw": f"[{now_iso}] [{record.name}] [{record.levelname}] {msg}",
-        }
-
+        # Re-entrancy guard to prevent recursive logging loops on the same thread
+        if getattr(self._thread_local, "in_emit", False):
+            return
+        self._thread_local.in_emit = True
         try:
-            queue = get_queue()
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
-                if threading.current_thread() is threading.main_thread():
-                    queue.put_nowait(log_entry)
-                else:
-                    loop.call_soon_threadsafe(queue.put_nowait, log_entry)
+            # Map Python log levels to RFC 5424 severity (0-7)
+            if record.levelno >= logging.CRITICAL:
+                severity = 2
+            elif record.levelno >= logging.ERROR:
+                severity = 3
+            elif record.levelno >= logging.WARNING:
+                severity = 4
+            elif record.levelno >= logging.INFO:
+                severity = 6
             else:
-                queue.put_nowait(log_entry)
-        except Exception:
-            pass
+                severity = 7
+
+            msg = record.getMessage()
+            if record.exc_info:
+                msg += "\n" + "".join(traceback.format_exception(*record.exc_info))
+
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            app_subname = record.name.split(".")[-1] if "." in record.name else record.name
+            log_entry = {
+                "timestamp": now_iso,
+                "received_at": now_iso,
+                "source_ip": "127.0.0.1",
+                "source_alias": "logshed",
+                "app_name": app_subname,
+                "facility": 1,
+                "severity": severity,
+                "message": msg,
+                "raw": f"[{now_iso}] [{record.name}] [{record.levelname}] {msg}",
+            }
+
+            try:
+                queue = get_queue()
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop and loop.is_running():
+                    if threading.current_thread() is threading.main_thread():
+                        try:
+                            queue.put_nowait(log_entry)
+                        except Exception:
+                            pass
+                    else:
+                        def _threadsafe_put(q, entry):
+                            try:
+                                q.put_nowait(entry)
+                            except Exception:
+                                pass
+                        loop.call_soon_threadsafe(_threadsafe_put, queue, log_entry)
+                else:
+                    try:
+                        queue.put_nowait(log_entry)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        finally:
+            self._thread_local.in_emit = False
 
 # Module-level shared state
 _log_queue: Optional[asyncio.Queue] = None
