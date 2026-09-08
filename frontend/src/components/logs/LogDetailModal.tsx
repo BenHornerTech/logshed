@@ -4,7 +4,7 @@ import { LogEntry } from '../../types.ts';
 import { fetchLogContext } from '../../api/logs.ts';
 import { SeverityBadge } from '../common/SeverityBadge.tsx';
 import { SlideOver } from '../common/SlideOver.tsx';
-import { copyToClipboard } from '../../utils/clipboard.ts';
+import { useClipboard } from '../../utils/hooks.ts';
 
 interface LogDetailModalProps {
   log: LogEntry | null;
@@ -28,8 +28,8 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
   const hostIsAliased = Boolean(
     isHostAliased ?? (log && log.source_alias && log.source_alias !== log.source_ip)
   );
-  const [copiedRaw, setCopiedRaw] = useState(false);
-  const [copiedMsg, setCopiedMsg] = useState(false);
+  const { copied: copiedRaw, copy: copyRaw } = useClipboard();
+  const { copied: copiedMsg, copy: copyMsg } = useClipboard();
   const [contextLogs, setContextLogs] = useState<LogEntry[]>([]);
   const [isLoadingContext, setIsLoadingContext] = useState(false);
   const [showContext, setShowContext] = useState(false);
@@ -82,19 +82,11 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
   if (!log) return null;
 
   const handleCopyRaw = async () => {
-    const ok = await copyToClipboard(log.raw);
-    if (ok) {
-      setCopiedRaw(true);
-      setTimeout(() => setCopiedRaw(false), 2000);
-    }
+    await copyRaw(log.raw);
   };
 
   const handleCopyMsg = async () => {
-    const ok = await copyToClipboard(log.message);
-    if (ok) {
-      setCopiedMsg(true);
-      setTimeout(() => setCopiedMsg(false), 2000);
-    }
+    await copyMsg(log.message);
   };
 
   return (

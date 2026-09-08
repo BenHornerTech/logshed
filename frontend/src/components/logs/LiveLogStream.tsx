@@ -833,16 +833,15 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     setLastSelectedLogIndex(null);
   };
 
-  const handleLaunchAiAnalysis = () => {
-    const selected = logs.filter((l) => selectedLogIds.has(l.id));
-    if (selected.length > 0) {
-      onDiagnoseAi(selected);
-    }
-  };
-
   const selectedLogs = useMemo(() => {
     return logs.filter((l) => selectedLogIds.has(l.id));
   }, [logs, selectedLogIds]);
+
+  const handleLaunchAiAnalysis = () => {
+    if (selectedLogs.length > 0) {
+      onDiagnoseAi(selectedLogs);
+    }
+  };
 
   const clearLogsBuffer = () => {
     fetchRequestIdRef.current += 1;

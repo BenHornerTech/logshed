@@ -23,7 +23,6 @@ from app.models import (
 )
 from app.services.ai_engine import (
     DEFAULT_SYSTEM_PROMPT,
-    SYSTEM_PROMPT,
     build_analysis_prompt,
     execute_ai_analysis,
     truncate_logs_to_budget,

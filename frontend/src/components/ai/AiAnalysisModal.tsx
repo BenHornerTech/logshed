@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { Sparkles, Copy, Check, Shield, RefreshCw, AlertCircle, Info, RotateCcw } from 'lucide-react';
 import { LogEntry, AiPreviewResponse, AiDiagnosisResponse } from '../../types.ts';
 import { previewAiPrompt, diagnoseLogs } from '../../api/ai.ts';
-import { copyToClipboard } from '../../utils/clipboard.ts';
+import { useClipboard } from '../../utils/hooks.ts';
 import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, parseFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
@@ -34,7 +34,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const [analysisResult, setAnalysisResult] = useState<AiDiagnosisResponse | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  const [copiedPrompt, setCopiedPrompt] = useState<boolean>(false);
+  const { copied: copiedPrompt, copy: copyPrompt } = useClipboard();
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const buildCombinedPrompt = (basePrompt: string, ctx: string) => {
@@ -196,11 +196,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
         ? buildFullEnvelope(systemPrompt, promptText)
         : promptText;
     if (textToCopy) {
-      const ok = await copyToClipboard(textToCopy);
-      if (ok) {
-        setCopiedPrompt(true);
-        setTimeout(() => setCopiedPrompt(false), 2000);
-      }
+      await copyPrompt(textToCopy);
     }
   };
 

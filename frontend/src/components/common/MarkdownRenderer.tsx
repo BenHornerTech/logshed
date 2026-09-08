@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Copy, Check } from 'lucide-react';
-import { copyToClipboard } from '../../utils/clipboard.ts';
+import { useClipboard } from '../../utils/hooks.ts';
 
 interface CodeBlockProps {
   language?: string;
@@ -8,14 +8,10 @@ interface CodeBlockProps {
 }
 
 export const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useClipboard();
 
-  const handleCopy = async () => {
-    const ok = await copyToClipboard(code);
-    if (ok) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+  const handleCopy = () => {
+    copy(code);
   };
 
   return (

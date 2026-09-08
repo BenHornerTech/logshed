@@ -18,7 +18,7 @@ import { fetchSettings, updateSettings, SettingsResponseData } from '../../api/s
 import { fetchStorageMetrics } from '../../api/system.ts';
 import { fetchAiAudit, deleteAiAuditItem, clearAiAuditLog } from '../../api/ai.ts';
 import { changePassword } from '../../api/auth.ts';
-import { copyToClipboard } from '../../utils/clipboard.ts';
+import { useClipboard } from '../../utils/hooks.ts';
 import { extractCleanSummary } from '../../utils/summary.ts';
 import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
@@ -68,9 +68,8 @@ export const SettingsPanel: React.FC = () => {
   const [isChangingPwd, setIsChangingPwd] = useState<boolean>(false);
   const [pwdMsg, setPwdMsg] = useState<{ text: string; isError: boolean } | null>(null);
 
-  // AI Audit Inspection modal state
   const [selectedAuditItem, setSelectedAuditItem] = useState<AiAuditEntry | null>(null);
-  const [copiedAuditPrompt, setCopiedAuditPrompt] = useState<boolean>(false);
+  const { copied: copiedAuditPrompt, copy: copyAuditPrompt } = useClipboard();
   const [showPromptDetails, setShowPromptDetails] = useState<boolean>(false);
   const [auditPromptViewMode, setAuditPromptViewMode] = useState<'analysis' | 'full'>('analysis');
   const [isDeletingAuditId, setIsDeletingAuditId] = useState<number | null>(null);
@@ -191,11 +190,7 @@ export const SettingsPanel: React.FC = () => {
         auditPromptViewMode === 'full'
           ? buildFullEnvelope(selectedAuditItem.system_prompt || DEFAULT_SYSTEM_PROMPT, selectedAuditItem.prompt_sent)
           : selectedAuditItem.prompt_sent;
-      const ok = await copyToClipboard(textToCopy);
-      if (ok) {
-        setCopiedAuditPrompt(true);
-        setTimeout(() => setCopiedAuditPrompt(false), 2000);
-      }
+      await copyAuditPrompt(textToCopy);
     }
   };
 
