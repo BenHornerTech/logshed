@@ -16,18 +16,18 @@ from app.core.config import DEFAULT_AI_MODEL, get_max_retention_days
 
 class SetupRequest(BaseModel):
     """Payload for first-run admin account creation."""
-    password: str = Field(..., min_length=8, description="Admin password (min 8 characters)")
+    password: str = Field(..., min_length=8, max_length=128, description="Admin password (8-128 characters)")
 
 
 class LoginRequest(BaseModel):
     """Payload for session login."""
-    password: str = Field(..., description="Admin password")
+    password: str = Field(..., max_length=128, description="Admin password")
 
 
 class PasswordChangeRequest(BaseModel):
     """Payload for changing admin password."""
-    current_password: str = Field(..., min_length=1, description="Current password")
-    new_password: str = Field(..., min_length=8, description="New password (min 8 characters)")
+    current_password: str = Field(..., min_length=1, max_length=128, description="Current password")
+    new_password: str = Field(..., min_length=8, max_length=128, description="New password (8-128 characters)")
 
 
 class AuthStatusResponse(BaseModel):
@@ -126,6 +126,20 @@ class SettingsUpdateRequest(BaseModel):
         None,
         description="Internal application log capture level (DEBUG, INFO, WARNING, ERROR, CRITICAL, DISABLED).",
     )
+
+    @field_validator("ai_base_url")
+    @classmethod
+    def validate_ai_base_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v_clean = v.strip()
+            if not v_clean:
+                return ""
+            from urllib.parse import urlparse
+            parsed = urlparse(v_clean)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise ValueError("ai_base_url must be a valid HTTP or HTTPS URL")
+            return v_clean
+        return v
 
     @field_validator("retention_days")
     @classmethod

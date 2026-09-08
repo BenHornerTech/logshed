@@ -101,6 +101,18 @@ class TestSpaStaticServing:
         assert res.status_code == 404
         assert res.headers["content-type"].startswith("application/json")
 
+    @pytest.mark.asyncio
+    async def test_spa_path_traversal_rejected(self, client: AsyncClient):
+        res = await client.get("/..%2f..%2frequirements.txt")
+        assert res.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_security_headers_present(self, client: AsyncClient):
+        res = await client.get("/stream")
+        assert res.headers.get("X-Frame-Options") == "DENY"
+        assert res.headers.get("X-Content-Type-Options") == "nosniff"
+        assert res.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+
 
 # ===================================================================
 # 3. Unraid Community Applications Template

@@ -255,6 +255,15 @@ def create_app() -> FastAPI:
             content={"detail": clean_detail},
         )
 
+    # Security headers middleware
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
     # CORS Middleware allowing credentials for Vite frontend development
     app.add_middleware(
         CORSMiddleware,
@@ -286,9 +295,11 @@ def create_app() -> FastAPI:
         async def serve_spa(full_path: str):
             if full_path.startswith("api"):
                 raise HTTPException(status_code=404, detail="Not Found")
-            file_path = static_dir / full_path
-            if file_path.is_file():
-                return FileResponse(str(file_path))
+            resolved_file = (static_dir / full_path).resolve()
+            if not resolved_file.is_relative_to(static_dir.resolve()):
+                raise HTTPException(status_code=404, detail="Not Found")
+            if resolved_file.is_file():
+                return FileResponse(str(resolved_file))
             index_path = static_dir / "index.html"
             if index_path.is_file():
                 return FileResponse(str(index_path))

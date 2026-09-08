@@ -177,6 +177,9 @@ async def setup_admin(req: SetupRequest, request: Request, response: Response) -
     return MessageResponse(status="ok")
 
 
+_DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$gu2N9vYOMcHlRxyHZpufkw$qwwgz3w/Hzgd+c8DfOpw9Pe/YQjiKQ6G8SiO917I3M8"
+
+
 @router.post("/login", response_model=MessageResponse)
 async def login(req: LoginRequest, request: Request, response: Response) -> MessageResponse:
     """
@@ -199,7 +202,10 @@ async def login(req: LoginRequest, request: Request, response: Response) -> Mess
         return row[0] if row else None
 
     stored_hash = await run_db_query(_get_admin)
-    if not stored_hash or not verify_password(stored_hash, req.password):
+    target_hash = stored_hash if stored_hash else _DUMMY_PASSWORD_HASH
+    is_valid = verify_password(target_hash, req.password) and bool(stored_hash)
+
+    if not is_valid:
         login_rate_limiter.record_failure(client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

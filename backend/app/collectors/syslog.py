@@ -578,11 +578,9 @@ class SyslogTCPProtocol(asyncio.Protocol):
 
     def connection_lost(self, exc):
         logger.debug(f"Syslog TCP connection lost from {self.peername}")
-        for _ in range(len(self._workers)):
-            try:
-                self.queue.put_nowait(None)
-            except asyncio.QueueFull:
-                break
+        for task in self._workers:
+            task.cancel()
+        self._workers.clear()
         if self.on_close:
             self.on_close(self)
 

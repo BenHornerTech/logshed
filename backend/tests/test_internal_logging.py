@@ -346,6 +346,30 @@ class TestInternalLogHandler:
 
         assert q.qsize() == 20
 
+    def test_internal_log_redacts_sensitive_data(self):
+        """InternalLogHandler scrubs secrets such as API keys and passwords before queueing."""
+        q = get_queue()
+        while not q.empty():
+            q.get_nowait()
+
+        handler = InternalLogHandler(level="DEBUG")
+        rec = logging.LogRecord(
+            name="app.collectors.docker",
+            level=logging.ERROR,
+            pathname="docker.py",
+            lineno=42,
+            msg="Failed auth with password=SuperSecretPassword123 and api_key=AIzaSyD-1234567890abcdef",
+            args=(),
+            exc_info=None,
+        )
+        handler.emit(rec)
+        assert q.qsize() == 1
+        entry = q.get_nowait()
+        assert "SuperSecretPassword123" not in entry["message"]
+        assert "AIzaSyD-1234567890abcdef" not in entry["message"]
+        assert "[REDACTED]" in entry["message"]
+
+
     @pytest.mark.asyncio
     async def test_internal_log_end_to_end_db_persistence(self, tmp_path: Path):
         """End-to-end verification that logger.warning persists to SQLite via QueueConsumer."""

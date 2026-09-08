@@ -1185,6 +1185,21 @@ class TestDefaultModelFallback:
         req = SettingsUpdate(ai_model="gemini-3.7-flash")
         assert req.ai_model == "gemini-3.7-flash"
 
+    def test_settings_update_ai_base_url_validation(self):
+        """ai_base_url validates HTTP/HTTPS format strictly."""
+        # Valid URLs
+        assert SettingsUpdate(ai_base_url="http://localhost:11434").ai_base_url == "http://localhost:11434"
+        assert SettingsUpdate(ai_base_url="https://api.openai.com/v1").ai_base_url == "https://api.openai.com/v1"
+        assert SettingsUpdate(ai_base_url="http://192.168.1.100:8000").ai_base_url == "http://192.168.1.100:8000"
+        assert SettingsUpdate(ai_base_url="").ai_base_url == ""
+        assert SettingsUpdate(ai_base_url=None).ai_base_url is None
+
+        # Invalid URLs
+        for invalid in ["ftp://example.com", "file:///etc/passwd", "not-a-url", "javascript:alert(1)"]:
+            with pytest.raises(Exception):
+                SettingsUpdate(ai_base_url=invalid)
+
+
     @pytest.mark.asyncio
     async def test_get_settings_fallback_when_not_in_db(self, populated_db, auth_client, tmp_path):
         """GET /api/settings returns gemini-3.7-flash when ai_model is absent from database."""

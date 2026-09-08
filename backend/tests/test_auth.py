@@ -544,3 +544,27 @@ class TestCLIPasswordReset:
         conn.close()
 
         assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_password_max_length_enforced(self, client: AsyncClient):
+        """Passwords exceeding 128 characters are rejected with 422 Unprocessable Entity."""
+        too_long = "A" * 129
+
+        # Setup
+        res_setup = await client.post("/api/auth/setup", json={"password": too_long})
+        assert res_setup.status_code == 422
+
+        # Login
+        res_login = await client.post("/api/auth/login", json={"password": too_long})
+        assert res_login.status_code == 422
+
+        # Setup valid password to authenticate for password change
+        await client.post("/api/auth/setup", json={"password": "valid_initial_pwd"})
+
+        # Password Change
+        res_change = await client.post(
+            "/api/auth/password",
+            json={"current_password": "valid_initial_pwd", "new_password": too_long},
+        )
+        assert res_change.status_code == 422
+
