@@ -30,23 +30,33 @@ class SSEBroadcaster:
         async with self._lock:
             self._subscribers.discard(q)
 
-    async def broadcast(self, log_entry: dict) -> None:
+    async def broadcast_batch(self, batch: list[dict]) -> None:
         """
-        Async broadcast call safely pushing a copy of log_entry to all active queues under lock.
+        Push a batch of log entries to all active subscriber queues under a single lock acquisition.
+        Bypasses lock and iteration entirely if there are no active subscribers.
         """
+        if not self._subscribers or not batch:
+            return
+
         async with self._lock:
             for q in list(self._subscribers):
-                try:
-                    q.put_nowait(log_entry)
-                except asyncio.QueueFull:
-                    # Discard oldest item if queue is full to prevent lag
+                for log_entry in batch:
                     try:
-                        q.get_nowait()
                         q.put_nowait(log_entry)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    logger.debug(f"Error broadcasting to subscriber: {e}")
+                    except asyncio.QueueFull:
+                        try:
+                            q.get_nowait()
+                            q.put_nowait(log_entry)
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.debug(f"Error broadcasting batch to subscriber: {e}")
+
+    async def broadcast(self, log_entry: dict) -> None:
+        """
+        Async broadcast call safely pushing a copy of log_entry to all active queues.
+        """
+        await self.broadcast_batch([log_entry])
 
     def subscriber_count(self) -> int:
         """Return number of active SSE subscribers."""

@@ -52,6 +52,11 @@ def reset_admin(password: str, db_path: str = _DEFAULT_DB_PATH) -> None:
             (password_hash, now, now),
         )
         conn.commit()
+        try:
+            from app.api.deps import invalidate_admin_auth_cache
+            invalidate_admin_auth_cache()
+        except Exception:
+            pass
         print("Admin password has been reset successfully.")
     except Exception as e:
         conn.rollback()

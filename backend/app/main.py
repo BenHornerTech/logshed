@@ -164,11 +164,14 @@ async def lifespan(app: FastAPI):
         from app.core.migrations import get_connection
 
         def _read_persisted_level():
-            with get_connection(db_path) as conn:
+            conn = get_connection(db_path)
+            try:
                 cursor = conn.cursor()
                 cursor.execute("SELECT value FROM system_settings WHERE key = 'internal_log_level'")
                 row = cursor.fetchone()
                 return row[0] if row and row[0] else None
+            finally:
+                conn.close()
 
         persisted_level = await asyncio.to_thread(_read_persisted_level)
     except Exception:

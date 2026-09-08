@@ -841,3 +841,22 @@ class TestQueueConsumer:
         conn.close()
         assert count == 40
 
+    @pytest.mark.asyncio
+    async def test_sse_broadcast_batch(self):
+        """SSEBroadcaster.broadcast_batch correctly delivers all entries to subscribers."""
+        sse_q = await sse_manager.subscribe()
+        try:
+            batch = [{"id": 1, "message": "msg1"}, {"id": 2, "message": "msg2"}]
+            await sse_manager.broadcast_batch(batch)
+
+            item1 = await asyncio.wait_for(sse_q.get(), timeout=1.0)
+            item2 = await asyncio.wait_for(sse_q.get(), timeout=1.0)
+            assert item1["id"] == 1
+            assert item2["id"] == 2
+
+            # Empty batch or empty subscribers does not raise
+            await sse_manager.broadcast_batch([])
+        finally:
+            await sse_manager.unsubscribe(sse_q)
+
+

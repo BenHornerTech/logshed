@@ -8,7 +8,12 @@ import ipaddress
 import os
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from app.api.deps import get_current_user, get_optional_user, run_db_query
+from app.api.deps import (
+    get_current_user,
+    get_optional_user,
+    invalidate_admin_auth_cache,
+    run_db_query,
+)
 from app.core.rate_limiter import login_rate_limiter
 from app.core.security import (
     SESSION_COOKIE_NAME,
@@ -163,6 +168,8 @@ async def setup_admin(req: SetupRequest, request: Request, response: Response) -
             detail="Admin account has already been set up.",
         )
 
+    invalidate_admin_auth_cache()
+
     # Issue signed session cookie
     token = create_session_token(user_id=1)
     response.set_cookie(
@@ -285,4 +292,5 @@ async def change_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect.",
         )
+    invalidate_admin_auth_cache()
     return MessageResponse(status="ok")

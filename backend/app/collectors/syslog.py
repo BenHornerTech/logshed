@@ -265,13 +265,14 @@ class AliasCache:
     Lookups are zero-cost dict reads — no DB I/O per message.
     """
 
-    def __init__(self, db_path: str | Path, refresh_interval: float = 60.0):
+    def __init__(self, db_path: str | Path, refresh_interval: float = 60.0, preload: bool = True):
         self._db_path = Path(db_path)
         self._refresh_interval = refresh_interval
         self._aliases: dict[str, str] = {}
         self._lock = threading.Lock()
         self._refresh_task: asyncio.Task | None = None
-        self.load_aliases()
+        if preload:
+            self.load_aliases()
         _active_caches.add(self)
 
     def resolve(self, source_ip: str) -> str:
@@ -602,7 +603,7 @@ class SyslogServer:
         self.udp_protocol: SyslogUDPProtocol | None = None
         self.tcp_server = None
         self.tcp_protocols: set[SyslogTCPProtocol] = set()
-        self.alias_cache = AliasCache(db_path)
+        self.alias_cache = AliasCache(db_path, preload=False)
 
     async def start(self) -> None:
         """Create and start alias cache refresh, then both UDP and TCP transports."""

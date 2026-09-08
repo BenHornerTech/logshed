@@ -477,8 +477,7 @@ class QueueConsumer:
             record_ingest(len(batch))
             # Broadcast to SSE subscribers on the event loop thread
             from app.core.sse import sse_manager
-            for entry in batch:
-                await sse_manager.broadcast(entry)
+            await sse_manager.broadcast_batch(batch)
 
             # Mark as done
             for _ in batch:
@@ -570,24 +569,34 @@ class QueueConsumer:
                     ts_val = entry.get("timestamp")
                     rec_val = entry.get("received_at")
                     if ts_val:
-                        dt_ts = datetime.datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
-                        if dt_ts.tzinfo is None:
-                            local_tz = datetime.datetime.now().astimezone().tzinfo
-                            dt_ts = dt_ts.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+                        # Fast-path: if both timestamp and received_at are canonical UTC ISO strings and not in the future
+                        if (
+                            isinstance(ts_val, str)
+                            and ts_val.endswith("+00:00")
+                            and isinstance(rec_val, str)
+                            and rec_val.endswith("+00:00")
+                            and ts_val <= rec_val
+                        ):
+                            pass
                         else:
-                            dt_ts = dt_ts.astimezone(datetime.timezone.utc)
-
-                        if rec_val:
-                            dt_rec = datetime.datetime.fromisoformat(rec_val.replace("Z", "+00:00"))
-                            if dt_rec.tzinfo is None:
-                                dt_rec = dt_rec.replace(tzinfo=datetime.timezone.utc)
+                            dt_ts = datetime.datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
+                            if dt_ts.tzinfo is None:
+                                local_tz = datetime.datetime.now().astimezone().tzinfo
+                                dt_ts = dt_ts.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
                             else:
-                                dt_rec = dt_rec.astimezone(datetime.timezone.utc)
+                                dt_ts = dt_ts.astimezone(datetime.timezone.utc)
 
-                            if (dt_ts - dt_rec).total_seconds() > 60:
-                                dt_ts = dt_rec
+                            if rec_val:
+                                dt_rec = datetime.datetime.fromisoformat(rec_val.replace("Z", "+00:00"))
+                                if dt_rec.tzinfo is None:
+                                    dt_rec = dt_rec.replace(tzinfo=datetime.timezone.utc)
+                                else:
+                                    dt_rec = dt_rec.astimezone(datetime.timezone.utc)
 
-                        entry["timestamp"] = dt_ts.isoformat()
+                                if (dt_ts - dt_rec).total_seconds() > 60:
+                                    dt_ts = dt_rec
+
+                            entry["timestamp"] = dt_ts.isoformat()
                 except Exception:
                     if entry.get("received_at"):
                         entry["timestamp"] = entry["received_at"]

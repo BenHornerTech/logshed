@@ -2,6 +2,7 @@
 Host aliases API endpoints for IP to Hostname mapping management.
 """
 
+import asyncio
 import datetime
 import time
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -82,7 +83,7 @@ async def create_or_update_alias(
         )
 
     res = await run_db_query(_upsert)
-    reload_active_alias_caches()
+    await asyncio.to_thread(reload_active_alias_caches)
     return res
 
 
@@ -123,5 +124,5 @@ async def delete_alias(
             detail=f"Host alias for IP '{ip}' not found.",
         )
 
-    reload_active_alias_caches()
+    await asyncio.to_thread(reload_active_alias_caches)
     return MessageResponse(status="ok")

@@ -2,6 +2,7 @@
 System health, storage metrics, and retention maintenance API endpoints for LogShed.
 """
 
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.api.deps import get_current_user, run_db_query
@@ -99,7 +100,7 @@ async def get_storage_overview(user: dict = Depends(get_current_user)) -> Storag
     Fetch current disk usage, DB footprint, log count, and up to 30 days of historical storage metrics.
     """
     db_path = get_db_path()
-    current = sample_storage_metrics(db_path)
+    current = await asyncio.to_thread(sample_storage_metrics, db_path)
 
     def _get_history(conn):
         cursor = conn.cursor()

@@ -186,7 +186,8 @@ def run_migrations(db_path: Union[str, Path]) -> None:
     # Ensure the parent directory exists
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with get_connection(db_path) as conn:
+    conn = get_connection(db_path)
+    try:
         current_version = get_user_version(conn)
         logger.info(f"Current database version: {current_version}")
 
@@ -235,4 +236,6 @@ def run_migrations(db_path: Union[str, Path]) -> None:
             conn.commit()
         except sqlite3.OperationalError:
             pass
+    finally:
+        conn.close()
 
