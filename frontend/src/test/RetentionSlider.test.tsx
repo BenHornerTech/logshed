@@ -187,4 +187,21 @@ describe('RetentionSlider Component', () => {
     expect(slider.max).toBe('7');
     expect(slider.value).toBe('7');
   });
+
+  it('supports Enter and Space keyboard navigation on step markers', () => {
+    render(<RetentionSlider retentionDays={14} onSaveRetention={vi.fn()} />);
+
+    const tick30 = screen.getByTitle('Set retention to 30 days');
+    expect(tick30).toHaveAttribute('role', 'button');
+    expect(tick30).toHaveAttribute('tabIndex', '0');
+
+    // Press Enter on 30d tick
+    fireEvent.keyDown(tick30, { key: 'Enter' });
+    expect(screen.getAllByText('30 Days').length).toBe(2);
+
+    // Press Space on 7d tick
+    const tick7 = screen.getByTitle('Set retention to 7 days');
+    fireEvent.keyDown(tick7, { key: ' ' });
+    expect(screen.getAllByText('7 Days').length).toBe(2);
+  });
 });

@@ -21,6 +21,7 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
   const [notes, setNotes] = useState<string>('');
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [editingIp, setEditingIp] = useState<string | null>(null);
+  const [isDeletingIp, setIsDeletingIp] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialAddIp) {
@@ -95,11 +96,14 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
       return;
     }
     try {
+      setIsDeletingIp(targetIp);
       await deleteAlias(targetIp);
       await loadAliases();
       if (onAliasSaved) onAliasSaved();
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to delete host alias.');
+    } finally {
+      setIsDeletingIp(null);
     }
   };
 
@@ -237,9 +241,11 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
                     <Edit2 className="w-3.5 h-3.5" />
                   </button>
                   <button
+                    type="button"
+                    disabled={isDeletingIp === item.ip}
                     onClick={() => handleDelete(item.ip)}
                     title="Delete Alias"
-                    className="p-1 text-slate-400 hover:text-red-400 hover:bg-dark-700 rounded transition"
+                    className="p-1 text-slate-400 hover:text-red-400 hover:bg-dark-700 rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

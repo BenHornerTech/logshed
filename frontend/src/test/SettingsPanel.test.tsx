@@ -356,5 +356,46 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
       );
     });
   });
+
+  it('displays inline error banner when audit item deletion fails', async () => {
+    vi.spyOn(aiApi, 'deleteAiAuditItem').mockRejectedValue(new Error('Network connection timeout'));
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('AI Root-Cause Audit Log (1)')).toBeInTheDocument();
+    });
+
+    const deleteBtn = screen.getByTitle('Delete this analysis');
+    fireEvent.click(deleteBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to delete AI analysis: Network connection timeout/i)).toBeInTheDocument();
+    });
+  });
+
+  it('displays inline error banner when clearing all audit items fails', async () => {
+    vi.spyOn(aiApi, 'clearAiAuditLog').mockRejectedValue(new Error('Database write failure'));
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('AI Root-Cause Audit Log (1)')).toBeInTheDocument();
+    });
+
+    const clearAllBtn = screen.getByRole('button', { name: /Clear All/i });
+    fireEvent.click(clearAllBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('Permanently delete all historical AI analyses?')).toBeInTheDocument();
+    });
+
+    const confirmDeleteBtn = screen.getByRole('button', { name: /Delete All/i });
+    fireEvent.click(confirmDeleteBtn);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Failed to clear AI audit log: Database write failure/i).length).toBeGreaterThan(0);
+    });
+  });
 });
 

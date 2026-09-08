@@ -119,6 +119,12 @@ export const MultiSelectDropdown: React.FC<MultiSelectDropdownProps> = ({
       {/* Dropdown Trigger Button */}
       <div
         onClick={() => setIsOpen((prev) => !prev)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setIsOpen((prev) => !prev);
+          }
+        }}
         className={`flex items-center gap-1.5 bg-dark-900 border rounded px-2.5 py-1 text-xs cursor-pointer select-none transition ${
           isOpen
             ? 'border-accent-500 ring-1 ring-accent-500/20'
@@ -246,7 +252,15 @@ export const MultiSelectDropdown: React.FC<MultiSelectDropdownProps> = ({
             {allowCustomInput && isSearchTermNew && (
               <div
                 onClick={handleAddCustom}
-                className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer bg-dark-800/60 hover:bg-accent-950/60 text-accent-300 text-[11px] border-b border-dark-800"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleAddCustom();
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer bg-dark-800/60 hover:bg-accent-950/60 text-accent-300 text-[11px] border-b border-dark-800 focus:outline-hidden focus:bg-accent-950/60"
               >
                 <Plus className="w-3 h-3 text-accent-400 shrink-0" />
                 <span className="truncate">Add "{searchTerm.trim()}"</span>
@@ -264,7 +278,16 @@ export const MultiSelectDropdown: React.FC<MultiSelectDropdownProps> = ({
                   <div
                     key={option}
                     onClick={() => toggleOption(option)}
-                    className={`flex items-center justify-between px-2.5 py-1 cursor-pointer select-none text-[11px] transition ${
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggleOption(option);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isChecked}
+                    className={`flex items-center justify-between px-2.5 py-1 cursor-pointer select-none text-[11px] transition focus:outline-hidden focus:bg-dark-800 ${
                       isChecked
                         ? 'bg-accent-950/50 text-accent-200'
                         : 'text-slate-300 hover:bg-dark-800 hover:text-slate-100'

@@ -13,11 +13,7 @@ export interface LogEntry {
 
 export interface LogContextResponse {
   target_id: number;
-  source_alias: string;
-  app_name: string;
-  before: LogEntry[];
-  target: LogEntry | null;
-  after: LogEntry[];
+  logs: LogEntry[];
 }
 
 export interface HostAlias {
@@ -57,7 +53,8 @@ export interface StorageMetricsResponse {
 
 export interface HealthResponse {
   status: string;
-  database: string;
+  db: string;
+  database?: string;
   queue_depth: number;
   dropped_logs: number;
   ingest_rate: number;

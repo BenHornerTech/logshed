@@ -76,6 +76,7 @@ export const SettingsPanel: React.FC = () => {
   const [isDeletingAuditId, setIsDeletingAuditId] = useState<number | null>(null);
   const [showClearAllAuditModal, setShowClearAllAuditModal] = useState<boolean>(false);
   const [isClearingAllAudit, setIsClearingAllAudit] = useState<boolean>(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
 
   const loadAllData = async () => {
     try {
@@ -201,6 +202,7 @@ export const SettingsPanel: React.FC = () => {
   const handleDeleteAuditItem = async (id: number, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     try {
+      setAuditError(null);
       setIsDeletingAuditId(id);
       await deleteAiAuditItem(id);
       setAuditLogs((prev) => prev.filter((item) => item.id !== id));
@@ -208,7 +210,7 @@ export const SettingsPanel: React.FC = () => {
         setSelectedAuditItem(null);
       }
     } catch (err: any) {
-      alert(`Failed to delete AI analysis: ${err.message || err}`);
+      setAuditError(`Failed to delete AI analysis: ${err.message || err}`);
     } finally {
       setIsDeletingAuditId(null);
     }
@@ -216,13 +218,14 @@ export const SettingsPanel: React.FC = () => {
 
   const handleClearAllAudit = async () => {
     try {
+      setAuditError(null);
       setIsClearingAllAudit(true);
       await clearAiAuditLog();
       setAuditLogs([]);
       setSelectedAuditItem(null);
       setShowClearAllAuditModal(false);
     } catch (err: any) {
-      alert(`Failed to clear AI audit log: ${err.message || err}`);
+      setAuditError(`Failed to clear AI audit log: ${err.message || err}`);
     } finally {
       setIsClearingAllAudit(false);
     }
@@ -574,6 +577,20 @@ export const SettingsPanel: React.FC = () => {
           )}
         </div>
 
+        {auditError && (
+          <div className="p-3 bg-red-950/60 border-b border-red-800 flex items-start gap-2 text-xs text-red-300">
+            <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            <span className="flex-1">{auditError}</span>
+            <button
+              type="button"
+              onClick={() => setAuditError(null)}
+              className="text-red-400 hover:text-red-200 text-xs ml-auto cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {auditLogs.length === 0 ? (
           <div className="p-6 text-center text-slate-500 font-mono text-xs">
             No AI analyses executed yet. Select logs in the stream and click "Explain with AI".
@@ -647,11 +664,27 @@ export const SettingsPanel: React.FC = () => {
       {selectedAuditItem && (
         <Modal
           isOpen={!!selectedAuditItem}
-          onClose={() => setSelectedAuditItem(null)}
+          onClose={() => {
+            setSelectedAuditItem(null);
+            setAuditError(null);
+          }}
           title="Historical AI Root-Cause Analysis"
           maxWidth="max-w-3xl"
         >
           <div className="space-y-4 text-xs font-sans">
+            {auditError && (
+              <div className="p-3 bg-red-950/60 border border-red-800 rounded-lg flex items-start gap-2 text-xs text-red-300">
+                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                <span className="flex-1">{auditError}</span>
+                <button
+                  type="button"
+                  onClick={() => setAuditError(null)}
+                  className="text-red-400 hover:text-red-200 text-xs ml-auto cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             {/* Header info - 2-row layout */}
             <div className="bg-dark-950 p-3.5 rounded-lg border border-dark-700 space-y-2.5">
               {/* Row 1: Source / App Name + Timestamp */}
@@ -817,11 +850,20 @@ export const SettingsPanel: React.FC = () => {
       {showClearAllAuditModal && (
         <Modal
           isOpen={showClearAllAuditModal}
-          onClose={() => setShowClearAllAuditModal(false)}
+          onClose={() => {
+            setShowClearAllAuditModal(false);
+            setAuditError(null);
+          }}
           title="Clear AI Audit Log"
           maxWidth="max-w-md"
         >
           <div className="space-y-4 text-xs font-sans">
+            {auditError && (
+              <div className="p-3 bg-red-950/60 border border-red-800 rounded-lg flex items-start gap-2 text-xs text-red-300">
+                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                <span className="flex-1">{auditError}</span>
+              </div>
+            )}
             <div className="flex items-start gap-3 p-3 bg-red-950/30 border border-red-800/60 rounded-lg text-slate-200">
               <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
               <div>

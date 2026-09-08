@@ -1,5 +1,5 @@
 import { apiFetch } from './client.ts';
-import { LogEntry, LogFilterParams } from '../types.ts';
+import { LogEntry, LogFilterParams, LogContextResponse } from '../types.ts';
 
 export interface LogListResult {
   logs: LogEntry[];
@@ -40,12 +40,12 @@ export async function fetchLogContext(
   id: number,
   lines: number = 10,
   same_app: boolean = false,
-): Promise<{ target_id: number; logs: LogEntry[] }> {
+): Promise<LogContextResponse> {
   const searchParams = new URLSearchParams({ lines: lines.toString() });
   if (same_app) {
     searchParams.set('same_app', 'true');
   }
-  return apiFetch<{ target_id: number; logs: LogEntry[] }>(`/api/logs/${id}/context?${searchParams.toString()}`);
+  return apiFetch<LogContextResponse>(`/api/logs/${id}/context?${searchParams.toString()}`);
 }
 
 export async function fetchLogFacets(): Promise<import('../types.ts').LogFacetsResponse> {

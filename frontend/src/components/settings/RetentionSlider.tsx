@@ -128,7 +128,16 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
                 key={val}
                 style={{ left: `${leftPercent}%` }}
                 onClick={() => setDays(val)}
-                className="absolute -translate-x-1/2 flex flex-col items-center cursor-pointer group hover:text-accent-400 transition"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setDays(val);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-label={`Set retention to ${val} day${val === 1 ? '' : 's'}`}
+                className="absolute -translate-x-1/2 flex flex-col items-center cursor-pointer group hover:text-accent-400 transition focus:outline-hidden focus:text-accent-400"
                 title={`Set retention to ${val} day${val === 1 ? '' : 's'}`}
               >
                 <div

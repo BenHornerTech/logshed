@@ -18,6 +18,7 @@ describe('Navbar Component', () => {
   it('navigates to console view when brand logo is clicked', async () => {
     vi.spyOn(systemApi, 'fetchHealth').mockResolvedValue({
       status: 'ok',
+      db: 'ok',
       database: 'ok',
       queue_depth: 0,
       dropped_logs: 0,
@@ -49,6 +50,7 @@ describe('Navbar Component', () => {
   it('does not render LIVE / IDLE indicator and displays live rate when health is fetched', async () => {
     vi.spyOn(systemApi, 'fetchHealth').mockResolvedValue({
       status: 'ok',
+      db: 'ok',
       database: 'ok',
       queue_depth: 42,
       dropped_logs: 0,
@@ -73,5 +75,46 @@ describe('Navbar Component', () => {
       expect(screen.getByText('18.5 logs/s')).toBeInTheDocument();
       expect(screen.getByText('42')).toBeInTheDocument();
     });
+  });
+
+  it('supports Enter and Space keyboard activation on brand logo', async () => {
+    vi.spyOn(systemApi, 'fetchHealth').mockResolvedValue({
+      status: 'ok',
+      db: 'ok',
+      queue_depth: 0,
+      dropped_logs: 0,
+      ingest_rate: 0.0,
+    });
+
+    const onTabChange = vi.fn();
+    const onSelectTab = vi.fn();
+
+    render(
+      <Navbar
+        activeTab="settings"
+        onTabChange={onTabChange}
+        onSelectTab={onSelectTab}
+      />
+    );
+
+    await waitFor(() => {
+      expect(systemApi.fetchHealth).toHaveBeenCalled();
+    });
+
+    const brandLogo = screen.getByTitle('Go to Console View');
+    expect(brandLogo).toHaveAttribute('role', 'button');
+    expect(brandLogo).toHaveAttribute('tabIndex', '0');
+
+    // Test Enter key
+    fireEvent.keyDown(brandLogo, { key: 'Enter' });
+    expect(onTabChange).toHaveBeenCalledWith('stream');
+    expect(onSelectTab).toHaveBeenCalledWith('console');
+
+    // Test Space key
+    onTabChange.mockClear();
+    onSelectTab.mockClear();
+    fireEvent.keyDown(brandLogo, { key: ' ' });
+    expect(onTabChange).toHaveBeenCalledWith('stream');
+    expect(onSelectTab).toHaveBeenCalledWith('console');
   });
 });
