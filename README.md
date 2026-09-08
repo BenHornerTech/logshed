@@ -25,6 +25,7 @@
 
 - [Overview](#overview)
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [Built With](#built-with)
 - [Prerequisites & System Requirements](#prerequisites--system-requirements)
 - [Installation & Deployment](#installation--deployment)
@@ -68,6 +69,25 @@ LogShed is a compact, self-hosted log hub designed for home labs and personal se
 - **Host aliases**: Map IP addresses to friendly names (for example, `192.168.1.1` to `router`), which automatically apply across existing records.
 - **Automatic retention**: Purges older logs in the background on a schedule (default: 14 days) and reclaims SQLite storage space without taking the database offline.
 - **Security**: Runs as a non-root user (`PUID`/`PGID`), hashes passwords with Argon2id, encrypts stored settings with Fernet, uses secure session cookies, and includes a command-line password reset script.
+
+---
+
+## Screenshots
+
+| Live Log Stream | Filtered Search & Facets |
+| :---: | :---: |
+| <a href="assets/logshed-console-view.png"><img src="assets/logshed-console-view.png" width="450" alt="Live Console View"/></a> | <a href="assets/logshed-console-filtered.png"><img src="assets/logshed-console-filtered.png" width="450" alt="Filtered Search View"/></a> |
+| *Main log stream view* | *Fast multi-host and severity search* |
+
+| Log Detail & Raw Metadata | Surrounding Context Inspection |
+| :---: | :---: |
+| <a href="assets/logshed-log-detail.png"><img src="assets/logshed-log-detail.png" width="450" alt="Log Detail"/></a> | <a href="assets/logshed-log-detail-context.png"><img src="assets/logshed-log-detail-context.png" width="450" alt="Surrounding Log Context"/></a> |
+| *Structured fields and raw payload viewer* | *View preceding & subsequent log lines across hosts* |
+
+| Host Alias Manager | AI Root-Cause Analysis |
+| :---: | :---: |
+| <a href="assets/logshed-alias-manager.png"><img src="assets/logshed-alias-manager.png" width="450" alt="Host Alias Manager"/></a> | <a href="assets/logshed-ai-analysis.png"><img src="assets/logshed-ai-analysis.png" width="450" alt="AI Analysis"/></a> |
+| *Friendly hostname mappings for routers and switches* | *AI incident diagnosis with automatic secret redaction* |
 
 ---
 
