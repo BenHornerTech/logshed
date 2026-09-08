@@ -15,11 +15,14 @@ import logging
 import os
 import re
 import socket
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
 
+from app.collectors.syslog import AliasCache
+from app.core.config import get_db_path
 from app.core.pipeline import KeyedMultilineAssembler
 
 logger = logging.getLogger(__name__)
@@ -290,14 +293,29 @@ def _make_log_entry(
     message: str,
     severity: int = 6,
     timestamp: Optional[str] = None,
+    alias_cache: Optional[AliasCache] = None,
+    source_ip: str = "docker",
 ) -> dict:
     """Build a log entry dict compatible with the shared pipeline."""
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    source_alias = os.environ.get("DOCKER_SOURCE_ALIAS", "docker")
+    default_alias = os.environ.get("DOCKER_SOURCE_ALIAS", source_ip)
+    source_alias = default_alias
+    if alias_cache is not None:
+        if default_alias != source_ip:
+            resolved_default = alias_cache.resolve(default_alias)
+            if resolved_default != default_alias:
+                source_alias = resolved_default
+            else:
+                resolved_source = alias_cache.resolve(source_ip)
+                if resolved_source != source_ip:
+                    source_alias = resolved_source
+        else:
+            source_alias = alias_cache.resolve(source_ip)
+
     return {
         "timestamp": timestamp or now,
         "received_at": now,
-        "source_ip": "docker",
+        "source_ip": source_ip,
         "source_alias": source_alias,
         "app_name": container_name,
         "facility": 1,
@@ -367,6 +385,7 @@ async def _tail_container_logs(
     container_last_seen: Optional[dict[str, str]] = None,
     heartbeat_interval: Optional[float] = None,
     container_last_messages: Optional[dict[str, set[str]]] = None,
+    alias_cache: Optional[AliasCache] = None,
 ) -> None:
     """
     Stream logs for a single container, feeding lines through the assembler.
@@ -436,6 +455,7 @@ async def _tail_container_logs(
             return _make_log_entry(
                 container_name, container_id, message,
                 severity=severity, timestamp=ts,
+                alias_cache=alias_cache,
             )
         return None
 
@@ -618,6 +638,8 @@ class DockerTailer:
     def __init__(
         self,
         assembler: KeyedMultilineAssembler,
+        db_path: Optional[str | Path] = None,
+        alias_cache: Optional[AliasCache] = None,
         socket_poll_interval: Optional[float] = None,
         socket_poll_max: Optional[float] = None,
     ):
@@ -640,6 +662,14 @@ class DockerTailer:
             if socket_poll_max is not None
             else float(os.environ.get("DOCKER_SOCKET_POLL_MAX", "60.0"))
         )
+        self._db_path = Path(db_path) if db_path else None
+        if alias_cache is not None:
+            self.alias_cache = alias_cache
+            self._owns_alias_cache = False
+        else:
+            effective_db_path = self._db_path or get_db_path()
+            self.alias_cache = AliasCache(effective_db_path)
+            self._owns_alias_cache = True
 
     async def run(self) -> None:
         """
@@ -647,6 +677,9 @@ class DockerTailer:
         """
         self._running = True
         self._cancel_event.clear()
+
+        if self._owns_alias_cache and not self.alias_cache._refresh_task:
+            await self.alias_cache.start()
 
         base_url, uds_path = _parse_docker_host()
         if not base_url:
@@ -721,6 +754,8 @@ class DockerTailer:
         self._running = False
         self._cancel_event.set()
         await self._cleanup_tailers()
+        if self._owns_alias_cache:
+            await self.alias_cache.stop()
         logger.info("Docker tailer stopped")
 
     async def _attach_running_containers(self, client: httpx.AsyncClient) -> None:
@@ -758,6 +793,7 @@ class DockerTailer:
                 self._assembler, cancel,
                 container_last_seen=self._container_last_seen,
                 container_last_messages=self._container_last_messages,
+                alias_cache=self.alias_cache,
             ),
             name=f"docker-tail-{container_name}",
         )

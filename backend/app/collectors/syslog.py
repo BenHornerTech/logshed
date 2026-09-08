@@ -9,6 +9,7 @@ import logging
 import re
 import sqlite3
 import threading
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -249,7 +250,7 @@ def parse_syslog_message(
     return result
 
 
-_active_caches: list["AliasCache"] = []
+_active_caches: weakref.WeakSet["AliasCache"] = weakref.WeakSet()
 
 def reload_active_alias_caches() -> None:
     """Reload all active in-memory alias caches immediately."""
@@ -270,13 +271,17 @@ class AliasCache:
         self._aliases: dict[str, str] = {}
         self._lock = threading.Lock()
         self._refresh_task: asyncio.Task | None = None
-        if self not in _active_caches:
-            _active_caches.append(self)
+        self.load_aliases()
+        _active_caches.add(self)
 
     def resolve(self, source_ip: str) -> str:
         """Look up source_ip in the preloaded alias map. O(1) dict lookup."""
         with self._lock:
             return self._aliases.get(source_ip, source_ip)
+
+    def get_alias(self, source_ip: str) -> str:
+        """Alias for resolve() to support get_alias interface."""
+        return self.resolve(source_ip)
 
     def load_aliases(self) -> None:
         """Synchronous: bulk-load all aliases from host_aliases table."""
@@ -308,8 +313,7 @@ class AliasCache:
 
     async def stop(self) -> None:
         """Stop the periodic refresh task."""
-        if self in _active_caches:
-            _active_caches.remove(self)
+        _active_caches.discard(self)
 
         if self._refresh_task:
             self._refresh_task.cancel()

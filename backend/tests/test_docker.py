@@ -6,11 +6,14 @@ import asyncio
 import datetime
 import logging
 import os
+from pathlib import Path
 from unittest.mock import patch
 import socket
 import pytest
 import httpx
 
+from app.core.migrations import get_connection, run_migrations
+from app.collectors.syslog import AliasCache, reload_active_alias_caches
 from app.core.pipeline import KeyedMultilineAssembler
 from app.collectors.docker_collector import (
     DockerTailer,
@@ -24,6 +27,13 @@ from app.collectors.docker_collector import (
     _should_ignore_container,
     _tail_container_logs,
 )
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    p = tmp_path / "docker_test.db"
+    run_migrations(p)
+    return p
 
 
 # ===================================================================
@@ -1628,5 +1638,404 @@ class TestDockerDemuxFrameResync:
         client_tcp = _build_client("http://proxy:2375/v1.43", None)
         assert client_tcp._transport._pool._max_connections == 500
         assert client_tcp._transport._pool._max_keepalive_connections == 100
+
+
+# ===================================================================
+# 11. Docker Host Alias Resolution & Lifecycle
+# ===================================================================
+
+class TestDockerHostAliases:
+
+    def test_make_log_entry_resolves_alias_from_cache(self, db_path: Path):
+        """_make_log_entry resolves source_alias to configured alias from AliasCache."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('docker', 'docker-unraid', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        cache = AliasCache(db_path)
+        entry = _make_log_entry("my-app", "c123", "Started container", alias_cache=cache)
+        assert entry["source_ip"] == "docker"
+        assert entry["source_alias"] == "docker-unraid"
+
+    def test_make_log_entry_unmapped_defaults_to_docker(self, db_path: Path):
+        """_make_log_entry defaults source_alias to 'docker' when no alias is configured."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('192.168.1.1', 'router', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        cache = AliasCache(db_path)
+        entry = _make_log_entry("my-app", "c123", "Started container", alias_cache=cache)
+        assert entry["source_ip"] == "docker"
+        assert entry["source_alias"] == "docker"
+
+    def test_make_log_entry_env_override_with_cache_resolution(self, db_path: Path, monkeypatch):
+        """_make_log_entry resolves DOCKER_SOURCE_ALIAS with alias cache fallback."""
+        monkeypatch.setenv("DOCKER_SOURCE_ALIAS", "unraid-tower")
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        cache = AliasCache(db_path)
+        # Without alias in DB, uses env override
+        entry = _make_log_entry("nginx", "c1", "test 1", alias_cache=cache)
+        assert entry["source_alias"] == "unraid-tower"
+
+        # When 'docker' has an alias, it overrides the env default
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('docker', 'docker-primary', ?)",
+                (now,),
+            )
+            conn.commit()
+        cache.load_aliases()
+        entry2 = _make_log_entry("nginx", "c1", "test 2", alias_cache=cache)
+        assert entry2["source_alias"] == "docker-primary"
+
+    def test_make_log_entry_custom_env_alias_precedence(self, db_path: Path, monkeypatch):
+        """When both customized DOCKER_SOURCE_ALIAS and 'docker' have aliases, the specific custom alias takes precedence."""
+        monkeypatch.setenv("DOCKER_SOURCE_ALIAS", "unraid-tower")
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('docker', 'generic-docker', ?)",
+                (now,),
+            )
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('unraid-tower', 'specific-unraid', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        cache = AliasCache(db_path)
+        entry = _make_log_entry("nginx", "c1", "test precedence", alias_cache=cache)
+        assert entry["source_alias"] == "specific-unraid"
+
+    def test_docker_tailer_initializes_with_alias_cache(self, db_path: Path):
+        """DockerTailer initializes and preloads AliasCache from db_path."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('docker', 'docker-unraid', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        assembler = KeyedMultilineAssembler()
+        tailer = DockerTailer(assembler, db_path=db_path)
+        assert tailer.alias_cache.resolve("docker") == "docker-unraid"
+
+    @pytest.mark.asyncio
+    async def test_docker_tailer_resolves_alias_on_container_log_ingestion(self, db_path: Path):
+        """_tail_container_logs sets resolved source_alias on all assembled entries."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('docker', 'docker-unraid', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        cache = AliasCache(db_path)
+        assembler = KeyedMultilineAssembler()
+        entries = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        cancel_event = asyncio.Event()
+
+        # Build mock multiplexed log frame
+        ts = "2026-09-08T08:52:30.123456789Z"
+        msg = f"{ts} Container application healthy\n".encode("utf-8")
+        payload = b"\x01\x00\x00\x00" + len(msg).to_bytes(4, "big") + msg
+
+        class MockResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield payload
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockResp()
+
+        await _tail_container_logs(
+            MockClient(), "cid1", "web-app",
+            assembler, cancel_event,
+            alias_cache=cache,
+            heartbeat_interval=0,
+        )
+
+        assert len(entries) == 1
+        assert entries[0]["source_ip"] == "docker"
+        assert entries[0]["source_alias"] == "docker-unraid"
+        assert entries[0]["app_name"] == "web-app"
+        assert entries[0]["message"] == "Container application healthy"
+
+    @pytest.mark.asyncio
+    async def test_docker_tailer_runtime_alias_update_and_reload(self, db_path: Path):
+        """When host alias is updated and caches reloaded, new logs adopt the new alias immediately."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        assembler = KeyedMultilineAssembler()
+        entries = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        tailer = DockerTailer(assembler, db_path=db_path)
+
+        # Initially no alias mapped for 'docker'
+        assert tailer.alias_cache.resolve("docker") == "docker"
+
+        stream_queue = asyncio.Queue()
+        cancel_event = asyncio.Event()
+
+        class MockStreamingResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                while not cancel_event.is_set():
+                    try:
+                        chunk = await asyncio.wait_for(stream_queue.get(), timeout=0.1)
+                        yield chunk
+                    except asyncio.TimeoutError:
+                        continue
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockStreamingResp()
+
+        tailer_task = asyncio.create_task(
+            _tail_container_logs(
+                MockClient(), "cid_stream", "app_stream",
+                assembler, cancel_event,
+                alias_cache=tailer.alias_cache,
+                heartbeat_interval=0,
+            )
+        )
+
+        def _make_frame(text: str) -> bytes:
+            payload = text.encode("utf-8")
+            return b"\x01\x00\x00\x00" + len(payload).to_bytes(4, "big") + payload
+
+        # 1. Send first log line before alias update
+        await stream_queue.put(_make_frame("2026-09-08T08:50:00.000000000Z Line 1 unaliased\n"))
+        await asyncio.sleep(0.05)
+        assert len(entries) == 1
+        assert entries[0]["source_alias"] == "docker"
+
+        # 2. Update alias to 'docker-unraid' and trigger reload_active_alias_caches
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('docker', 'docker-unraid', ?)",
+                (now,),
+            )
+            conn.commit()
+        reload_active_alias_caches()
+
+        # 3. Send second log line after alias update
+        await stream_queue.put(_make_frame("2026-09-08T08:52:30.000000000Z Line 2 aliased to unraid\n"))
+        await asyncio.sleep(0.05)
+        assert len(entries) == 2
+        assert entries[1]["source_alias"] == "docker-unraid"
+
+        # 4. Update alias again to 'unraid-main' and trigger reload
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "UPDATE host_aliases SET alias = 'unraid-main' WHERE ip = 'docker'"
+            )
+            conn.commit()
+        reload_active_alias_caches()
+
+        # 5. Send third log line
+        await stream_queue.put(_make_frame("2026-09-08T08:55:00.000000000Z Line 3 second alias\n"))
+        await asyncio.sleep(0.05)
+        assert len(entries) == 3
+        assert entries[2]["source_alias"] == "unraid-main"
+
+        # Cleanup
+        cancel_event.set()
+        await tailer_task
+        await tailer.stop()
+
+    @pytest.mark.asyncio
+    async def test_docker_tailer_runtime_alias_delete(self, db_path: Path):
+        """Deleting an alias reverts incoming Docker logs back to 'docker'."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('docker', 'docker-unraid', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        assembler = KeyedMultilineAssembler()
+        entries = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        tailer = DockerTailer(assembler, db_path=db_path)
+        assert tailer.alias_cache.resolve("docker") == "docker-unraid"
+
+        stream_queue = asyncio.Queue()
+        cancel_event = asyncio.Event()
+
+        class MockResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                while not cancel_event.is_set():
+                    try:
+                        chunk = await asyncio.wait_for(stream_queue.get(), timeout=0.1)
+                        yield chunk
+                    except asyncio.TimeoutError:
+                        continue
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockResp()
+
+        tailer_task = asyncio.create_task(
+            _tail_container_logs(
+                MockClient(), "cid_del", "app_del",
+                assembler, cancel_event,
+                alias_cache=tailer.alias_cache,
+                heartbeat_interval=0,
+            )
+        )
+
+        def _make_frame(text: str) -> bytes:
+            payload = text.encode("utf-8")
+            return b"\x01\x00\x00\x00" + len(payload).to_bytes(4, "big") + payload
+
+        # Line 1: aliased
+        await stream_queue.put(_make_frame("2026-09-08T08:50:00.000000000Z Line 1 aliased\n"))
+        await asyncio.sleep(0.05)
+        assert len(entries) == 1
+        assert entries[0]["source_alias"] == "docker-unraid"
+
+        # Delete alias and reload active caches
+        with get_connection(db_path) as conn:
+            conn.execute("DELETE FROM host_aliases WHERE ip = 'docker'")
+            conn.commit()
+        reload_active_alias_caches()
+
+        # Line 2: reverted to 'docker'
+        await stream_queue.put(_make_frame("2026-09-08T08:51:00.000000000Z Line 2 unaliased\n"))
+        await asyncio.sleep(0.05)
+        assert len(entries) == 2
+        assert entries[1]["source_alias"] == "docker"
+
+        cancel_event.set()
+        await tailer_task
+        await tailer.stop()
+
+    @pytest.mark.asyncio
+    async def test_docker_tailer_persists_across_restart(self, db_path: Path):
+        """Simulates container restart: alias in host_aliases persists and applies to new DockerTailer."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('docker', 'docker-unraid', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        assembler1 = KeyedMultilineAssembler()
+        tailer1 = DockerTailer(assembler1, db_path=db_path)
+        assert tailer1.alias_cache.resolve("docker") == "docker-unraid"
+        await tailer1.stop()
+
+        # Restart LogShed container: new DockerTailer instantiated from persisted db_path
+        assembler2 = KeyedMultilineAssembler()
+        tailer2 = DockerTailer(assembler2, db_path=db_path)
+        assert tailer2.alias_cache.resolve("docker") == "docker-unraid"
+
+        entries = []
+        async def capture_feed(key, entry):
+            entries.append(entry)
+        assembler2.feed = capture_feed
+
+        cancel_event = asyncio.Event()
+        ts = "2026-09-08T09:00:00.000000000Z"
+        msg = f"{ts} Post-restart log entry\n".encode("utf-8")
+        payload = b"\x01\x00\x00\x00" + len(msg).to_bytes(4, "big") + msg
+
+        class MockResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield payload
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockResp()
+
+        await _tail_container_logs(
+            MockClient(), "cid_restart", "app_restart",
+            assembler2, cancel_event,
+            alias_cache=tailer2.alias_cache,
+            heartbeat_interval=0,
+        )
+
+        assert len(entries) == 1
+        assert entries[0]["source_ip"] == "docker"
+        assert entries[0]["source_alias"] == "docker-unraid"
+        assert entries[0]["message"] == "Post-restart log entry"
+
+        await tailer2.stop()
+
 
 

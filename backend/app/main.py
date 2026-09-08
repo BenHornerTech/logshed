@@ -152,7 +152,8 @@ async def lifespan(app: FastAPI):
 
     # 7. Start Docker Tailer (optional / non-fatal if Docker socket is not present)
     try:
-        _docker_tailer = DockerTailer(assembler=_assembler)
+        shared_cache = _syslog_server.alias_cache if _syslog_server else None
+        _docker_tailer = DockerTailer(assembler=_assembler, db_path=db_path, alias_cache=shared_cache)
         _background_tasks.append(asyncio.create_task(_supervise_worker(_docker_tailer.run, "DockerTailer")))
     except Exception as e:
         logger.warning(f"DockerTailer could not be started: {e}")

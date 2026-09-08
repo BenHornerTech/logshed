@@ -921,3 +921,40 @@ class TestAliasCache:
 
         await cache.stop()
         assert cache._refresh_task is None
+
+    def test_alias_cache_get_alias_interface(self, db_path: Path):
+        """get_alias returns resolved alias identically to resolve()."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with get_connection(db_path) as conn:
+            conn.execute(
+                "INSERT INTO host_aliases (ip, alias, created_at) VALUES ('192.168.1.75', 'switch-core', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        cache = AliasCache(db_path)
+        assert cache.get_alias("192.168.1.75") == "switch-core"
+        assert cache.get_alias("192.168.1.99") == "192.168.1.99"
+
+    def test_alias_cache_weakset_no_leak(self, db_path: Path):
+        """AliasCache is registered in _active_caches via WeakSet and garbage collected without leaking."""
+        import gc
+        from app.collectors.syslog import _active_caches
+
+        initial_count = len(_active_caches)
+        cache = AliasCache(db_path)
+        assert len(_active_caches) == initial_count + 1
+        assert cache in _active_caches
+
+        # Explicit stop removes it
+        asyncio.run(cache.stop())
+        assert cache not in _active_caches
+
+        # Test garbage collection removal without explicit stop
+        cache2 = AliasCache(db_path)
+        assert cache2 in _active_caches
+        del cache2
+        gc.collect()
+        # After gc, the destroyed cache is automatically pruned from WeakSet
+        assert len(_active_caches) == initial_count
+

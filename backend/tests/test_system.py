@@ -24,6 +24,7 @@ from app.core.security import (
 from app.core.sse import sse_manager
 from app.cli import seed_logs
 from app.api.deps import run_db_query
+from app.collectors.docker_collector import DockerTailer, _tail_container_logs
 from app.main import _supervise_worker, create_app
 from app.services.retention import PruneWorker, execute_prune
 from app.services.storage_metrics import (
@@ -1038,4 +1039,127 @@ class TestHostAliases:
                 (target_ip, target_ip),
             ).fetchone()[0]
             assert reverted_count == 1200
+
+    @pytest.mark.asyncio
+    async def test_docker_host_alias_crud_retroactive_and_collector_sync(
+        self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
+    ):
+        """End-to-end: Docker alias created via API retroactively updates DB and synchronizes DockerTailer."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        # Seed initial Docker logs
+        with get_connection(db_file) as conn:
+            conn.execute(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                   VALUES (?, ?, 'docker', 'docker', 'caddy', 1, 6, 'Serving HTTP traffic', 'raw 1')""",
+                (now, now),
+            )
+            conn.execute(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                   VALUES (?, ?, 'docker', 'docker', 'nextcloud', 1, 6, 'User login', 'raw 2')""",
+                (now, now),
+            )
+            conn.commit()
+
+        # Instantiate DockerTailer pointing to this db
+        assembler = pipeline_mod.KeyedMultilineAssembler()
+        tailer = DockerTailer(assembler, db_path=db_file)
+        assert tailer.alias_cache.resolve("docker") == "docker"
+
+        # 1. Verify before alias creation: source=docker finds both
+        res_before = await client.get("/api/logs", params={"source": "docker"})
+        assert res_before.status_code == 200
+        assert res_before.json()["total"] == 2
+
+        # 2. Create alias via API: 'docker' -> 'docker-unraid'
+        create_res = await client.post(
+            "/api/aliases",
+            json={"ip": "docker", "alias": "docker-unraid", "notes": "Unraid Docker Host"},
+        )
+        assert create_res.status_code == 200
+        assert create_res.json()["alias"] == "docker-unraid"
+
+        # 3. Verify existing logs in DB were retroactively updated to docker-unraid
+        res_alias = await client.get("/api/logs", params={"source": "docker-unraid"})
+        assert res_alias.status_code == 200
+        assert res_alias.json()["total"] == 2
+        for item in res_alias.json()["logs"]:
+            assert item["source_alias"] == "docker-unraid"
+            assert item["source_ip"] == "docker"
+
+        # 4. Verify DockerTailer's alias cache was immediately reloaded
+        assert tailer.alias_cache.resolve("docker") == "docker-unraid"
+
+        # 5. Ingest a new Docker log line: verify it adopts 'docker-unraid'
+        captured_entries = []
+        async def capture_feed(key, entry):
+            captured_entries.append(entry)
+        assembler.feed = capture_feed
+
+        cancel_event = asyncio.Event()
+        ts = "2026-09-08T08:52:35.000000000Z"
+        msg = f"{ts} Live incoming log line\n".encode("utf-8")
+        payload = b"\x01\x00\x00\x00" + len(msg).to_bytes(4, "big") + msg
+
+        class MockResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield payload
+                cancel_event.set()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": False}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockResp()
+
+        await _tail_container_logs(
+            MockClient(), "cid_live", "app_live",
+            assembler, cancel_event,
+            alias_cache=tailer.alias_cache,
+            heartbeat_interval=0,
+        )
+
+        assert len(captured_entries) == 1
+        assert captured_entries[0]["source_ip"] == "docker"
+        assert captured_entries[0]["source_alias"] == "docker-unraid"
+
+        # 6. Delete the alias via API
+        del_res = await client.delete("/api/aliases/docker")
+        assert del_res.status_code == 200
+
+        # Verify logs in DB reverted to 'docker'
+        res_reverted = await client.get("/api/logs", params={"source": "docker"})
+        assert res_reverted.status_code == 200
+        assert res_reverted.json()["total"] == 2
+        for item in res_reverted.json()["logs"]:
+            assert item["source_alias"] == "docker"
+
+        # Verify DockerTailer's cache reverted to 'docker'
+        assert tailer.alias_cache.resolve("docker") == "docker"
+
+        # 7. Test container restart persistence:
+        # Create alias again
+        await client.post(
+            "/api/aliases",
+            json={"ip": "docker", "alias": "docker-unraid"},
+        )
+        await tailer.stop()
+
+        # Restart LogShed: new DockerTailer instance
+        tailer_restarted = DockerTailer(assembler, db_path=db_file)
+        assert tailer_restarted.alias_cache.resolve("docker") == "docker-unraid"
+        await tailer_restarted.stop()
+
 
