@@ -8,7 +8,7 @@ external LLM for analysis.
 IMPORTANT: This is NOT applied during ingestion or SQLite insertion.
 Raw logs remain unredacted in the database. Redaction is applied
 on-demand only when preparing log text for AI preview/diagnosis
-(per SPEC.md §3 and §4.1).
+(per docs/SPEC.md §3 and §4.1).
 """
 
 import re

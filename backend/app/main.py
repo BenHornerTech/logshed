@@ -93,7 +93,7 @@ def configure_internal_log_handler(level: Optional[Union[int, str]]) -> Optional
 async def _supervise_worker(coro_fn, name: str, *args, **kwargs) -> None:
     """
     Supervisor wrapper running a worker coroutine with exception isolation
-    and exponential backoff restart without crashing the event loop (SPEC.md §1).
+    and exponential backoff restart without crashing the event loop (docs/SPEC.md §1).
     """
     backoff = 1.0
     while True:

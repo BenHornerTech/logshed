@@ -19,10 +19,10 @@
   * No external database servers; use SQLite migrations via `PRAGMA user_version`.
 
 ## Workflow Protocol
-1. Consult `SPEC.md` for technical schemas, endpoints, and exact trigger definitions.
+1. Consult `docs/SPEC.md` for technical schemas, endpoints, and exact trigger definitions.
 2. At the end of every phase, run the phase verification test suite.
 
 ## Dependency & Performance Guardrails
 - **Zero Unapproved Dependencies:** Any package explicitly required by the core backend/frontend specs (`fastapi`, `uvicorn`, `httpx`, `argon2-cffi`, `cryptography`, `google-genai`, `openai`, `pydantic`, `@tanstack/react-virtual`, `recharts`) is pre-approved. Do not add `aiosqlite`. Do not add the `docker` or `aiodocker` SDKs — talk to the Docker Engine API (both `unix:///var/run/docker.sock` and `tcp://proxy:2375`) using `httpx`, with `httpx.HTTPTransport(uds=...)` for the Unix socket case.
-- **Standard Library First:** For anything not already dictated by `SPEC.md`, default to Python standard library modules (`sqlite3`, `json`, `dataclasses`, `pathlib`, `logging`, `typing`) before reaching for external packages. Use stdlib `sqlite3` + `asyncio.to_thread()` for all database operations.
-- **No Heavyweight Tooling:** Strictly forbid data-science or heavy ORM libraries (e.g., `pandas`, `numpy`, `scipy`, `sqlalchemy`) — these are never approved, regardless of `SPEC.md`.
+- **Standard Library First:** For anything not already dictated by `docs/SPEC.md`, default to Python standard library modules (`sqlite3`, `json`, `dataclasses`, `pathlib`, `logging`, `typing`) before reaching for external packages. Use stdlib `sqlite3` + `asyncio.to_thread()` for all database operations.
+- **No Heavyweight Tooling:** Strictly forbid data-science or heavy ORM libraries (e.g., `pandas`, `numpy`, `scipy`, `sqlalchemy`) — these are never approved, regardless of `docs/SPEC.md`.
