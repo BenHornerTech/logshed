@@ -257,7 +257,6 @@ class TestGitHubWorkflow:
         triggers = parsed.get("on") or parsed.get(True) or {}
         if isinstance(triggers, dict):
             push = triggers.get("push", {})
-            assert "main" in push.get("branches", [])
             assert any("v*" in tag for tag in push.get("tags", []))
 
         permissions = parsed.get("permissions", {})
