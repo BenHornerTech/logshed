@@ -3,7 +3,7 @@ name: Build and Publish Container Image
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -35,10 +35,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          flavor: |
+            latest=auto
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=raw,value=beta,enable=${{ contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
 
       - name: Build and push container image
         uses: docker/build-push-action@v5
