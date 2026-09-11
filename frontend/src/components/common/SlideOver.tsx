@@ -30,26 +30,26 @@ export const SlideOver: React.FC<SlideOverProps> = ({
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="fixed inset-y-0 right-0 flex max-w-full pl-10">
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="fixed inset-y-0 right-0 flex w-full max-w-full sm:w-auto pl-0 sm:pl-10 pointer-events-none">
           <div
-            className={`pointer-events-auto w-screen ${width} bg-dark-900 border-l border-dark-700 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200`}
+            className={`pointer-events-auto w-full ${width} max-w-full bg-dark-900 border-l border-dark-700 shadow-2xl flex flex-col overscroll-contain animate-in slide-in-from-right duration-200 overflow-x-hidden`}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-dark-950">
-              <h3 className="text-sm font-semibold text-slate-200 tracking-wide">{title}</h3>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700 bg-dark-950 shrink-0">
+              <h3 className="text-sm font-semibold text-slate-200 tracking-wide truncate mr-2">{title}</h3>
               <button
                 onClick={onClose}
-                className="text-slate-400 hover:text-slate-200 hover:bg-dark-800 p-1 rounded transition"
+                className="text-slate-400 hover:text-slate-200 hover:bg-dark-800 p-1.5 rounded transition shrink-0 min-w-[36px] min-h-[36px] flex items-center justify-center"
                 aria-label="Close panel"
               >
-                <X className="w-4 h-4" />
+                <X className="w-5 h-5 sm:w-4 sm:h-4" />
               </button>
             </div>
 
             {/* Body */}
-            <div className="p-4 overflow-y-auto flex-1">{children}</div>
+            <div className="p-4 overflow-y-auto flex-1 overscroll-contain overflow-x-hidden">{children}</div>
           </div>
         </div>
       </div>

@@ -191,4 +191,39 @@ describe('StoragePanel Component', () => {
       expect(updateSpy).toHaveBeenCalledWith({ retention_days: 21 });
     });
   });
+
+  it('renders mobile touch cards for AI audit log when viewport is under 768px', async () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query.includes('max-width: 767px'),
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+
+    render(<StoragePanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('AI Root-Cause Audit Log (1)')).toBeInTheDocument();
+    });
+
+    // In mobile view, desktop 6-column header "TIMESTAMP" is omitted
+    expect(screen.queryByText('TIMESTAMP')).not.toBeInTheDocument();
+
+    // Mobile card shows clean summary and model
+    expect(screen.getByText('The technitium-sync service completed its sync successfully.')).toBeInTheDocument();
+    expect(screen.getByText('gemini-3.7-flash')).toBeInTheDocument();
+    expect(screen.getByText(/985 tok/i)).toBeInTheDocument();
+
+    // View action button is present and opens modal
+    const viewButton = screen.getByTitle('View analysis details');
+    fireEvent.click(viewButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Historical AI Root-Cause Analysis')).toBeInTheDocument();
+    });
+  });
 });

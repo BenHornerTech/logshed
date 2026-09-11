@@ -19,6 +19,8 @@ import { LogSearchBar } from './LogSearchBar.tsx';
 import { LogDetailModal } from './LogDetailModal.tsx';
 import { fetchLogs, fetchLogFacets } from '../../api/logs.ts';
 import { fetchAliases } from '../../api/aliases.ts';
+import { useMediaQuery } from '../../utils/hooks.ts';
+import { stripAnsi } from '../../utils/formatters.ts';
 
 function cleanIsoString(ts: string): string {
   let parseable = ts.trim();
@@ -210,10 +212,12 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     mergedAliasesRef.current = mergedAliases;
   }, [mergedAliases]);
 
+  const isMobile = useMediaQuery('(max-width: 767px)');
   const parentRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const isAutoScrollRef = useRef<boolean>(true);
   const pendingScrollAdjustmentRef = useRef<number>(0);
+  const isTouchingRef = useRef<boolean>(false);
 
   // Keep ref updated
   useEffect(() => {
@@ -338,11 +342,11 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
     if (!isAutoScrollRef.current) {
       setMissedLogsCount((prev) => prev + toFlush.length);
-      // Anchor scroll position by compensating for prepended items' height (28px each)
-      pendingScrollAdjustmentRef.current += toFlush.length * 28;
-    } else if (parentRef.current) {
+      // Anchor scroll position by compensating for prepended items' height (74px on mobile, 28px on desktop)
+      pendingScrollAdjustmentRef.current += toFlush.length * (isMobile ? 74 : 28);
+    } else if (parentRef.current && !isTouchingRef.current) {
       requestAnimationFrame(() => {
-        if (parentRef.current && isAutoScrollRef.current) {
+        if (parentRef.current && isAutoScrollRef.current && !isTouchingRef.current) {
           parentRef.current.scrollTop = 0;
         }
       });
@@ -534,10 +538,10 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   const handleScroll = () => {
     if (!parentRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
-    const isAtTop = scrollTop <= 10;
+    const isAtTop = scrollTop <= 5;
 
     if (isAtTop) {
-      if (!autoScroll) {
+      if (!autoScroll && !isTouchingRef.current) {
         setAutoScroll(true);
         setMissedLogsCount(0);
       }
@@ -568,12 +572,12 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     }
   };
 
-  // Virtualizer
+  // Virtualizer with responsive row estimate (74px mobile cards, 28px desktop rows)
   const rowVirtualizer = useVirtualizer({
     count: logs.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 28, // Compact row height in px
-    overscan: 25,
+    estimateSize: () => (isMobile ? 74 : 28),
+    overscan: isMobile ? 12 : 25,
   });
 
   const virtualItems = rowVirtualizer.getVirtualItems();
@@ -876,7 +880,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   }, []);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-45px)] bg-dark-950 select-text overflow-hidden">
+    <div className="flex flex-col h-full min-h-0 flex-1 bg-dark-950 select-text overflow-hidden">
       {/* Search & Filter Bar */}
       <LogSearchBar
         filters={filters}
@@ -888,9 +892,9 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       />
 
       {/* Stream Controls & Filter Pills Bar */}
-      <div className="bg-dark-900 px-3 py-1.5 border-b border-dark-700 flex items-center justify-between text-xs select-none">
+      <div className="bg-dark-900 px-3 py-1.5 border-b border-dark-700 flex flex-wrap items-center justify-between gap-2 text-xs select-none shrink-0">
         {/* Left: Quick Filter Pills */}
-        <div className="flex items-center gap-2 overflow-x-auto py-0.5">
+        <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-full">
           <span className="text-slate-400 font-medium text-[11px] shrink-0">Quick Filters:</span>
           {availableSourcesForSelectedApps.slice(0, 6).map((src) => {
             const isSelected = activeSources.includes(src);
@@ -898,7 +902,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
               <button
                 key={src}
                 onClick={() => toggleQuickSource(src)}
-                className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer ${
+                className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer shrink-0 ${
                   isSelected
                     ? 'bg-accent-950 text-accent-300 border-accent-700 font-semibold'
                     : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
@@ -914,7 +918,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
               <button
                 key={app}
                 onClick={() => toggleQuickApp(app)}
-                className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer ${
+                className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer shrink-0 ${
                   isSelected
                     ? 'bg-indigo-950 text-indigo-300 border-indigo-700 font-semibold'
                     : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
@@ -927,8 +931,8 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         </div>
 
         {/* Right: Stream State Controls */}
-        <div className="flex items-center gap-3 shrink-0">
-          <div className="flex items-center gap-1.5 border-r border-dark-700 pr-3 mr-1">
+        <div className="flex items-center gap-2.5 shrink-0 ml-auto sm:ml-0">
+          <div className="hidden sm:flex items-center gap-1.5 border-r border-dark-700 pr-3 mr-1">
             <button
               onClick={selectAllLogs}
               disabled={logs.length === 0}
@@ -948,7 +952,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
             )}
           </div>
 
-          <span className="font-mono text-slate-400 text-[11px]">
+          <span className="hidden sm:inline font-mono text-slate-400 text-[11px]">
             Screen Buffer: <span className="text-slate-200">{logs.length.toLocaleString()}</span> lines
           </span>
 
@@ -987,36 +991,47 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
       {/* Virtualized Table View */}
       <div className="flex-1 relative overflow-hidden flex flex-col">
-        {/* Table Header */}
-        <div className="bg-dark-950 border-b border-dark-700 text-slate-400 text-[11px] font-mono font-semibold grid grid-cols-[36px_165px_65px_130px_130px_1fr_60px] px-3 py-1.5 select-none items-center">
-          <div className="flex items-center justify-center">
-            <button
-              onClick={selectedLogIds.size > 0 ? deselectAllLogs : selectAllLogs}
-              disabled={logs.length === 0}
-              title={selectedLogIds.size > 0 ? 'Deselect all rows' : (logs.length > 200 ? 'Select all rows (capped at 200)' : 'Select all rows')}
-              aria-label={selectedLogIds.size > 0 ? 'Toggle deselect all in table' : 'Toggle select all in table'}
-              className="p-1 hover:text-slate-200 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-            >
-              {selectedLogIds.size > 0 ? (
-                <CheckSquare className="w-3.5 h-3.5 text-accent-400" />
-              ) : (
-                <Square className="w-3.5 h-3.5 opacity-50 hover:opacity-100" />
-              )}
-            </button>
+        {/* Table Header (Desktop only) */}
+        {!isMobile && (
+          <div className="grid bg-dark-950 border-b border-dark-700 text-slate-400 text-[11px] font-mono font-semibold grid-cols-[36px_165px_65px_130px_130px_1fr_60px] px-3 py-1.5 select-none items-center">
+            <div className="flex items-center justify-center">
+              <button
+                onClick={selectedLogIds.size > 0 ? deselectAllLogs : selectAllLogs}
+                disabled={logs.length === 0}
+                title={selectedLogIds.size > 0 ? 'Deselect all rows' : (logs.length > 200 ? 'Select all rows (capped at 200)' : 'Select all rows')}
+                aria-label={selectedLogIds.size > 0 ? 'Toggle deselect all in table' : 'Toggle select all in table'}
+                className="p-1 hover:text-slate-200 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {selectedLogIds.size > 0 ? (
+                  <CheckSquare className="w-3.5 h-3.5 text-accent-400" />
+                ) : (
+                  <Square className="w-3.5 h-3.5 opacity-50 hover:opacity-100" />
+                )}
+              </button>
+            </div>
+            <div>TIMESTAMP</div>
+            <div>SEV</div>
+            <div>HOST / IP</div>
+            <div>APP / CONTAINER</div>
+            <div>MESSAGE</div>
+            <div className="text-right pr-2">ACTIONS</div>
           </div>
-          <div>TIMESTAMP</div>
-          <div>SEV</div>
-          <div>HOST / IP</div>
-          <div>APP / CONTAINER</div>
-          <div>MESSAGE</div>
-          <div className="text-right pr-2">ACTIONS</div>
-        </div>
+        )}
 
         {/* Scrollable Virtualized Area */}
         <div
           ref={parentRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-y-auto overflow-x-hidden font-mono text-xs bg-dark-950 relative"
+          onTouchStart={() => {
+            isTouchingRef.current = true;
+          }}
+          onTouchEnd={() => {
+            isTouchingRef.current = false;
+          }}
+          onTouchCancel={() => {
+            isTouchingRef.current = false;
+          }}
+          className="flex-1 overflow-y-auto overflow-x-hidden font-mono text-xs bg-dark-950 relative overscroll-contain"
         >
           {isLoadingHistory && logs.length === 0 ? (
             <div className="flex items-center justify-center h-full text-slate-500 font-mono">
@@ -1040,7 +1055,8 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
                 if (!log) return null;
                 const isSelected = selectedLogIds.has(log.id);
 
-                return (
+                return isMobile ? (
+                  /* Mobile 3-Line Triage Card View */
                   <div
                     key={virtualRow.key}
                     data-index={virtualRow.index}
@@ -1053,7 +1069,61 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
-                    className={`log-row grid grid-cols-[36px_165px_65px_130px_130px_1fr_60px] px-3 items-center border-b border-dark-900 cursor-pointer text-[11px] leading-tight ${
+                    className={`log-row flex flex-col justify-between px-3 py-1.5 border-b border-dark-900 cursor-pointer text-[11px] leading-tight space-y-1 ${
+                      isSelected ? 'bg-accent-950/40 border-l-2 border-accent-500' : ''
+                    }`}
+                  >
+                    {/* Line 1: Severity Badge + App Name + Timestamp */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <SeverityBadge severity={log.severity} />
+                        <span className="font-mono text-slate-200 font-semibold text-xs truncate">
+                          {log.app_name}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-slate-500 font-mono shrink-0 select-none">
+                        {formatLocalTimestamp(log.timestamp, log.received_at)}
+                      </span>
+                    </div>
+
+                    {/* Line 2: Message Payload (break-all, 2 lines clamp) */}
+                    <div className="text-slate-200 text-xs font-mono break-all line-clamp-2 select-text leading-snug">
+                      {stripAnsi(log.message)}
+                    </div>
+
+                    {/* Line 3: Host Alias + AI Action */}
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono">
+                      <span className="truncate max-w-[75%] text-slate-400">
+                        {log.source_alias}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDiagnoseAi([log]);
+                        }}
+                        className="text-accent-400 hover:text-accent-300 p-1 flex items-center gap-1 shrink-0"
+                        title="Explain with AI"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span className="text-[10px] font-sans font-medium">AI</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* Desktop 7-Column Grid View */
+                  <div
+                    key={virtualRow.key}
+                    data-index={virtualRow.index}
+                    onClick={() => setActiveLogDetail(log)}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                    className={`log-row grid grid-cols-[36px_165px_65px_130px_130px_1fr_60px] px-3 items-center border-b border-dark-900 hover:bg-dark-900/60 transition-colors cursor-pointer text-[11px] leading-tight ${
                       isSelected ? 'bg-accent-950/40 border-l-2 border-accent-500' : ''
                     }`}
                   >
@@ -1096,8 +1166,8 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
                     </div>
 
                     {/* Raw Text Message without dangerouslySetInnerHTML */}
-                    <div className="text-slate-200 truncate pr-3 select-text" title={log.message}>
-                      {log.message}
+                    <div className="text-slate-200 truncate pr-3 select-text" title={stripAnsi(log.message)}>
+                      {stripAnsi(log.message)}
                     </div>
 
                     {/* Quick Row Actions */}

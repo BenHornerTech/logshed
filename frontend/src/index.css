@@ -6,6 +6,13 @@
   color-scheme: dark;
 }
 
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   background-color: #070a10;
@@ -13,7 +20,6 @@ body {
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
 }
 
 /* Custom compact scrollbar for dense dark ops viewer */

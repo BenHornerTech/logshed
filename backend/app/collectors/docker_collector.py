@@ -194,7 +194,16 @@ def _parse_docker_log_line(raw_bytes: bytes) -> str:
     return raw_bytes.decode("utf-8", errors="replace").rstrip("\n\r")
 
 
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\].*?(?:\x07|\x1b\\)|[@-Z\\-_])")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean_text(text: str) -> str:
+    """Strip ANSI color/formatting codes and non-printable control characters."""
+    if not text:
+        return text
+    return _CONTROL_CHARS_RE.sub("", _ANSI_ESCAPE_RE.sub("", text))
+
 
 _SEVERITY_LEVEL_MAP = {
     "emerg": 0,
@@ -230,7 +239,7 @@ def _detect_severity(raw_line: str) -> int:
     Inspects common log formats (logfmt, JSON, brackets, prefix: colon, timestamps)
     without misinterpreting informational messages emitted on Docker stderr.
     """
-    clean = _ANSI_ESCAPE_RE.sub("", raw_line).strip()
+    clean = _clean_text(raw_line).strip()
     if not clean:
         return 6
 
@@ -312,6 +321,8 @@ def _make_log_entry(
         else:
             source_alias = alias_cache.resolve(source_ip)
 
+    clean_message = _clean_text(message)
+
     return {
         "timestamp": timestamp or now,
         "received_at": now,
@@ -320,8 +331,8 @@ def _make_log_entry(
         "app_name": container_name,
         "facility": 1,
         "severity": severity,
-        "message": message,
-        "raw": message,
+        "message": clean_message,
+        "raw": clean_message,
     }
 
 

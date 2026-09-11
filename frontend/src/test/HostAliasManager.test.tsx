@@ -77,4 +77,35 @@ describe('HostAliasManager Component', () => {
       expect(firstDeleteBtn).not.toBeDisabled();
     });
   });
+
+  it('renders mobile touch cards when viewport is under 768px', async () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query.includes('max-width: 767px'),
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+
+    render(<HostAliasManager />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Active Host Mappings (2)')).toBeInTheDocument();
+    });
+
+    // In mobile view, the table header "SOURCE IP" is omitted
+    expect(screen.queryByText('SOURCE IP')).not.toBeInTheDocument();
+
+    // Mobile cards should render IP and alias
+    expect(screen.getByText('192.168.1.1')).toBeInTheDocument();
+    expect(screen.getByText('router.local')).toBeInTheDocument();
+    expect(screen.getByText('Main router')).toBeInTheDocument();
+
+    // Edit and Delete buttons should be present
+    expect(screen.getAllByTitle('Edit Alias').length).toBe(2);
+    expect(screen.getAllByTitle('Delete Alias').length).toBe(2);
+  });
 });

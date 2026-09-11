@@ -13,7 +13,7 @@ import { StorageMetricsResponse, AiAuditEntry } from '../../types.ts';
 import { fetchSettings, updateSettings } from '../../api/settings.ts';
 import { fetchStorageMetrics } from '../../api/system.ts';
 import { fetchAiAudit, deleteAiAuditItem, clearAiAuditLog } from '../../api/ai.ts';
-import { useClipboard } from '../../utils/hooks.ts';
+import { useClipboard, useMediaQuery } from '../../utils/hooks.ts';
 import { extractCleanSummary } from '../../utils/summary.ts';
 import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
@@ -112,6 +112,8 @@ export const StoragePanel: React.FC = () => {
     }
   };
 
+  const isMobile = useMediaQuery('(max-width: 767px)');
+
   if (isLoading && !storageMetrics) {
     return (
       <div className="p-8 text-center text-slate-500 font-mono text-xs flex items-center justify-center gap-2">
@@ -122,7 +124,7 @@ export const StoragePanel: React.FC = () => {
   }
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-8">
+    <div className="max-w-5xl mx-auto p-3 sm:p-6 space-y-6 sm:space-y-8">
       {/* Header */}
       <div>
         <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
@@ -197,7 +199,77 @@ export const StoragePanel: React.FC = () => {
           <div className="p-6 text-center text-slate-500 font-mono text-xs">
             No AI analyses executed yet. Select logs in the stream and click "Explain with AI".
           </div>
+        ) : isMobile ? (
+          /* Mobile Card View */
+          <div className="divide-y divide-dark-800">
+            {auditLogs.map((item) => (
+              <div
+                key={item.id}
+                onClick={() => {
+                  setSelectedAuditItem(item);
+                  setShowPromptDetails(false);
+                  setAuditPromptViewMode('analysis');
+                }}
+                className="p-3.5 space-y-2 hover:bg-dark-800/40 transition cursor-pointer select-none"
+              >
+                {/* Line 1: Host • App & Timestamp */}
+                <div className="flex items-center justify-between text-xs gap-2">
+                  <div className="truncate font-mono">
+                    <span className="font-semibold text-accent-400">{item.source_alias}</span>
+                    <span className="text-slate-500"> • {item.app_name}</span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 font-mono shrink-0">
+                    {item.timestamp.slice(0, 16).replace('T', ' ')}
+                  </span>
+                </div>
+
+                {/* Line 2: Clean Summary */}
+                <div
+                  className="text-slate-200 font-sans text-xs line-clamp-2 leading-relaxed"
+                  title={extractCleanSummary(item.response_text)}
+                >
+                  {extractCleanSummary(item.response_text)}
+                </div>
+
+                {/* Line 3: Model + Tokens + Actions */}
+                <div className="flex items-center justify-between pt-1 text-[11px] text-slate-400 font-mono">
+                  <div className="flex items-center gap-1.5 truncate">
+                    <span className="bg-dark-950 border border-dark-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300 truncate max-w-[130px]">
+                      {item.model}
+                    </span>
+                    <span className="text-slate-500 text-[10px]">
+                      {item.tokens_used.toLocaleString()} tok
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 font-sans shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedAuditItem(item);
+                        setShowPromptDetails(false);
+                        setAuditPromptViewMode('analysis');
+                      }}
+                      className="px-2.5 py-1 text-xs font-mono text-accent-400 bg-accent-950/50 hover:bg-accent-900/60 border border-accent-800/80 rounded transition cursor-pointer"
+                      title="View analysis details"
+                    >
+                      View
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isDeletingAuditId === item.id}
+                      onClick={(e) => handleDeleteAuditItem(item.id, e)}
+                      className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-950/50 rounded border border-transparent hover:border-red-900/50 transition cursor-pointer disabled:opacity-50"
+                      title="Delete this analysis"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         ) : (
+          /* Desktop Table View */
           <div className="divide-y divide-dark-800 font-mono text-xs">
             <div className="grid grid-cols-[135px_150px_130px_75px_1fr_95px] px-4 py-2 text-slate-400 font-semibold text-[11px] bg-dark-950/60 select-none">
               <div>TIMESTAMP</div>
@@ -357,16 +429,16 @@ export const StoragePanel: React.FC = () => {
 
             {/* Collapsible Redacted Prompt / Logs */}
             <div className="border border-dark-700 rounded-lg overflow-hidden bg-dark-950">
-              <div className="flex items-center justify-between px-3 py-2 bg-dark-900 border-b border-dark-700">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between p-2.5 sm:px-3 sm:py-2 bg-dark-900 border-b border-dark-700 gap-2">
                 <button
                   type="button"
                   onClick={() => setShowPromptDetails(!showPromptDetails)}
-                  className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider hover:text-slate-100 transition cursor-pointer"
+                  className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider hover:text-slate-100 transition cursor-pointer text-left"
                 >
                   {showPromptDetails ? '▼ Hide Submitted Logs & Prompt' : '▶ View Submitted Logs & Prompt'}
                 </button>
                 {showPromptDetails && (
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2">
                     {/* View mode toggle pill */}
                     <div className="flex items-center bg-dark-950 border border-dark-700 rounded p-0.5 text-[10px] font-mono">
                       <button
@@ -395,7 +467,7 @@ export const StoragePanel: React.FC = () => {
                     <button
                       type="button"
                       onClick={handleCopyAuditPrompt}
-                      className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition cursor-pointer"
+                      className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 transition cursor-pointer shrink-0"
                     >
                       {copiedAuditPrompt ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                       <span>{copiedAuditPrompt ? 'Copied' : 'Copy Prompt'}</span>

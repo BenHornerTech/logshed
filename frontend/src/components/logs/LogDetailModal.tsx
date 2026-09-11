@@ -5,6 +5,7 @@ import { fetchLogContext } from '../../api/logs.ts';
 import { SeverityBadge } from '../common/SeverityBadge.tsx';
 import { SlideOver } from '../common/SlideOver.tsx';
 import { useClipboard } from '../../utils/hooks.ts';
+import { stripAnsi } from '../../utils/formatters.ts';
 
 interface LogDetailModalProps {
   log: LogEntry | null;
@@ -86,7 +87,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
   };
 
   const handleCopyMsg = async () => {
-    await copyMsg(log.message);
+    await copyMsg(stripAnsi(log.message));
   };
 
   return (
@@ -99,7 +100,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
       <div className="space-y-4 text-xs font-sans">
         {/* Action Header */}
         <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-dark-950 rounded-lg border border-dark-700">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <SeverityBadge severity={log.severity} />
             <span className="font-mono text-slate-300 font-medium">{log.app_name}</span>
             <span className="text-slate-500">•</span>
@@ -107,7 +108,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
             <span className="text-slate-500">({log.source_ip})</span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
             {onAddAlias && (
               hostIsAliased ? (
                 <button
@@ -115,7 +116,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
                     onAddAlias(log.source_ip);
                     onClose();
                   }}
-                  className="flex items-center gap-1 px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded transition font-medium"
+                  className="flex items-center justify-center gap-1 px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded transition font-medium"
                 >
                   <Edit2 className="w-3.5 h-3.5 text-accent-400" />
                   <span>Modify Host Alias</span>
@@ -126,7 +127,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
                     onAddAlias(log.source_ip);
                     onClose();
                   }}
-                  className="flex items-center gap-1 px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded transition font-medium"
+                  className="flex items-center justify-center gap-1 px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded transition font-medium"
                 >
                   <Plus className="w-3.5 h-3.5 text-accent-400" />
                   <span>Add Host Alias</span>
@@ -136,7 +137,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
 
             <button
               onClick={() => onExplainWithAi(log)}
-              className="flex items-center gap-1.5 px-3 py-1 bg-accent-600 hover:bg-accent-500 text-white rounded font-medium transition shadow-xs"
+              className="flex items-center justify-center gap-1.5 px-3 py-1 bg-accent-600 hover:bg-accent-500 text-white rounded font-medium transition shadow-xs"
             >
               <Sparkles className="w-3.5 h-3.5" />
               <span>Explain with AI</span>
@@ -145,22 +146,22 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
         </div>
 
         {/* Structured Metadata Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
           <div className="bg-dark-950 p-2.5 rounded border border-dark-700">
             <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">Timestamp</span>
-            <span className="font-mono text-slate-200">{log.timestamp}</span>
+            <span className="font-mono text-slate-200 text-xs break-all select-all">{log.timestamp}</span>
           </div>
           <div className="bg-dark-950 p-2.5 rounded border border-dark-700">
             <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">Received At</span>
-            <span className="font-mono text-slate-200">{log.received_at}</span>
+            <span className="font-mono text-slate-200 text-xs break-all select-all">{log.received_at}</span>
           </div>
           <div className="bg-dark-950 p-2.5 rounded border border-dark-700">
             <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">Facility</span>
-            <span className="font-mono text-slate-200">{log.facility}</span>
+            <span className="font-mono text-slate-200 text-xs break-all">{log.facility}</span>
           </div>
           <div className="bg-dark-950 p-2.5 rounded border border-dark-700">
             <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">Severity Code</span>
-            <span className="font-mono text-slate-200">{log.severity}</span>
+            <span className="font-mono text-slate-200 text-xs break-all">{log.severity}</span>
           </div>
         </div>
 
@@ -180,8 +181,8 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
             </button>
           </div>
           <div className="bg-dark-950 border border-dark-700 rounded-lg p-3 font-mono text-slate-200 text-xs whitespace-pre-wrap break-all select-text max-h-60 overflow-y-auto">
-            {/* Raw text element without dangerouslySetInnerHTML */}
-            {log.message}
+            {/* Sanitized text element without dangerouslySetInnerHTML */}
+            {stripAnsi(log.message)}
           </div>
         </div>
 
@@ -198,7 +199,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
             </button>
           </div>
           <div className="bg-dark-950 border border-dark-700 rounded-lg p-3 font-mono text-slate-400 text-[11px] whitespace-pre-wrap break-all select-text max-h-36 overflow-y-auto">
-            {log.raw}
+            {stripAnsi(log.raw)}
           </div>
         </div>
 
@@ -214,7 +215,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
             </button>
 
             {showContext && (
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -260,7 +261,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
                         <span className="text-slate-400 shrink-0 select-none">{ctxLog.timestamp.slice(11, 19)}</span>
                         <SeverityBadge severity={ctxLog.severity} className="shrink-0" />
                         <span className={`break-all ${isTarget ? 'text-slate-100 font-semibold' : 'text-slate-300'}`}>
-                          {ctxLog.message}
+                          {stripAnsi(ctxLog.message)}
                         </span>
                       </div>
                     );

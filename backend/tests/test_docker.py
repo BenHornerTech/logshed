@@ -135,6 +135,13 @@ class TestDockerLogParsing:
         assert entry["source_alias"] == "pve-node1-docker"
         assert entry["app_name"] == "redis-cache"
 
+    def test_make_log_entry_strips_ansi_and_control_chars(self):
+        """_make_log_entry should strip ANSI escape sequences and non-printable control characters."""
+        raw_msg = "2026-09-11T19:40:00.041Z [\x1b[32minfo\x1b[39m][Plex Scan]: Beginning scan \x1b[1;31merr\x1b[0m \x07"
+        entry = _make_log_entry("seerr", "c123", raw_msg)
+        assert entry["message"] == "2026-09-11T19:40:00.041Z [info][Plex Scan]: Beginning scan err "
+        assert entry["raw"] == "2026-09-11T19:40:00.041Z [info][Plex Scan]: Beginning scan err "
+
     def test_should_ignore_container(self, monkeypatch):
         """Self-containers and explicitly excluded containers should be ignored."""
         # Default self-container names

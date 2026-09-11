@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Server, Plus, Trash2, Edit2, Check, AlertCircle } from 'lucide-react';
 import { HostAlias } from '../../types.ts';
 import { fetchAliases, saveAlias, deleteAlias } from '../../api/aliases.ts';
+import { useMediaQuery } from '../../utils/hooks.ts';
 
 interface HostAliasManagerProps {
   initialAddIp?: string | null;
@@ -107,8 +108,10 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
     }
   };
 
+  const isMobile = useMediaQuery('(max-width: 767px)');
+
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
+    <div className="max-w-5xl mx-auto p-3 sm:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -117,7 +120,7 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
             <span>Host Alias Manager</span>
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Map incoming source IP addresses to friendly host names (e.g. 192.168.1.1 → OPNsense Firewall).
+            Map incoming source IP addresses to friendly host names (e.g. 192.168.1.1 -&gt; OPNsense Firewall).
           </p>
         </div>
       </div>
@@ -130,7 +133,7 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
       )}
 
       {/* Add / Edit Form Card */}
-      <div className="bg-dark-900 border border-dark-700 rounded-xl p-4 shadow-md">
+      <div className="bg-dark-900 border border-dark-700 rounded-xl p-3.5 sm:p-4 shadow-md">
         <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider mb-3">
           {editingIp ? `Edit Mapping for ${editingIp}` : 'Add New Host Mapping'}
         </h3>
@@ -182,7 +185,7 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
               <button
                 type="button"
                 onClick={handleCancelEdit}
-                className="px-3 py-1.5 bg-dark-800 hover:bg-dark-700 text-slate-300 rounded text-xs transition"
+                className="px-3.5 py-2 sm:py-1.5 bg-dark-800 hover:bg-dark-700 text-slate-300 rounded text-xs transition cursor-pointer"
               >
                 Cancel
               </button>
@@ -190,7 +193,7 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
             <button
               type="submit"
               disabled={isSaving || !ip.trim() || !alias.trim()}
-              className="bg-accent-600 hover:bg-accent-500 disabled:opacity-50 text-white font-medium px-4 py-1.5 rounded text-xs flex items-center gap-1.5 transition shadow-xs"
+              className="bg-accent-600 hover:bg-accent-500 disabled:opacity-50 text-white font-medium px-4 py-2 sm:py-1.5 rounded text-xs flex items-center justify-center gap-1.5 transition shadow-xs cursor-pointer min-h-[38px] sm:min-h-0"
             >
               {editingIp ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
               <span>{isSaving ? 'Saving...' : editingIp ? 'Update Mapping' : 'Add Mapping'}</span>
@@ -213,7 +216,43 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
           <div className="p-6 text-center text-slate-500 font-mono text-xs">
             No host aliases mapped yet. Add a mapping above to label incoming syslog IP addresses.
           </div>
+        ) : isMobile ? (
+          /* Mobile Card View */
+          <div className="divide-y divide-dark-800">
+            {aliases.map((item) => (
+              <div key={item.ip} className="p-3.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-accent-400 font-semibold text-xs sm:text-sm">{item.ip}</span>
+                  <div className="flex items-center gap-1 font-sans">
+                    <button
+                      onClick={() => handleEdit(item)}
+                      title="Edit Alias"
+                      className="p-2 text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded transition cursor-pointer"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isDeletingIp === item.ip}
+                      onClick={() => handleDelete(item.ip)}
+                      title="Delete Alias"
+                      className="p-2 text-slate-400 hover:text-red-400 hover:bg-dark-800 rounded transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                <div className="text-slate-200 font-mono text-xs font-medium">{item.alias}</div>
+                {item.notes && (
+                  <div className="text-slate-400 font-sans text-xs">
+                    {item.notes}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         ) : (
+          /* Desktop Table View */
           <div className="divide-y divide-dark-800 font-mono text-xs">
             <div className="grid grid-cols-[160px_200px_1fr_100px] px-4 py-2 text-slate-400 font-semibold text-[11px] bg-dark-950/60 select-none">
               <div>SOURCE IP</div>
@@ -236,7 +275,7 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
                   <button
                     onClick={() => handleEdit(item)}
                     title="Edit Alias"
-                    className="p-1 text-slate-400 hover:text-slate-200 hover:bg-dark-700 rounded transition"
+                    className="p-1 text-slate-400 hover:text-slate-200 hover:bg-dark-700 rounded transition cursor-pointer"
                   >
                     <Edit2 className="w-3.5 h-3.5" />
                   </button>
@@ -245,7 +284,7 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
                     disabled={isDeletingIp === item.ip}
                     onClick={() => handleDelete(item.ip)}
                     title="Delete Alias"
-                    className="p-1 text-slate-400 hover:text-red-400 hover:bg-dark-700 rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="p-1 text-slate-400 hover:text-red-400 hover:bg-dark-700 rounded transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

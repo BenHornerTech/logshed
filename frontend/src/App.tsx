@@ -44,8 +44,8 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-dark-950 text-slate-200 flex flex-col">
-      {/* Top Fixed Navbar */}
+    <div className="h-dvh max-h-dvh w-full max-w-full bg-dark-950 text-slate-200 flex flex-col overflow-hidden select-text">
+      {/* Top Fixed Navbar & Mobile Bottom Navigation */}
       <Navbar
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -53,7 +53,11 @@ export const App: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1">
+      <main
+        className={`flex-1 min-h-0 relative ${
+          activeTab === 'stream' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto'
+        } pb-14 md:pb-0`}
+      >
         {activeTab === 'stream' && (
           <LiveLogStream
             onDiagnoseAi={handleOpenAiModal}
