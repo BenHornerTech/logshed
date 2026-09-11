@@ -14,6 +14,9 @@ import {
   ArrowDown,
   Plus,
   X,
+  ChevronDown,
+  ChevronUp,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { LogEntry, AiPreviewResponse, AiDiagnosisResponse, AiModelInfo } from '../../types.ts';
 import { previewAiPrompt, diagnoseLogs, getAiModels } from '../../api/ai.ts';
@@ -55,6 +58,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const [selectedFallbackToAdd, setSelectedFallbackToAdd] = useState<string>('');
   const [customFallbackInput, setCustomFallbackInput] = useState<string>('');
   const [showCustomFallbackInput, setShowCustomFallbackInput] = useState<boolean>(false);
+  const [isAiSettingsOpen, setIsAiSettingsOpen] = useState<boolean>(false);
 
   const [isDiagnosing, setIsDiagnosing] = useState<boolean>(false);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
@@ -114,6 +118,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       setFallbackModels('');
       setStreamProgress({ stage: 'init', failovers: [] });
       setElapsedSeconds(0);
+      setIsAiSettingsOpen(false);
     }
   }, [isOpen, selectedLogs]);
 
@@ -511,253 +516,305 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               </div>
             </div>
 
-            {/* Provider & Model Selectors */}
-            <div className="space-y-3">
-              {/* Missing API Key Warning */}
-              {!hasApiKeyForProvider && provider !== 'openai_compatible' && (
-                <div className="p-2.5 bg-amber-950/40 border border-amber-800/60 rounded-lg flex items-start gap-2 text-amber-300 text-xs font-mono">
-                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                  <span>
-                    No API key configured for {provider === 'gemini' ? 'Google Gemini' : 'OpenAI'}. Please configure your API key in Settings to load models and run AI analysis.
+            {/* Collapsible Provider & Model Configuration Section */}
+            <div className="border border-dark-700/80 rounded-lg bg-dark-900/60 overflow-hidden transition-colors">
+              <button
+                type="button"
+                onClick={() => setIsAiSettingsOpen(!isAiSettingsOpen)}
+                className="w-full p-2.5 flex flex-wrap items-center justify-between gap-2 hover:bg-dark-800/60 transition cursor-pointer text-left select-none"
+                aria-expanded={isAiSettingsOpen}
+                aria-controls="ai-model-settings-content"
+              >
+                <div className="flex flex-wrap items-center gap-2 min-w-0">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-accent-400 shrink-0" />
+                  <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
+                    Model & Provider Settings
                   </span>
-                </div>
-              )}
-
-              {/* Models Loading Error Notice */}
-              {modelsError && (
-                <div className="p-2.5 bg-red-950/40 border border-red-800/60 rounded-lg flex items-start gap-2 text-red-300 text-xs font-mono">
-                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                  <span>{modelsError}</span>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                    AI Provider
-                  </label>
-                  <select
-                    value={provider}
-                    onChange={(e) => handleProviderChange(e.target.value)}
-                    className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
-                  >
-                    <option value="gemini">Google Gemini</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="openai_compatible">OpenAI-Compatible (Ollama / LocalAI)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400 uppercase">
-                      <span>Primary Model</span>
-                      {isLoadingModels && (
-                        <RefreshCw className="w-3 h-3 text-accent-400 animate-spin" />
-                      )}
-                    </label>
-                    {isCustomModel && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsCustomModel(false);
-                          const validModels = availableModels.filter(
-                            (m) => !fallbackList.includes(m.id)
-                          );
-                          if (validModels.length > 0) {
-                            handlePrimaryModelChange(validModels[0].id);
-                          } else if (availableModels.length > 0) {
-                            handlePrimaryModelChange(availableModels[0].id);
-                          }
-                        }}
-                        className="text-[10px] text-accent-400 hover:text-accent-300 underline cursor-pointer"
-                      >
-                        Use dropdown
-                      </button>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono">
+                    <span className="px-1.5 py-0.5 rounded bg-dark-950 border border-dark-700 text-slate-300 truncate max-w-[150px] sm:max-w-[220px]">
+                      {model || DEFAULT_AI_MODEL}
+                    </span>
+                    {fallbackList.length > 0 ? (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px]">
+                        {fallbackList.length} fallback{fallbackList.length === 1 ? '' : 's'}
+                      </span>
+                    ) : (
+                      <span className="hidden sm:inline text-[10px] text-slate-500">
+                        no fallbacks
+                      </span>
+                    )}
+                    {!hasApiKeyForProvider && provider !== 'openai_compatible' && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3 text-amber-400" />
+                        Key required
+                      </span>
                     )}
                   </div>
+                </div>
 
-                  {availableModels.length > 0 && !isCustomModel ? (
-                    <select
-                      value={availableModels.some((m) => m.id === model) ? model : '__custom__'}
-                      onChange={(e) => {
-                        if (e.target.value === '__custom__') {
-                          setIsCustomModel(true);
-                        } else {
-                          handlePrimaryModelChange(e.target.value);
-                        }
-                      }}
-                      className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
-                    >
-                      {availableModels
-                        .filter((m) => m.id === model || !fallbackList.includes(m.id))
-                        .map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.id} {m.supports_thinking ? ' [Reasoning]' : ''}
-                          </option>
-                        ))}
-                      {!availableModels.some((m) => m.id === model) && model && (
-                        <option value={model}>{model} (Selected / Custom)</option>
-                      )}
-                      <option value="__custom__">Custom model name...</option>
-                    </select>
+                <div className="flex items-center gap-1.5 text-slate-400 text-[11px] font-mono shrink-0 ml-auto">
+                  <span className="text-[10px] text-slate-400 hover:text-slate-200">
+                    {isAiSettingsOpen ? 'Hide' : 'Configure'}
+                  </span>
+                  {isAiSettingsOpen ? (
+                    <ChevronUp className="w-4 h-4 text-slate-400" />
                   ) : (
-                    <input
-                      type="text"
-                      value={model}
-                      onChange={(e) => handlePrimaryModelChange(e.target.value)}
-                      placeholder={provider === 'gemini' ? DEFAULT_AI_MODEL : provider === 'openai' ? 'gpt-4o' : 'llama3.2'}
-                      className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
-                    />
+                    <ChevronDown className="w-4 h-4 text-slate-400" />
                   )}
                 </div>
-              </div>
+              </button>
 
-              {/* Fallback Models Ordered Chain */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="block text-[11px] font-semibold text-slate-400 uppercase">
-                    Fallback Models (Sequential Failover Chain)
-                  </label>
-                  <span className="text-[10px] text-slate-500 font-mono">
-                    Queried in order on 503, 504, or timeout
-                  </span>
-                </div>
-
-                {fallbackList.length === 0 ? (
-                  <div className="p-2 bg-dark-950 border border-dark-800 rounded text-[11px] text-slate-500 font-mono">
-                    No fallback models configured for this analysis.
-                  </div>
-                ) : (
-                  <div className="space-y-1 max-h-36 overflow-y-auto">
-                    {fallbackList.map((fb, idx) => {
-                      const isThinking = availableModels.find((m) => m.id === fb)?.supports_thinking;
-                      return (
-                        <div
-                          key={idx}
-                          className="flex items-center justify-between p-1.5 bg-dark-950 border border-dark-800 rounded text-xs font-mono"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-semibold shrink-0">
-                              {`${getOrdinalSuffix(idx + 1)} Fallback`}
-                            </span>
-                            <span className="text-slate-200 font-medium truncate">{fb}</span>
-                            {isThinking && (
-                              <span className="px-1 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[9px] shrink-0">
-                                Reasoning
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0 ml-2">
-                            <button
-                              type="button"
-                              disabled={idx === 0}
-                              onClick={() => moveFallback(idx, -1)}
-                              className="p-0.5 text-slate-400 hover:text-slate-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
-                              title="Move up in priority"
-                              aria-label="Move fallback up"
-                            >
-                              <ArrowUp className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={idx === fallbackList.length - 1}
-                              onClick={() => moveFallback(idx, 1)}
-                              className="p-0.5 text-slate-400 hover:text-slate-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
-                              title="Move down in priority"
-                              aria-label="Move fallback down"
-                            >
-                              <ArrowDown className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => removeFallback(idx)}
-                              className="p-0.5 text-red-400 hover:text-red-300 cursor-pointer"
-                              title="Remove fallback model"
-                              aria-label="Remove fallback"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
+              {/* Collapsible Content */}
+              <div
+                id="ai-model-settings-content"
+                className={isAiSettingsOpen ? 'p-3 pt-2.5 space-y-3 border-t border-dark-800' : 'hidden'}
+              >
+                {/* Missing API Key Warning */}
+                {!hasApiKeyForProvider && provider !== 'openai_compatible' && (
+                  <div className="p-2.5 bg-amber-950/40 border border-amber-800/60 rounded-lg flex items-start gap-2 text-amber-300 text-xs font-mono">
+                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <span>
+                      No API key configured for {provider === 'gemini' ? 'Google Gemini' : 'OpenAI'}. Please configure your API key in Settings to load models and run AI analysis.
+                    </span>
                   </div>
                 )}
 
-                {/* Add Fallback Model Selector */}
-                <div className="pt-1">
-                  {!showCustomFallbackInput ? (
-                    <div className="flex items-center gap-2 w-full">
+                {/* Models Loading Error Notice */}
+                {modelsError && (
+                  <div className="p-2.5 bg-red-950/40 border border-red-800/60 rounded-lg flex items-start gap-2 text-red-300 text-xs font-mono">
+                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                    <span>{modelsError}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
+                      AI Provider
+                    </label>
+                    <select
+                      value={provider}
+                      onChange={(e) => handleProviderChange(e.target.value)}
+                      className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+                    >
+                      <option value="gemini">Google Gemini</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="openai_compatible">OpenAI-Compatible (Ollama / LocalAI)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400 uppercase">
+                        <span>Primary Model</span>
+                        {isLoadingModels && (
+                          <RefreshCw className="w-3 h-3 text-accent-400 animate-spin" />
+                        )}
+                      </label>
+                      {isCustomModel && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsCustomModel(false);
+                            const validModels = availableModels.filter(
+                              (m) => !fallbackList.includes(m.id)
+                            );
+                            if (validModels.length > 0) {
+                              handlePrimaryModelChange(validModels[0].id);
+                            } else if (availableModels.length > 0) {
+                              handlePrimaryModelChange(availableModels[0].id);
+                            }
+                          }}
+                          className="text-[10px] text-accent-400 hover:text-accent-300 underline cursor-pointer"
+                        >
+                          Use dropdown
+                        </button>
+                      )}
+                    </div>
+
+                    {availableModels.length > 0 && !isCustomModel ? (
                       <select
-                        value={selectedFallbackToAdd}
+                        value={availableModels.some((m) => m.id === model) ? model : '__custom__'}
                         onChange={(e) => {
-                          if (e.target.value === '__custom_fallback__') {
-                            setShowCustomFallbackInput(true);
-                            setSelectedFallbackToAdd('');
+                          if (e.target.value === '__custom__') {
+                            setIsCustomModel(true);
                           } else {
-                            setSelectedFallbackToAdd(e.target.value);
+                            handlePrimaryModelChange(e.target.value);
                           }
                         }}
-                        className="flex-1 min-w-0 bg-dark-950 border border-dark-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono truncate"
+                        className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
                       >
-                        <option value="">-- Add Fallback Model --</option>
                         {availableModels
-                          .filter((m) => m.id !== model && !fallbackList.includes(m.id))
+                          .filter((m) => m.id === model || !fallbackList.includes(m.id))
                           .map((m) => (
                             <option key={m.id} value={m.id}>
                               {m.id} {m.supports_thinking ? ' [Reasoning]' : ''}
                             </option>
                           ))}
-                        <option value="__custom_fallback__">Custom fallback model...</option>
+                        {!availableModels.some((m) => m.id === model) && model && (
+                          <option value={model}>{model} (Selected / Custom)</option>
+                        )}
+                        <option value="__custom__">Custom model name...</option>
                       </select>
-                      <button
-                        type="button"
-                        disabled={!selectedFallbackToAdd}
-                        onClick={() => {
-                          addFallback(selectedFallbackToAdd);
-                          setSelectedFallbackToAdd('');
-                        }}
-                        className="shrink-0 px-2.5 py-1 bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded text-xs text-slate-200 font-mono flex items-center gap-1 disabled:opacity-40 cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Add</span>
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 w-full">
+                    ) : (
                       <input
                         type="text"
-                        value={customFallbackInput}
-                        onChange={(e) => setCustomFallbackInput(e.target.value)}
-                        placeholder="Enter custom model ID"
-                        className="flex-1 min-w-0 bg-dark-950 border border-dark-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+                        value={model}
+                        onChange={(e) => handlePrimaryModelChange(e.target.value)}
+                        placeholder={provider === 'gemini' ? DEFAULT_AI_MODEL : provider === 'openai' ? 'gpt-4o' : 'llama3.2'}
+                        className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
                       />
-                      <button
-                        type="button"
-                        disabled={!customFallbackInput.trim()}
-                        onClick={() => {
-                          addFallback(customFallbackInput);
-                          setCustomFallbackInput('');
-                          setShowCustomFallbackInput(false);
-                        }}
-                        className="shrink-0 px-2.5 py-1 bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded text-xs text-slate-200 font-mono flex items-center gap-1 disabled:opacity-40 cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Add</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowCustomFallbackInput(false);
-                          setCustomFallbackInput('');
-                        }}
-                        className="shrink-0 p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
-                        title="Cancel custom fallback"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Fallback Models Ordered Chain */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[11px] font-semibold text-slate-400 uppercase">
+                      Fallback Models (Sequential Failover Chain)
+                    </label>
+                    <span className="text-[10px] text-slate-500 font-mono">
+                      Queried in order on 503, 504, or timeout
+                    </span>
+                  </div>
+
+                  {fallbackList.length === 0 ? (
+                    <div className="p-2 bg-dark-950 border border-dark-800 rounded text-[11px] text-slate-500 font-mono">
+                      No fallback models configured for this analysis.
+                    </div>
+                  ) : (
+                    <div className="space-y-1 max-h-36 overflow-y-auto">
+                      {fallbackList.map((fb, idx) => {
+                        const isThinking = availableModels.find((m) => m.id === fb)?.supports_thinking;
+                        return (
+                          <div
+                            key={idx}
+                            className="flex items-center justify-between p-1.5 bg-dark-950 border border-dark-800 rounded text-xs font-mono"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-semibold shrink-0">
+                                {`${getOrdinalSuffix(idx + 1)} Fallback`}
+                              </span>
+                              <span className="text-slate-200 font-medium truncate">{fb}</span>
+                              {isThinking && (
+                                <span className="px-1 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[9px] shrink-0">
+                                  Reasoning
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0 ml-2">
+                              <button
+                                type="button"
+                                disabled={idx === 0}
+                                onClick={() => moveFallback(idx, -1)}
+                                className="p-0.5 text-slate-400 hover:text-slate-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
+                                title="Move up in priority"
+                                aria-label="Move fallback up"
+                              >
+                                <ArrowUp className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={idx === fallbackList.length - 1}
+                                onClick={() => moveFallback(idx, 1)}
+                                className="p-0.5 text-slate-400 hover:text-slate-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
+                                title="Move down in priority"
+                                aria-label="Move fallback down"
+                              >
+                                <ArrowDown className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => removeFallback(idx)}
+                                className="p-0.5 text-red-400 hover:text-red-300 cursor-pointer"
+                                title="Remove fallback model"
+                                aria-label="Remove fallback"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
+
+                  {/* Add Fallback Model Selector */}
+                  <div className="pt-1">
+                    {!showCustomFallbackInput ? (
+                      <div className="flex items-center gap-2 w-full">
+                        <select
+                          value={selectedFallbackToAdd}
+                          onChange={(e) => {
+                            if (e.target.value === '__custom_fallback__') {
+                              setShowCustomFallbackInput(true);
+                              setSelectedFallbackToAdd('');
+                            } else {
+                              setSelectedFallbackToAdd(e.target.value);
+                            }
+                          }}
+                          className="flex-1 min-w-0 bg-dark-950 border border-dark-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono truncate"
+                        >
+                          <option value="">-- Add Fallback Model --</option>
+                          {availableModels
+                            .filter((m) => m.id !== model && !fallbackList.includes(m.id))
+                            .map((m) => (
+                              <option key={m.id} value={m.id}>
+                                {m.id} {m.supports_thinking ? ' [Reasoning]' : ''}
+                              </option>
+                            ))}
+                          <option value="__custom_fallback__">Custom fallback model...</option>
+                        </select>
+                        <button
+                          type="button"
+                          disabled={!selectedFallbackToAdd}
+                          onClick={() => {
+                            addFallback(selectedFallbackToAdd);
+                            setSelectedFallbackToAdd('');
+                          }}
+                          className="shrink-0 px-2.5 py-1 bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded text-xs text-slate-200 font-mono flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Add</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 w-full">
+                        <input
+                          type="text"
+                          value={customFallbackInput}
+                          onChange={(e) => setCustomFallbackInput(e.target.value)}
+                          placeholder="Enter custom model ID"
+                          className="flex-1 min-w-0 bg-dark-950 border border-dark-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+                        />
+                        <button
+                          type="button"
+                          disabled={!customFallbackInput.trim()}
+                          onClick={() => {
+                            addFallback(customFallbackInput);
+                            setCustomFallbackInput('');
+                            setShowCustomFallbackInput(false);
+                          }}
+                          className="shrink-0 px-2.5 py-1 bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded text-xs text-slate-200 font-mono flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Add</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowCustomFallbackInput(false);
+                            setCustomFallbackInput('');
+                          }}
+                          className="shrink-0 p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
+                          title="Cancel custom fallback"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

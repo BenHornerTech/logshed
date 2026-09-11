@@ -675,6 +675,39 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       expect(screen.getByText(/No fallback models configured for this analysis/i)).toBeInTheDocument();
     });
   });
+
+  it('toggles AI provider and model configuration panel when toggle header is clicked', async () => {
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Model & Provider Settings')).toBeInTheDocument();
+    });
+
+    const toggleBtn = screen.getByRole('button', { name: /Model & Provider Settings/i });
+    expect(toggleBtn).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('Configure')).toBeInTheDocument();
+
+    const settingsContainer = document.getElementById('ai-model-settings-content');
+    expect(settingsContainer).toHaveClass('hidden');
+
+    // Click toggle button to expand settings
+    fireEvent.click(toggleBtn);
+    expect(toggleBtn).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Hide')).toBeInTheDocument();
+    expect(settingsContainer).not.toHaveClass('hidden');
+
+    // Click again to collapse settings
+    fireEvent.click(toggleBtn);
+    expect(toggleBtn).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('Configure')).toBeInTheDocument();
+    expect(settingsContainer).toHaveClass('hidden');
+  });
 });
 
 
