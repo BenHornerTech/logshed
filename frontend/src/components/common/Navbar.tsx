@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Server, Settings, LogOut, Radio, RefreshCw } from 'lucide-react';
+import { Server, Settings, LogOut, Radio } from 'lucide-react';
 import { LogShedLogo } from './LogShedLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { fetchHealth } from '../../api/system.ts';
@@ -128,13 +128,6 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Right Controls */}
       <div className="flex items-center space-x-2">
-        <button
-          onClick={loadHealth}
-          title="Refresh Health"
-          className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded border border-transparent hover:border-dark-700 transition"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-        </button>
         <button
           onClick={logout}
           title="Sign Out"

@@ -26,8 +26,8 @@
   <Config Name="Syslog Ingestion (TCP)" Target="1514" Default="1514" Mode="tcp" Description="Syslog TCP ingestion port." Type="Port" Display="always" Required="true" Mask="false">1514</Config>
   <Config Name="Application Data" Target="/data" Default="/mnt/cache/appdata/logshed" Mode="rw" Description="Location for SQLite database (logs.db, WAL, SHM) and encryption master key. Direct cache pool path (/mnt/cache/appdata/logshed or /mnt/pool_name/appdata/logshed) MUST be used instead of /mnt/user/ to ensure POSIX locking and mmap support for SQLite WAL mode." Type="Path" Display="always" Required="true" Mask="false">/mnt/cache/appdata/logshed</Config>
   <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="ro" Description="Host Docker socket for automated container discovery and log streaming (read-only)." Type="Path" Display="always" Required="false" Mask="false">/var/run/docker.sock</Config>
-  <Config Name="PUID" Target="PUID" Default="1000" Description="User ID for non-root execution." Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
-  <Config Name="PGID" Target="PGID" Default="1000" Description="Group ID for non-root execution." Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
-  <Config Name="Timezone" Target="TZ" Default="America/New_York" Description="Container timezone." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Description="User ID for non-root execution." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Description="Group ID for non-root execution." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Timezone" Target="TZ" Default="UTC" Description="Container timezone." Type="Variable" Display="advanced" Required="false" Mask="false">UTC</Config>
   <Config Name="Internal Log Level" Target="LOGSHED_INTERNAL_LOG_LEVEL" Default="WARNING" Description="Minimum severity level for LogShed internal application logs captured into LogShed (DEBUG, INFO, WARNING, ERROR, CRITICAL, or DISABLED)." Type="Variable" Display="advanced" Required="false" Mask="false">WARNING</Config>
 </Container>

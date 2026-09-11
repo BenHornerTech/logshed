@@ -183,9 +183,9 @@ class TestUnraidTemplate:
         variables = [c for c in configs if c.attrib.get("Type") == "Variable"]
         var_targets = {v.attrib.get("Target"): v.attrib.get("Default") for v in variables}
 
-        assert "PUID" in var_targets and var_targets["PUID"] == "1000"
-        assert "PGID" in var_targets and var_targets["PGID"] == "1000"
-        assert "TZ" in var_targets
+        assert "PUID" in var_targets and var_targets["PUID"] == "99"
+        assert "PGID" in var_targets and var_targets["PGID"] == "100"
+        assert "TZ" in var_targets and var_targets["TZ"] == "UTC"
         assert "DOCKER_HOST" not in var_targets
 
 
