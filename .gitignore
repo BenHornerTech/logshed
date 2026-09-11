@@ -107,3 +107,11 @@ Thumbs.db
 /logs/
 tmp/
 temp/
+
+# ==============================================================================
+# Internal Development & Private Planning (Uncommitted)
+# ==============================================================================
+.scripts/
+docs/internal/
+.plans/
+
