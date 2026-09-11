@@ -10,19 +10,19 @@ Single Docker container running Python 3.12 (`asyncio`) + FastAPI backend servin
 
 ### 1.1 Environment Variables vs. Runtime Settings
 Only the following are true environment variables, supplied at container start and never stored in the database:
-- `DOCKER_HOST` — Docker endpoint (socket path or `tcp://` proxy address, e.g. `unix:///var/run/docker.sock` or `tcp://192.168.1.50:2375`). Defaults to `unix:///var/run/docker.sock` if unset. Not exposed as an Unraid template `Config` entry (see §8.2) — the socket path is fixed by the `/var/run/docker.sock` volume mount; only set `DOCKER_HOST` explicitly when using a `tcp://` socket-proxy instead of a direct mount.
-- `DOCKER_SOURCE_ALIAS` — Source attribution alias for Docker logs ingested via `DOCKER_HOST` (defaults to `docker` if unset).
-- `DOCKER_EXCLUDE_CONTAINERS` — Optional comma-separated list of container names or IDs to exclude from log tailing (e.g. `logshed,custom_redis`).
-- `TZ` — container timezone.
-- `PORT` — web/API port (defaults to `8080` if unset).
-- `SYSLOG_PORT` — Syslog listening port for UDP and TCP (defaults to `1514` if unset).
-- `PUID` and `PGID` — user and group IDs for the application to run as (defaults to `1000` if unset).
-- `LOGSHED_SECRET_KEY` — optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
-- `COOKIE_SECURE` — optional boolean (`true`/`false`, defaults to `false`). When `false` (the default), session cookies are issued without the `Secure` flag to allow direct HTTP access over local IP addresses in homelabs, or automatically detects HTTPS via `X-Forwarded-Proto` header or request scheme. Set to `true` when running behind an SSL-terminating reverse proxy that does not send `X-Forwarded-Proto`.
-- `MAX_RETENTION_DAYS` — Optional maximum log retention period in days (defaults to `30`, minimum `1`). Caps the retention period selectable in the UI. Advanced users can override this to retain logs for longer periods.
+- `DOCKER_HOST` - Docker endpoint (socket path or `tcp://` proxy address, e.g. `unix:///var/run/docker.sock` or `tcp://192.168.1.50:2375`). Defaults to `unix:///var/run/docker.sock` if unset. Not exposed as an Unraid template `Config` entry (see §8.2) - the socket path is fixed by the `/var/run/docker.sock` volume mount; only set `DOCKER_HOST` explicitly when using a `tcp://` socket-proxy instead of a direct mount.
+- `DOCKER_SOURCE_ALIAS` - Source attribution alias for Docker logs ingested via `DOCKER_HOST` (defaults to `docker` if unset).
+- `DOCKER_EXCLUDE_CONTAINERS` - Optional comma-separated list of container names or IDs to exclude from log tailing (e.g. `logshed,custom_redis`).
+- `TZ` - container timezone.
+- `PORT` - web/API port (defaults to `8080` if unset).
+- `SYSLOG_PORT` - Syslog listening port for UDP and TCP (defaults to `1514` if unset).
+- `PUID` and `PGID` - user and group IDs for the application to run as (defaults to `1000` if unset).
+- `LOGSHED_SECRET_KEY` - optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
+- `COOKIE_SECURE` - optional boolean (`true`/`false`, defaults to `false`). When `false` (the default), session cookies are issued without the `Secure` flag to allow direct HTTP access over local IP addresses in homelabs, or automatically detects HTTPS via `X-Forwarded-Proto` header or request scheme. Set to `true` when running behind an SSL-terminating reverse proxy that does not send `X-Forwarded-Proto`.
+- `MAX_RETENTION_DAYS` - Optional maximum log retention period in days (defaults to `30`, minimum `1`). Caps the retention period selectable in the UI. Advanced users can override this to retain logs for longer periods.
 
 
-All other configuration — AI provider, AI API key, AI base URL, AI model, and `retention_days` (default 14 days, up to `MAX_RETENTION_DAYS`) — is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
+All other configuration - AI provider, AI API key, AI base URL, AI model, and `retention_days` (default 14 days, up to `MAX_RETENTION_DAYS`) - is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
 
 
 ---
@@ -142,9 +142,9 @@ Daily task runs iterative batch pruning to prevent WAL expansion and lock conten
 
 ### 2.3 Storage Metrics & Disk Monitoring
 - **Sampling Strategy:** Background worker samples metrics hourly and immediately following any manual/automated prune event.
-  - Compute total database disk footprint via `os.path.getsize()` across `/data/logs.db`, `/data/logs.db-wal`, and `/data/logs.db-shm`.
-  - Read host mount capacity and free space using `shutil.disk_usage("/data")`.
-  - Record snapshot into `storage_metrics` table.
+ - Compute total database disk footprint via `os.path.getsize()` across `/data/logs.db`, `/data/logs.db-wal`, and `/data/logs.db-shm`.
+ - Read host mount capacity and free space using `shutil.disk_usage("/data")`.
+ - Record snapshot into `storage_metrics` table.
 - **Metrics Retention:** Prune records from `storage_metrics` older than 30 days during the daily retention cleanup cycle.
 
 ---
@@ -177,7 +177,7 @@ AI interactions are strictly user-initiated. No background workers or automated 
 1. **Selection:** User selects one or multiple log entries in the UI across single or multiple hosts. Cross-host log selection is supported. The prompt builder annotates each dispatched log line with its originating host/source alias (`[{timestamp}] [{source_alias}] [{app_name}] {message}`) and aggregates notes for all unique hosts present in the batch.
 2. **On-Demand Redaction Pass:** The backend filters selected logs through `redactor.py` (scrubbing tokens, passwords, JWTs, AWS keys) before returning the preview payload to the UI.
 3. **Payload Inspection & User Enrichment:**
-   - UI opens an analysis modal displaying:
+  - UI opens an analysis modal displaying:
      * The scrubbed, redacted text preview exactly as it will be dispatched to the LLM.
      * Active provider and model name.
      * Estimated token count.
@@ -189,16 +189,16 @@ Unified client supporting Google Gemini (`google-genai` SDK) and OpenAI-compatib
 - **Model Configuration:** Configurable default model per provider (e.g., `gemini-3.7-flash`, `gpt-4o`, `llama3.2`), with an optional per-request override in the UI modal.
 
 - **Prompt Construction:**
-  - System prompt establishes role as an expert systems engineer and Linux/Docker administrator.
-  - Context includes:
+ - System prompt establishes role as an expert systems engineer and Linux/Docker administrator.
+ - Context includes:
     * System metadata (Host alias, container/app name).
     * Sequenced log block in chronological order.
     * User-provided notes/context (if present).
-  - Model generates a structured Markdown response containing:
+ - Model generates a structured Markdown response containing:
     1. **Summary:** 1–2 sentence overview of the issue.
     2. **Root Cause Analysis:** Explanation of why the event occurred.
     3. **Actionable Remediation:** Step-by-step commands, configuration fixes, or debugging steps.
-  - **Audit Logging:** Every manual request is recorded in `ai_audit_log` (prompt, user context, response and tokens used).
+ - **Audit Logging:** Every manual request is recorded in `ai_audit_log` (prompt, user context, response and tokens used).
 
 
 ---

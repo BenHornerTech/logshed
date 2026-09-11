@@ -29,16 +29,16 @@
 - [Built With](#built-with)
 - [Prerequisites & System Requirements](#prerequisites--system-requirements)
 - [Installation & Deployment](#installation--deployment)
-  - [Docker Compose](#docker-compose-recommended)
-  - [Unraid Setup](#unraid-installation)
-  - [Docker Run](#generic-docker-run)
-  - [Initial Setup](#initial-setup--authentication)
+ - [Docker Compose](#docker-compose-recommended)
+ - [Unraid Setup](#unraid-installation)
+ - [Docker Run](#generic-docker-run)
+ - [Initial Setup](#initial-setup--authentication)
 - [Configuration Reference](#configuration-reference)
-  - [Environment Variables](#environment-variables)
-  - [Runtime Settings (Web UI)](#runtime-settings-web-ui)
-  - [Data Persistence & Storage Paths](#data-persistence--storage-paths)
-  - [Internal Diagnostic Logging](#internal-diagnostic-logging)
-  - [Secret Redaction & Raw Log Fidelity](#secret-redaction--raw-log-fidelity)
+ - [Environment Variables](#environment-variables)
+ - [Runtime Settings (Web UI)](#runtime-settings-web-ui)
+ - [Data Persistence & Storage Paths](#data-persistence--storage-paths)
+ - [Internal Diagnostic Logging](#internal-diagnostic-logging)
+ - [Secret Redaction & Raw Log Fidelity](#secret-redaction--raw-log-fidelity)
 - [AI Incident Diagnosis](#ai-incident-diagnosis)
 - [Local Development](#local-development)
 - [Licensing](#licensing)
@@ -61,8 +61,8 @@ LogShed is a compact, self-hosted log hub designed for home labs and personal se
 - **Single container, single process**: The main thread runs FastAPI and monitored async workers. There is no separate database process, Redis instance, or message broker to run or maintain.
 - **Low memory usage**: Idles at roughly 150 MB to 250 MB of RAM under normal home lab traffic.
 - **Dual ingestion**:
-  - **Syslog**: Listens on port 1514 (UDP and TCP) for RFC 3164 and RFC 5424 formats, supporting both octet-counted and newline-delimited TCP framing.
-  - **Docker Engine API**: Tails local containers via `/var/run/docker.sock` or remote hosts via TCP proxy without extra dependencies.
+ - **Syslog**: Listens on port 1514 (UDP and TCP) for RFC 3164 and RFC 5424 formats, supporting both octet-counted and newline-delimited TCP framing.
+ - **Docker Engine API**: Tails local containers via `/var/run/docker.sock` or remote hosts via TCP proxy without extra dependencies.
 - **Multiline stream assembly**: Groups multi-line exceptions (such as Python tracebacks or Java stack traces) by source stream within a short buffer window so related lines stay together.
 - **Full-text search (SQLite FTS5)**: Fast prefix search across hosts, container names, log content, and severity tags.
 - **Optional AI diagnosis**: Select log rows in the web UI to request an explanation and suggested fixes from Google Gemini, OpenAI, or a local model (Ollama / vLLM). API requests are strictly manual, and sensitive values (passwords, tokens, keys) are stripped before dispatch.
@@ -130,8 +130,8 @@ For complete technical schemas, database structures, FTS5 triggers, and REST/SSE
 - **Docker Engine**: 20.10+
 - **Docker Compose**: v2.0+ (or Unraid OS 6.9+)
 - **Supported Architectures**:
-  - `linux/amd64` (Standard x86_64 servers and PCs)
-  - `linux/arm64` (Raspberry Pi 4/5, Apple Silicon VMs, ARM64 homelab boards)
+ - `linux/amd64` (Standard x86_64 servers and PCs)
+ - `linux/arm64` (Raspberry Pi 4/5, Apple Silicon VMs, ARM64 homelab boards)
 
 ---
 
@@ -148,22 +148,22 @@ services:
     container_name: logshed
     restart: unless-stopped
     ports:
-      - "8080:8080"        # Web Dashboard and REST API
-      - "1514:1514/udp"    # Syslog UDP Ingestion
-      - "1514:1514/tcp"    # Syslog TCP Ingestion
+     - "8080:8080"        # Web Dashboard and REST API
+     - "1514:1514/udp"    # Syslog UDP Ingestion
+     - "1514:1514/tcp"    # Syslog TCP Ingestion
     environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=UTC
-      - PORT=8080
-      - SYSLOG_PORT=1514
-      - DOCKER_HOST=unix:///var/run/docker.sock
-      - DOCKER_SOURCE_ALIAS=docker
+     - PUID=1000
+     - PGID=1000
+     - TZ=UTC
+     - PORT=8080
+     - SYSLOG_PORT=1514
+     - DOCKER_HOST=unix:///var/run/docker.sock
+     - DOCKER_SOURCE_ALIAS=docker
       # - DOCKER_EXCLUDE_CONTAINERS=logshed,noisy_container
       # - LOGSHED_INTERNAL_LOG_LEVEL=WARNING
     volumes:
-      - ./data:/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+     - ./data:/data
+     - /var/run/docker.sock:/var/run/docker.sock:ro
 ```
 
 Deploy and start the service:
@@ -181,9 +181,9 @@ LogShed provides an official Unraid Community Applications template in [`unraid-
 #### Setup Steps on Unraid:
 
 1. **Add Template**:
-   - Copy `unraid-template.xml` to `/boot/config/plugins/dockerMan/templates-user/my-LogShed.xml` on your Unraid flash drive, or add it via Community Applications when published.
+  - Copy `unraid-template.xml` to `/boot/config/plugins/dockerMan/templates-user/my-LogShed.xml` on your Unraid flash drive, or add it via Community Applications when published.
 2. **Configure Storage Path (`/data`)**:
-   - Set container path `/data` to your SSD cache pool:
+  - Set container path `/data` to your SSD cache pool:
      ```text
      /mnt/cache/appdata/logshed
      ```
@@ -194,11 +194,11 @@ LogShed provides an official Unraid Community Applications template in [`unraid-
    > Unraid `/mnt/user/` paths route through the `shfs` FUSE layer. FUSE does not reliably support POSIX shared memory (`mmap`) or SQLite advisory locking during WAL checkpoints. Pointing directly to your cache pool (`/mnt/cache/...`) guarantees native POSIX locking, protects your database from corruption, and prevents spinning up parity array disks.
 
 3. **Configure Docker Socket**:
-   - Map `/var/run/docker.sock` to `/var/run/docker.sock` with **Read-Only (`:ro`)** access to automatically discover and tail containers running on your Unraid server.
+  - Map `/var/run/docker.sock` to `/var/run/docker.sock` with **Read-Only (`:ro`)** access to automatically discover and tail containers running on your Unraid server.
 4. **Ports**:
-   - Ensure `8080` (Web UI), `1514/udp` (Syslog UDP), and `1514/tcp` (Syslog TCP) are mapped to available host ports.
+  - Ensure `8080` (Web UI), `1514/udp` (Syslog UDP), and `1514/tcp` (Syslog TCP) are mapped to available host ports.
 5. **Permissions**:
-   - Unraid default user permissions are typically `PUID=99` and `PGID=100` (`nobody:users`). LogShed entrypoint will automatically adjust file ownership on `/data`.
+  - Unraid default user permissions are typically `PUID=99` and `PGID=100` (`nobody:users`). LogShed entrypoint will automatically adjust file ownership on `/data`.
 
 ---
 
@@ -316,12 +316,12 @@ LogShed monitors its own health by recording internal warnings and errors into i
 When an error or panic occurs, you can send selected log lines to an LLM directly from the web interface:
 
 1. **Select Logs**: Click individual log rows or check multiple logs across one or multiple hosts in the live viewer.
-2. **Review & Redact**: Click **Inspect Selected Logs with AI**. The modal opens showing the exact, redacted prompt—all API keys, bearer tokens, passwords, and private certificates are scrubbed server-side.
+2. **Review & Redact**: Click **Inspect Selected Logs with AI**. The modal opens showing the exact, redacted prompt - all API keys, bearer tokens, passwords, and private certificates are scrubbed server-side.
 3. **Add Situational Context**: Enter notes (e.g., *"Just updated Proxmox kernel from 6.8 to 6.11 before this panic"*).
 4. **Execute**: Choose your preferred model and click **Run Analysis**. LogShed contacts your configured provider and streams back:
-   - **Summary**: Concise description of the issue.
-   - **Root Cause**: Explanation of why the event occurred based on the log sequence.
-   - **Remediation**: Suggested shell commands and configuration file adjustments to fix it.
+  - **Summary**: Concise description of the issue.
+  - **Root Cause**: Explanation of why the event occurred based on the log sequence.
+  - **Remediation**: Suggested shell commands and configuration file adjustments to fix it.
 5. **Audit History**: All AI analyses are stored locally in the **AI Audit Log** so you can review previous diagnoses and token usage at any time.
 
 ---

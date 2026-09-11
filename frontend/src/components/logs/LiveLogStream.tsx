@@ -1128,7 +1128,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
           {logs.length > 0 && !hasMoreLogs && !isLoadingHistory && (
             <div className="py-2.5 flex items-center justify-center text-slate-500 font-mono text-[11px] bg-dark-950 border-t border-dark-900 select-none">
-              — Reached beginning of log history ({logs.length.toLocaleString()} log{logs.length === 1 ? '' : 's'} loaded) —
+             - Reached beginning of log history ({logs.length.toLocaleString()} log{logs.length === 1 ? '' : 's'} loaded) -
             </div>
           )}
         </div>
@@ -1142,7 +1142,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
             >
               <ArrowUp className="w-3.5 h-3.5 animate-bounce" />
               <span>
-                Auto-scroll paused ({missedLogsCount} new log{missedLogsCount === 1 ? '' : 's'} at top) — Click to jump to top
+                Auto-scroll paused ({missedLogsCount} new log{missedLogsCount === 1 ? '' : 's'} at top) - Click to jump to top
               </span>
             </button>
           </div>

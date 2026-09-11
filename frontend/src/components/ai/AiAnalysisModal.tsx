@@ -333,7 +333,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               <div className="mt-2 p-2.5 bg-amber-950/30 border border-amber-800/40 rounded-lg flex items-start gap-2 text-amber-200/90 text-[11px] leading-relaxed">
                 <Shield className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                 <span>
-                  <strong className="font-semibold text-amber-300">Redaction Notice:</strong> Automated credential scrubbing operates on a best-effort basis and may not catch every sensitive token or secret. Please review the prompt above before sending—you are responsible for the contents and sensitive data you transmit to external AI providers.
+                  <strong className="font-semibold text-amber-300">Redaction Notice:</strong> Automated credential scrubbing operates on a best-effort basis and may not catch every sensitive token or secret. Please review the prompt above before sending - you are responsible for the contents and sensitive data you transmit to external AI providers.
                 </span>
               </div>
             </div>

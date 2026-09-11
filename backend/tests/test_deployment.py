@@ -4,6 +4,7 @@ Tests for packaging, deployment, container privilege dropping, Unraid template, 
 
 import os
 import pathlib
+from pathlib import Path
 import subprocess
 import sys
 import time

@@ -99,7 +99,7 @@ def parse_syslog_message(
                 sd = remainder[:sd_end]
                 msg = remainder[sd_end:].lstrip(" ")
             else:
-                # Malformed SD — treat entire remainder as message
+                # Malformed SD - treat entire remainder as message
                 sd = ""
                 msg = remainder
 
@@ -132,7 +132,7 @@ def parse_syslog_message(
                 result["app_name"] = app_name
             result["message"] = msg
         else:
-            # Not enough fields for valid 5424 — treat as unparsed
+            # Not enough fields for valid 5424 - treat as unparsed
             pass
     else:
         # RFC 3164
@@ -262,7 +262,7 @@ class AliasCache:
     """
     Preloaded in-memory alias cache. Bulk-loads all host_aliases from the database
     on startup, then refreshes every refresh_interval seconds via a background task.
-    Lookups are zero-cost dict reads — no DB I/O per message.
+    Lookups are zero-cost dict reads - no DB I/O per message.
     """
 
     def __init__(self, db_path: str | Path, refresh_interval: float = 60.0, preload: bool = True):
@@ -420,7 +420,7 @@ class SyslogUDPProtocol(asyncio.DatagramProtocol):
     async def process_message(self, data: bytes, source_ip: str):
         try:
             parsed = parse_syslog_message(data, source_ip)
-            # Zero-cost in-memory lookup — no DB I/O
+            # Zero-cost in-memory lookup - no DB I/O
             source_alias = self.alias_cache.resolve(source_ip)
             if source_alias == source_ip:
                 hostname = parsed.get("hostname")
@@ -565,7 +565,7 @@ class SyslogTCPProtocol(asyncio.Protocol):
     async def process_message(self, data: bytes, source_ip: str):
         try:
             parsed = parse_syslog_message(data, source_ip)
-            # Zero-cost in-memory lookup — no DB I/O
+            # Zero-cost in-memory lookup - no DB I/O
             source_alias = self.alias_cache.resolve(source_ip)
             if source_alias == source_ip:
                 hostname = parsed.get("hostname")

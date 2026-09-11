@@ -448,9 +448,9 @@ describe('LiveLogStream Component', () => {
       es.emit('log', newEntry);
     });
 
-    // Floating banner should appear with "Auto-scroll paused (1 new log at top) — Click to jump to top"
+    // Floating banner should appear with "Auto-scroll paused (1 new log at top) - Click to jump to top"
     await waitFor(() => {
-      expect(screen.getByText(/Auto-scroll paused \(1 new log at top\) — Click to jump to top/i)).toBeInTheDocument();
+      expect(screen.getByText(/Auto-scroll paused \(1 new log at top\) - Click to jump to top/i)).toBeInTheDocument();
     });
 
     // Click floating banner to jump to top and resume

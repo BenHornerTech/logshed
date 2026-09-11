@@ -230,7 +230,7 @@ export const HostAliasManager: React.FC<HostAliasManagerProps> = ({
                 <div className="text-accent-400 font-semibold">{item.ip}</div>
                 <div className="text-slate-200">{item.alias}</div>
                 <div className="text-slate-400 font-sans text-xs truncate pr-2">
-                  {item.notes || '—'}
+                  {item.notes || '-'}
                 </div>
                 <div className="flex items-center justify-end gap-1 font-sans">
                   <button

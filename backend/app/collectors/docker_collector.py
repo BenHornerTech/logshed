@@ -5,7 +5,7 @@ Connects via DOCKER_HOST (unix:///var/run/docker.sock or tcp://proxy:2375)
 using httpx (with HTTPTransport(uds=...) for Unix sockets).
 Monitors Docker lifecycle events (start/die) and streams container stdout/stderr.
 Routes parsed logs through the shared KeyedMultilineAssembler into the shared
-asyncio.Queue — no separate queue or assembler.
+asyncio.Queue - no separate queue or assembler.
 """
 
 import asyncio
@@ -47,8 +47,8 @@ def _parse_docker_host() -> tuple[str, Optional[str]]:
 
     Returns:
         (base_url, uds_path):
-            - For unix sockets: ("http://localhost/v1.43", "/var/run/docker.sock")
-            - For tcp: ("http://proxy:2375/v1.43", None)
+           - For unix sockets: ("http://localhost/v1.43", "/var/run/docker.sock")
+           - For tcp: ("http://proxy:2375/v1.43", None)
     """
     docker_host = os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock").strip()
 
@@ -629,10 +629,10 @@ class DockerTailer:
     Supervisor that monitors Docker events and tails container logs.
 
     Manages lifecycle:
-    - On start: enumerate running containers and begin tailing each one.
-    - On 'start' event: begin tailing the newly started container.
-    - On 'die' event: cancel the tailer task for that container.
-    - On disconnect: exponential backoff reconnect.
+   - On start: enumerate running containers and begin tailing each one.
+   - On 'start' event: begin tailing the newly started container.
+   - On 'die' event: cancel the tailer task for that container.
+   - On disconnect: exponential backoff reconnect.
     """
 
     def __init__(
