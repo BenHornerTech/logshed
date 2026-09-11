@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Server, Settings, LogOut, Radio } from 'lucide-react';
+import { Server, Settings, LogOut, Radio, Database } from 'lucide-react';
 import { LogShedLogo } from './LogShedLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { fetchHealth } from '../../api/system.ts';
-import { HealthResponse } from '../../types.ts';
+import { HealthResponse, AppTab } from '../../types.ts';
 
 interface NavbarProps {
-  activeTab: 'stream' | 'aliases' | 'settings';
-  onTabChange: (tab: 'stream' | 'aliases' | 'settings') => void;
+  activeTab: AppTab;
+  onTabChange: (tab: AppTab) => void;
   onSelectTab?: (tab: string) => void;
   isStreaming?: boolean;
 }
@@ -114,6 +114,18 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         <button
+          onClick={() => onTabChange('storage')}
+          className={`flex items-center space-x-1.5 px-3 py-1 text-xs font-medium rounded-md transition-all ${
+            activeTab === 'storage'
+              ? 'bg-dark-700 text-slate-100 shadow-sm'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-dark-800'
+          }`}
+        >
+          <Database className="w-3.5 h-3.5" />
+          <span>Storage</span>
+        </button>
+
+        <button
           onClick={() => onTabChange('settings')}
           className={`flex items-center space-x-1.5 px-3 py-1 text-xs font-medium rounded-md transition-all ${
             activeTab === 'settings'
@@ -122,7 +134,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           }`}
         >
           <Settings className="w-3.5 h-3.5" />
-          <span>Settings & Storage</span>
+          <span>Settings</span>
         </button>
       </nav>
 

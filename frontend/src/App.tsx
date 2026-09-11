@@ -5,14 +5,15 @@ import { LoginForm } from './components/auth/LoginForm.tsx';
 import { SetupModal } from './components/auth/SetupModal.tsx';
 import { LiveLogStream } from './components/logs/LiveLogStream.tsx';
 import { HostAliasManager } from './components/aliases/HostAliasManager.tsx';
+import { StoragePanel } from './components/storage/StoragePanel.tsx';
 import { SettingsPanel } from './components/settings/SettingsPanel.tsx';
 import { AiAnalysisModal } from './components/ai/AiAnalysisModal.tsx';
-import { LogEntry } from './types.ts';
+import { LogEntry, AppTab } from './types.ts';
 import { LogShedLogo } from './components/common/LogShedLogo.tsx';
 
 export const App: React.FC = () => {
   const { isAuthenticated, setupRequired, isLoading } = useAuth();
-  const [activeTab, setActiveTab] = useState<'stream' | 'aliases' | 'settings'>('stream');
+  const [activeTab, setActiveTab] = useState<AppTab>('stream');
   const [aiSelectedLogs, setAiSelectedLogs] = useState<LogEntry[]>([]);
   const [addAliasIp, setAddAliasIp] = useState<string | null>(null);
 
@@ -66,6 +67,8 @@ export const App: React.FC = () => {
             onAliasSaved={() => setAddAliasIp(null)}
           />
         )}
+
+        {activeTab === 'storage' && <StoragePanel />}
 
         {activeTab === 'settings' && <SettingsPanel />}
       </main>

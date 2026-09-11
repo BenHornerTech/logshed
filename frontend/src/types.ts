@@ -35,7 +35,7 @@ export interface SystemSettings {
   internal_log_level?: string;
 }
 
-
+export type AppTab = 'stream' | 'aliases' | 'storage' | 'settings';
 export interface StorageMetricsSnapshot {
   recorded_at: string;
   db_size_bytes: number;
