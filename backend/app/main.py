@@ -111,6 +111,82 @@ async def _supervise_worker(coro_fn, name: str, *args, **kwargs) -> None:
             backoff = min(backoff * 2.0, 60.0)
 
 
+async def _model_refresh_worker(db_path) -> None:
+    """
+    Background worker that periodically refreshes available AI models
+    every 12 hours if an API key is configured.
+    """
+    from app.services.ai_engine import fetch_available_models
+    from app.core.security import decrypt_value
+    from app.core.migrations import get_connection
+
+    while True:
+        try:
+            # Wait 60 seconds after startup before initial discovery check
+            await asyncio.sleep(60)
+
+            def _check_and_refresh():
+                conn = get_connection(db_path)
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT key, value, is_encrypted FROM system_settings")
+                    rows = cursor.fetchall()
+                    settings = {}
+                    for r in rows:
+                        k, v, enc = r[0], r[1], bool(r[2])
+                        if enc and v:
+                            try:
+                                settings[k] = decrypt_value(v)
+                            except Exception:
+                                settings[k] = ""
+                        else:
+                            settings[k] = v or ""
+                    return settings
+                finally:
+                    conn.close()
+
+            settings = await asyncio.to_thread(_check_and_refresh)
+            provider = (settings.get("ai_provider") or "gemini").lower()
+            api_key = settings.get("ai_api_key", "").strip()
+            base_url = settings.get("ai_base_url")
+
+            if (provider == "openai_compatible") or api_key:
+                try:
+                    discovered = await fetch_available_models(provider, api_key=api_key or None, base_url=base_url)
+                    if discovered:
+                        def _save(conn):
+                            cursor = conn.cursor()
+                            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                            cursor.execute(
+                                """
+                                INSERT INTO system_settings (key, value, updated_at, is_encrypted)
+                                VALUES (?, ?, ?, 0)
+                                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                                """,
+                                (f"ai_models_cache_{provider}", json.dumps(discovered), now_iso),
+                            )
+                            conn.commit()
+
+                        def _run_save():
+                            conn = get_connection(db_path)
+                            try:
+                                _save(conn)
+                            finally:
+                                conn.close()
+
+                        await asyncio.to_thread(_run_save)
+                except Exception as e:
+                    logger.debug(f"Background model refresh for {provider} skipped or failed: {e}")
+
+            # Sleep 12 hours before next background refresh check
+            await asyncio.sleep(12 * 3600)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Error in model_refresh_worker: {e}")
+            await asyncio.sleep(3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -141,7 +217,10 @@ async def lifespan(app: FastAPI):
     _prune_worker = PruneWorker(db_path)
     _background_tasks.append(asyncio.create_task(_supervise_worker(_prune_worker.run, "PruneWorker")))
 
-    # 6. Start Syslog Server (optional / non-fatal in dev/test)
+    # 6. Start ModelRefreshWorker (periodically updates available AI models)
+    _background_tasks.append(asyncio.create_task(_supervise_worker(_model_refresh_worker, "ModelRefreshWorker", db_path)))
+
+    # 7. Start Syslog Server (optional / non-fatal in dev/test)
     try:
         syslog_port = get_syslog_port()
         _syslog_server = SyslogServer(assembler=_assembler, db_path=db_path, host="0.0.0.0", port=syslog_port)

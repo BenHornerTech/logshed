@@ -12,15 +12,19 @@ import {
   Trash2,
   RotateCcw,
   FileText,
+  ArrowUp,
+  ArrowDown,
+  Plus,
+  X,
 } from 'lucide-react';
-import { StorageMetricsResponse, AiAuditEntry } from '../../types.ts';
+import { StorageMetricsResponse, AiAuditEntry, AiModelInfo } from '../../types.ts';
 import { fetchSettings, updateSettings, SettingsResponseData } from '../../api/settings.ts';
 import { fetchStorageMetrics } from '../../api/system.ts';
-import { fetchAiAudit, deleteAiAuditItem, clearAiAuditLog } from '../../api/ai.ts';
+import { fetchAiAudit, deleteAiAuditItem, clearAiAuditLog, getAiModels } from '../../api/ai.ts';
 import { changePassword } from '../../api/auth.ts';
 import { useClipboard } from '../../utils/hooks.ts';
 import { extractCleanSummary } from '../../utils/summary.ts';
-import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
+import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, normalizePrompt, getOrdinalSuffix } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 import { StorageCard } from './StorageCard.tsx';
@@ -37,10 +41,22 @@ export const SettingsPanel: React.FC = () => {
   // Form states
   const [aiProvider, setAiProvider] = useState<'gemini' | 'openai' | 'openai_compatible'>('gemini');
   const [aiModel, setAiModel] = useState<string>(DEFAULT_AI_MODEL);
+  const [aiFallbackModels, setAiFallbackModels] = useState<string>('');
   const [aiApiKey, setAiApiKey] = useState<string>('');
   const [aiBaseUrl, setAiBaseUrl] = useState<string>('');
   const [aiSystemPrompt, setAiSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
   const [internalLogLevel, setInternalLogLevel] = useState<string>('WARNING');
+
+  // Model discovery states
+  const [availableModels, setAvailableModels] = useState<AiModelInfo[]>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState<boolean>(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [hasApiKeyForProvider, setHasApiKeyForProvider] = useState<boolean>(true);
+  const [modelsCachedAt, setModelsCachedAt] = useState<string | null>(null);
+  const [isCustomModel, setIsCustomModel] = useState<boolean>(false);
+  const [selectedFallbackToAdd, setSelectedFallbackToAdd] = useState<string>('');
+  const [customFallbackInput, setCustomFallbackInput] = useState<string>('');
+  const [showCustomFallbackInput, setShowCustomFallbackInput] = useState<boolean>(false);
 
   // Save feedback state
   const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
@@ -52,6 +68,7 @@ export const SettingsPanel: React.FC = () => {
     settings &&
       (aiProvider !== settings.ai_provider ||
         aiModel !== (settings.ai_model || DEFAULT_AI_MODEL) ||
+        aiFallbackModels !== (settings.ai_fallback_models || '') ||
         aiApiKey !== (settings.ai_api_key || '') ||
         aiBaseUrl !== (settings.ai_base_url || '') ||
         normalizePrompt(aiSystemPrompt) !== normalizePrompt(settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT) ||
@@ -77,6 +94,68 @@ export const SettingsPanel: React.FC = () => {
   const [isClearingAllAudit, setIsClearingAllAudit] = useState<boolean>(false);
   const [auditError, setAuditError] = useState<string | null>(null);
 
+  const loadModels = async (provider: string, forceRefresh: boolean = false) => {
+    try {
+      setIsLoadingModels(true);
+      setModelsError(null);
+      const res = await getAiModels(provider, forceRefresh);
+      setAvailableModels(res.models || []);
+      setHasApiKeyForProvider(res.has_api_key);
+      setModelsCachedAt(res.cached_at || null);
+      if (res.error) {
+        setModelsError(res.error);
+      }
+    } catch (err: any) {
+      setModelsError(err.message || 'Failed to fetch available models.');
+      setAvailableModels([]);
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
+
+  const handleProviderChange = (newProvider: 'gemini' | 'openai' | 'openai_compatible') => {
+    setAiProvider(newProvider);
+    setIsCustomModel(false);
+    setSelectedFallbackToAdd('');
+    setShowCustomFallbackInput(false);
+    loadModels(newProvider);
+  };
+
+  // Fallback ordering helpers
+  const fallbackList = aiFallbackModels
+    ? aiFallbackModels.split(',').map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  const moveFallback = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= fallbackList.length) return;
+    const copy = [...fallbackList];
+    const [removed] = copy.splice(index, 1);
+    copy.splice(target, 0, removed);
+    setAiFallbackModels(copy.join(', '));
+  };
+
+  const removeFallback = (index: number) => {
+    const copy = fallbackList.filter((_, i) => i !== index);
+    setAiFallbackModels(copy.join(', '));
+  };
+
+  const addFallback = (modelName: string) => {
+    const trimmed = modelName.trim();
+    if (!trimmed || fallbackList.includes(trimmed)) return;
+    setAiFallbackModels([...fallbackList, trimmed].join(', '));
+  };
+
+  const handlePrimaryModelChange = (newModel: string) => {
+    setAiModel(newModel);
+    if (fallbackList.includes(newModel)) {
+      const updated = fallbackList.filter((m) => m !== newModel);
+      setAiFallbackModels(updated.join(', '));
+    }
+  };
+
+
+
   const loadAllData = async () => {
     try {
       setIsLoading(true);
@@ -95,10 +174,14 @@ export const SettingsPanel: React.FC = () => {
       // Populate form
       setAiProvider(settRes.ai_provider);
       setAiModel(settRes.ai_model || DEFAULT_AI_MODEL);
+      setAiFallbackModels(settRes.ai_fallback_models || '');
       setAiApiKey(settRes.ai_api_key || '');
       setAiBaseUrl(settRes.ai_base_url || '');
       setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
       setInternalLogLevel(settRes.internal_log_level || 'WARNING');
+
+      // Load models for provider
+      loadModels(settRes.ai_provider);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to load system settings.');
     } finally {
@@ -123,6 +206,7 @@ export const SettingsPanel: React.FC = () => {
       await updateSettings({
         ai_provider: aiProvider,
         ai_model: aiModel,
+        ai_fallback_models: aiFallbackModels,
         ai_api_key: aiApiKey,
         ai_base_url: aiBaseUrl || null,
         ai_system_prompt: aiSystemPrompt,
@@ -134,10 +218,14 @@ export const SettingsPanel: React.FC = () => {
       setSettings(settRes);
       setAiProvider(settRes.ai_provider);
       setAiModel(settRes.ai_model || DEFAULT_AI_MODEL);
+      setAiFallbackModels(settRes.ai_fallback_models || '');
       setAiApiKey(settRes.ai_api_key || '');
       setAiBaseUrl(settRes.ai_base_url || '');
       setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
       setInternalLogLevel(settRes.internal_log_level || 'WARNING');
+
+      // Refresh model list with newly saved configuration
+      loadModels(settRes.ai_provider);
 
       setSaveInlineSuccess(true);
       setTimeout(() => setSaveInlineSuccess(false), 3000);
@@ -346,29 +434,13 @@ export const SettingsPanel: React.FC = () => {
               </label>
               <select
                 value={aiProvider}
-                onChange={(e) => setAiProvider(e.target.value as any)}
+                onChange={(e) => handleProviderChange(e.target.value as any)}
                 className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
               >
                 <option value="gemini">Google Gemini</option>
                 <option value="openai">OpenAI</option>
                 <option value="openai_compatible">OpenAI-Compatible (Ollama / vLLM / LocalAI)</option>
               </select>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                Default Model Name
-              </label>
-              <input
-                type="text"
-                value={aiModel}
-                onChange={(e) => setAiModel(e.target.value)}
-                placeholder={aiProvider === 'gemini' ? DEFAULT_AI_MODEL : aiProvider === 'openai' ? 'gpt-4o' : 'llama3.2'}
-                className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
-              />
-              <p className="text-[10px] text-slate-500 mt-1">
-                Default model for {aiProvider === 'gemini' ? 'Google Gemini' : aiProvider === 'openai' ? 'OpenAI' : 'local providers'} is <span className="font-mono text-slate-400">{aiProvider === 'gemini' ? DEFAULT_AI_MODEL : aiProvider === 'openai' ? 'gpt-4o' : 'llama3.2'}</span>.
-              </p>
             </div>
 
             <div>
@@ -384,17 +456,282 @@ export const SettingsPanel: React.FC = () => {
               />
             </div>
 
+            {aiProvider === 'openai_compatible' && (
+              <div className="sm:col-span-2">
+                <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
+                  Custom Base URL (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={aiBaseUrl}
+                  onChange={(e) => setAiBaseUrl(e.target.value)}
+                  placeholder="http://host.docker.internal:11434/v1"
+                  className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
+                />
+              </div>
+            )}
+
+            {/* API Key Missing Notice */}
+            {!hasApiKeyForProvider && aiProvider !== 'openai_compatible' && (
+              <div className="sm:col-span-2 p-3 bg-amber-950/40 border border-amber-800/60 rounded-lg flex items-start gap-2.5 text-amber-300 text-xs font-mono">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold text-amber-200">API Key Required to Discover Models:</span>
+                  <p className="text-[11px] text-amber-300/80 mt-0.5">
+                    Enter and save your API key above to query {aiProvider === 'gemini' ? 'Google Gemini' : 'OpenAI'} and populate available text models.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Models Error Banner */}
+            {modelsError && (
+              <div className="sm:col-span-2 p-2.5 bg-dark-950 border border-dark-700 rounded-lg flex items-center justify-between text-xs font-mono text-slate-400">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span className="text-[11px] text-amber-300/90">{modelsError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => loadModels(aiProvider, true)}
+                  className="text-[10px] text-accent-400 hover:text-accent-300 underline cursor-pointer"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {/* Model Discovery & Ordering Section Header */}
+            <div className="sm:col-span-2 pt-2 border-t border-dark-800 flex items-center justify-between">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
+                  Model Selection & Failover Ordering
+                </label>
+                <p className="text-[11px] text-slate-500">
+                  Select your default primary model and configure fallback models in priority order.{modelsCachedAt ? ` (Cache refreshed: ${new Date(modelsCachedAt).toLocaleTimeString()})` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => loadModels(aiProvider, true)}
+                disabled={isLoadingModels}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-dark-800 hover:bg-dark-750 border border-dark-700 text-xs text-slate-300 transition cursor-pointer disabled:opacity-50"
+                title="Query provider API for active models"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-accent-400 ${isLoadingModels ? 'animate-spin' : ''}`} />
+                <span>{isLoadingModels ? 'Fetching Models...' : 'Refresh Models'}</span>
+              </button>
+            </div>
+
+            {/* Default Primary Model */}
             <div>
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                Custom Base URL (Optional)
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-[11px] font-semibold text-slate-400 uppercase">
+                  Default Primary Model
+                </label>
+                {isCustomModel && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomModel(false);
+                      const validModels = availableModels.filter(
+                        (m) => !fallbackList.includes(m.id)
+                      );
+                      if (validModels.length > 0) {
+                        handlePrimaryModelChange(validModels[0].id);
+                      } else if (availableModels.length > 0) {
+                        handlePrimaryModelChange(availableModels[0].id);
+                      }
+                    }}
+                    className="text-[10px] text-accent-400 hover:text-accent-300 underline cursor-pointer"
+                  >
+                    Use dropdown instead
+                  </button>
+                )}
+              </div>
+
+              {availableModels.length > 0 && !isCustomModel ? (
+                <select
+                  value={availableModels.some((m) => m.id === aiModel) ? aiModel : '__custom__'}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') {
+                      setIsCustomModel(true);
+                    } else {
+                      handlePrimaryModelChange(e.target.value);
+                    }
+                  }}
+                  className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 focus:outline-hidden focus:border-accent-500 font-mono"
+                >
+                  {availableModels
+                    .filter((m) => m.id === aiModel || !fallbackList.includes(m.id))
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id} {m.supports_thinking ? ' [Reasoning]' : ''}
+                      </option>
+                    ))}
+                  {!availableModels.some((m) => m.id === aiModel) && aiModel && (
+                    <option value={aiModel}>{aiModel} (Current / Custom)</option>
+                  )}
+                  <option value="__custom__">Custom model name...</option>
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={aiModel}
+                  onChange={(e) => handlePrimaryModelChange(e.target.value)}
+                  placeholder={aiProvider === 'gemini' ? DEFAULT_AI_MODEL : aiProvider === 'openai' ? 'gpt-4o' : 'llama3.2'}
+                  className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
+                />
+              )}
+
+              <p className="text-[10px] text-slate-500 mt-1">
+                Queried first for all log analysis requests.
+              </p>
+            </div>
+
+            {/* Fallback Models Ordered List */}
+            <div className="space-y-2">
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase">
+                Fallback Models (Sequential Order)
               </label>
-              <input
-                type="text"
-                value={aiBaseUrl}
-                onChange={(e) => setAiBaseUrl(e.target.value)}
-                placeholder="http://host.docker.internal:11434/v1"
-                className="w-full bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-accent-500 font-mono"
-              />
+
+              {fallbackList.length === 0 ? (
+                <div className="p-3 bg-dark-950 border border-dark-800 rounded-lg text-[11px] text-slate-500 font-mono">
+                  No fallback models configured. Add a model below to enable automatic failover.
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {fallbackList.map((fb, idx) => {
+                    const modelInfo = availableModels.find((m) => m.id === fb);
+                    const isThinking = modelInfo?.supports_thinking;
+                    return (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between p-2 bg-dark-950 border border-dark-800 rounded text-xs font-mono"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-semibold shrink-0">
+                            {`${getOrdinalSuffix(idx + 1)} Fallback`}
+                          </span>
+                          <span className="text-slate-200 font-medium truncate">{fb}</span>
+                          {isThinking && (
+                            <span className="px-1 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[9px] shrink-0">
+                              Reasoning
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0 ml-2">
+                          <button
+                            type="button"
+                            disabled={idx === 0}
+                            onClick={() => moveFallback(idx, -1)}
+                            className="p-1 text-slate-400 hover:text-slate-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
+                            title="Move up in priority"
+                            aria-label="Move fallback up"
+                          >
+                            <ArrowUp className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={idx === fallbackList.length - 1}
+                            onClick={() => moveFallback(idx, 1)}
+                            className="p-1 text-slate-400 hover:text-slate-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
+                            title="Move down in priority"
+                            aria-label="Move fallback down"
+                          >
+                            <ArrowDown className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeFallback(idx)}
+                            className="p-1 text-red-400 hover:text-red-300 cursor-pointer"
+                            title="Remove fallback model"
+                            aria-label="Remove fallback"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Add Fallback Model Selector */}
+              <div className="space-y-1.5 pt-1">
+                {!showCustomFallbackInput ? (
+                  <div className="flex items-center gap-2 w-full">
+                    <select
+                      value={selectedFallbackToAdd}
+                      onChange={(e) => {
+                        if (e.target.value === '__custom_fallback__') {
+                          setShowCustomFallbackInput(true);
+                          setSelectedFallbackToAdd('');
+                        } else {
+                          setSelectedFallbackToAdd(e.target.value);
+                        }
+                      }}
+                      className="flex-1 min-w-0 bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono truncate"
+                    >
+                      <option value="">-- Add Fallback Model --</option>
+                      {availableModels
+                        .filter((m) => m.id !== aiModel && !fallbackList.includes(m.id))
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.id} {m.supports_thinking ? ' [Reasoning]' : ''}
+                          </option>
+                        ))}
+                      <option value="__custom_fallback__">Custom fallback model...</option>
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!selectedFallbackToAdd}
+                      onClick={() => {
+                        addFallback(selectedFallbackToAdd);
+                        setSelectedFallbackToAdd('');
+                      }}
+                      className="shrink-0 px-3 py-1.5 bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded text-xs text-slate-200 font-mono flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 w-full">
+                    <input
+                      type="text"
+                      value={customFallbackInput}
+                      onChange={(e) => setCustomFallbackInput(e.target.value)}
+                      placeholder="Enter custom model ID"
+                      className="flex-1 min-w-0 bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      disabled={!customFallbackInput.trim()}
+                      onClick={() => {
+                        addFallback(customFallbackInput);
+                        setCustomFallbackInput('');
+                        setShowCustomFallbackInput(false);
+                      }}
+                      className="shrink-0 px-3 py-1.5 bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded text-xs text-slate-200 font-mono flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCustomFallbackInput(false);
+                        setCustomFallbackInput('');
+                      }}
+                      className="shrink-0 p-1.5 text-slate-400 hover:text-slate-200 cursor-pointer"
+                      title="Cancel custom fallback"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* AI System Instructions Card */}

@@ -6,6 +6,8 @@ import {
   buildFullEnvelope,
   parseFullEnvelope,
   normalizePrompt,
+  getOrdinalSuffix,
+  isTextModel,
 } from '../utils/aiPrompt.ts';
 
 describe('aiPrompt utilities', () => {
@@ -59,4 +61,51 @@ describe('aiPrompt utilities', () => {
       normalizePrompt(DEFAULT_SYSTEM_PROMPT)
     );
   });
+
+  it('getOrdinalSuffix formats ordinal numbers correctly (1st, 2nd, 3rd, 4th, 11th, etc.)', () => {
+    expect(getOrdinalSuffix(1)).toBe('1st');
+    expect(getOrdinalSuffix(2)).toBe('2nd');
+    expect(getOrdinalSuffix(3)).toBe('3rd');
+    expect(getOrdinalSuffix(4)).toBe('4th');
+    expect(getOrdinalSuffix(10)).toBe('10th');
+    expect(getOrdinalSuffix(11)).toBe('11th');
+    expect(getOrdinalSuffix(12)).toBe('12th');
+    expect(getOrdinalSuffix(13)).toBe('13th');
+    expect(getOrdinalSuffix(21)).toBe('21st');
+    expect(getOrdinalSuffix(22)).toBe('22nd');
+    expect(getOrdinalSuffix(23)).toBe('23rd');
+    expect(getOrdinalSuffix(24)).toBe('24th');
+  });
+
+  it('isTextModel identifies text generation models and filters out non-text models', () => {
+    // Valid text models
+    expect(isTextModel('gemini-3.7-flash')).toBe(true);
+    expect(isTextModel('gemini-3.8-flash')).toBe(true);
+    expect(isTextModel('gpt-4o')).toBe(true);
+    expect(isTextModel('gpt-4o-mini')).toBe(true);
+    expect(isTextModel('llama3.2:3b')).toBe(true);
+    expect(isTextModel('mistral-large')).toBe(true);
+
+    // Audio / Speech / Transcribe models
+    expect(isTextModel('transcribe')).toBe(false);
+    expect(isTextModel('whisper-1')).toBe(false);
+    expect(isTextModel('tts-1')).toBe(false);
+    expect(isTextModel('speech-to-text')).toBe(false);
+    expect(isTextModel('gpt-4o-realtime-preview')).toBe(false);
+
+    // Image / Video models
+    expect(isTextModel('image')).toBe(false);
+    expect(isTextModel('imagen-3')).toBe(false);
+    expect(isTextModel('dall-e-3')).toBe(false);
+    expect(isTextModel('stable-diffusion-xl')).toBe(false);
+    expect(isTextModel('veo-2')).toBe(false);
+
+    // Embeddings / Moderation
+    expect(isTextModel('text-embedding-3-small')).toBe(false);
+    expect(isTextModel('text-moderation-latest')).toBe(false);
+
+    // Empty or invalid input
+    expect(isTextModel('')).toBe(false);
+  });
 });
+

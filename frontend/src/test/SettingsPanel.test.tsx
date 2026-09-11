@@ -48,6 +48,19 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
       items: mockAuditLogs,
       total: 1,
     });
+    vi.spyOn(aiApi, 'getAiModels').mockResolvedValue({
+      provider: 'gemini',
+      models: [
+        { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', supports_thinking: true },
+        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', supports_thinking: true },
+        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', supports_thinking: true },
+        { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', supports_thinking: false },
+        { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', supports_thinking: false },
+      ],
+      has_api_key: true,
+      cached_at: null,
+      is_live: true,
+    });
   });
 
   it('renders a clean summary without ## Summary or markdown backticks in the audit table', async () => {
@@ -259,9 +272,9 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
     expect(saveBtn.className).toContain('opacity-40');
     expect(saveBtn.className).toContain('cursor-not-allowed');
 
-    // Edit Default Model Name
-    const modelInput = screen.getByPlaceholderText('gemini-3.7-flash');
-    fireEvent.change(modelInput, { target: { value: 'gemini-2.5-pro' } });
+    // Edit Default Model Name via dropdown
+    const modelSelect = screen.getByDisplayValue(/gemini-3.7-flash/i);
+    fireEvent.change(modelSelect, { target: { value: 'gemini-2.5-flash' } });
 
     // Active state: dirty, button is highlighted and enabled
     expect(saveBtn).not.toBeDisabled();
@@ -274,7 +287,7 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
     await waitFor(() => {
       expect(updateSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          ai_model: 'gemini-2.5-pro',
+          ai_model: 'gemini-2.5-flash',
         })
       );
       // Real-time inline feedback displayed adjacent to button
@@ -288,25 +301,29 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
     });
   });
 
-  it('renders default model placeholder and helper caption for active provider', async () => {
+  it('renders model discovery dropdown and allows selecting discovered models', async () => {
     render(<SettingsPanel />);
 
     await waitFor(() => {
       expect(screen.getByText(/On-Demand AI Provider Configuration/i)).toBeInTheDocument();
+      expect(screen.getByDisplayValue(/gemini-3.7-flash/i)).toBeInTheDocument();
     });
 
-    // Gemini provider default placeholder and helper
-    expect(screen.getByPlaceholderText('gemini-3.7-flash')).toBeInTheDocument();
-    const geminiHelper = screen.getByText(/Default model for Google Gemini is/i);
-    expect(geminiHelper.textContent).toContain('gemini-3.7-flash');
+    // Gemini provider default model is selected in dropdown
+    const geminiSelect = screen.getByDisplayValue(/gemini-3.7-flash/i);
+    expect(geminiSelect).toBeInTheDocument();
+
+    // Discovered models include reasoning badges
+    expect(screen.getAllByText(/gemini-3.7-flash \[Reasoning\]/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/gemini-2.5-flash \[Reasoning\]/i).length).toBeGreaterThan(0);
 
     // Switch to OpenAI
     const providerSelect = screen.getByDisplayValue('Google Gemini');
     fireEvent.change(providerSelect, { target: { value: 'openai' } });
 
-    expect(screen.getByPlaceholderText('gpt-4o')).toBeInTheDocument();
-    const openaiHelper = screen.getByText(/Default model for OpenAI is/i);
-    expect(openaiHelper.textContent).toContain('gpt-4o');
+    await waitFor(() => {
+      expect(aiApi.getAiModels).toHaveBeenCalledWith('openai', false);
+    });
   });
 
   it('renders "Keys encrypted at rest" badge, card title, and explanatory Fernet caption', async () => {
@@ -397,5 +414,102 @@ describe('SettingsPanel AI Audit Log & Disclaimer', () => {
       expect(screen.getAllByText(/Failed to clear AI audit log: Database write failure/i).length).toBeGreaterThan(0);
     });
   });
+
+  it('renders and updates fallback models setting', async () => {
+    const updateSpy = vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({ status: 'ok' });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Fallback Models (Sequential Order)')).toBeInTheDocument();
+    });
+
+    // Select a fallback model from the add dropdown
+    const fallbackSelect = screen.getByDisplayValue('-- Add Fallback Model --');
+    fireEvent.change(fallbackSelect, { target: { value: 'gemini-2.5-flash' } });
+
+    const addBtn = screen.getByRole('button', { name: /Add/i });
+    fireEvent.click(addBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('1st Fallback')).toBeInTheDocument();
+      expect(screen.getByText('gemini-2.5-flash')).toBeInTheDocument();
+    });
+
+    const saveButton = screen.getByRole('button', { name: /Save Application Settings/i });
+    expect(saveButton).not.toBeDisabled();
+    fireEvent.click(saveButton);
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ai_fallback_models: 'gemini-2.5-flash',
+        })
+      );
+    });
+  });
+
+  it('renders configured fallback models with proper ordinal badges (1st, 2nd, 3rd)', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({
+      ai_provider: 'gemini',
+      ai_model: 'gemini-3.7-flash',
+      ai_fallback_models: 'gemini-2.5-flash, gemini-2.5-pro, gemini-1.5-flash',
+      ai_api_key: '********',
+      ai_base_url: null,
+      retention_days: 14,
+      max_retention_days: 30,
+      has_ai_api_key: true,
+    });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('1st Fallback')).toBeInTheDocument();
+      expect(screen.getByText('2nd Fallback')).toBeInTheDocument();
+      expect(screen.getByText('3rd Fallback')).toBeInTheDocument();
+    });
+  });
+
+  it('filters out fallback models from primary model dropdown and auto-prunes fallback if selected as primary', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({
+      ai_provider: 'gemini',
+      ai_model: 'gemini-3.7-flash',
+      ai_fallback_models: 'gemini-2.5-flash',
+      ai_api_key: '********',
+      ai_base_url: null,
+      retention_days: 14,
+      max_retention_days: 30,
+      has_ai_api_key: true,
+    });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('1st Fallback')).toBeInTheDocument();
+      expect(screen.getByText('gemini-2.5-flash')).toBeInTheDocument();
+    });
+
+    // In Primary Model dropdown, gemini-2.5-flash should NOT be available as an option because it is already a fallback
+    const primarySelect = screen.getByDisplayValue(/gemini-3.7-flash/);
+    const options = Array.from(primarySelect.querySelectorAll('option')).map((o) => o.value);
+    expect(options).toContain('gemini-3.7-flash');
+    expect(options).not.toContain('gemini-2.5-flash');
+
+    // If user switches to custom mode and enters gemini-2.5-flash as primary
+    const useDropdownBtn = screen.queryByRole('button', { name: /Use dropdown instead/i });
+    expect(useDropdownBtn).toBeNull();
+
+    // Select custom model option from primary dropdown
+    fireEvent.change(primarySelect, { target: { value: '__custom__' } });
+    const customInput = screen.getByPlaceholderText(/DEFAULT_AI_MODEL|gemini-3.7-flash/i);
+    fireEvent.change(customInput, { target: { value: 'gemini-2.5-flash' } });
+
+    // gemini-2.5-flash should now be pruned from fallback models list
+    await waitFor(() => {
+      expect(screen.queryByText('1st Fallback')).toBeNull();
+      expect(screen.getByText(/No fallback models configured/i)).toBeInTheDocument();
+    });
+  });
 });
+
 

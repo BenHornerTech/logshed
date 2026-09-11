@@ -70,6 +70,7 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
     return SettingsResponse(
         ai_provider=stored.get("ai_provider") or "gemini",
         ai_model=stored.get("ai_model") or DEFAULT_AI_MODEL,
+        ai_fallback_models=stored.get("ai_fallback_models") or "",
         ai_api_key=mask_secret(ai_api_key_val),
         ai_base_url=stored.get("ai_base_url") or None,
         ai_system_prompt=stored.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT,
@@ -110,6 +111,9 @@ async def update_settings(
 
         if req.ai_model is not None:
             updates.append(("ai_model", req.ai_model, 0))
+
+        if req.ai_fallback_models is not None:
+            updates.append(("ai_fallback_models", req.ai_fallback_models, 0))
 
         if req.ai_base_url is not None:
             updates.append(("ai_base_url", req.ai_base_url, 0))

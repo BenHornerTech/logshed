@@ -92,6 +92,7 @@ class SettingsResponse(BaseModel):
     """Application runtime configuration response with masked secrets."""
     ai_provider: str = "gemini"
     ai_model: str = DEFAULT_AI_MODEL
+    ai_fallback_models: str = ""
     ai_api_key: str = ""
     ai_base_url: Optional[str] = None
     ai_system_prompt: str = ""
@@ -113,6 +114,7 @@ class SettingsUpdateRequest(BaseModel):
     """Payload for updating runtime settings."""
     ai_provider: Optional[str] = None
     ai_model: Optional[str] = None
+    ai_fallback_models: Optional[str] = None
     ai_api_key: Optional[str] = None
     ai_base_url: Optional[str] = None
     ai_system_prompt: Optional[str] = None
@@ -243,6 +245,7 @@ class AiPreviewResponse(BaseModel):
     estimated_tokens: int
     provider: str
     model: str
+    fallback_models: list[str] = Field(default_factory=list)
     log_count: int
     source_alias: str
     app_name: str
@@ -257,6 +260,7 @@ class AiDiagnosisRequest(BaseModel):
     system_prompt_override: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    fallback_models: Optional[list[str]] = None
 
 
 class AiDiagnosisResponse(BaseModel):
@@ -265,6 +269,8 @@ class AiDiagnosisResponse(BaseModel):
     root_cause: str
     remediation: str
     model_used: str
+    fallback_used: bool = False
+    fallback_attempts: list[str] = Field(default_factory=list)
     tokens_in: int = 0
     tokens_out: int = 0
     tokens_thoughts: int = 0
@@ -301,3 +307,23 @@ class AiAuditDeleteResponse(BaseModel):
     status: str = "ok"
     deleted_id: Optional[int] = None
     deleted_count: Optional[int] = None
+
+
+class AiModelInfo(BaseModel):
+    """Information regarding an available model discovered from a provider."""
+    id: str
+    name: str
+    description: Optional[str] = None
+    supports_thinking: bool = False
+    is_deprecated: bool = False
+
+
+class AiModelsResponse(BaseModel):
+    """Response payload containing available models for a provider."""
+    provider: str
+    models: list[AiModelInfo] = Field(default_factory=list)
+    has_api_key: bool = True
+    cached_at: Optional[str] = None
+    is_live: bool = True
+    error: Optional[str] = None
+

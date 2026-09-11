@@ -26,6 +26,7 @@ export interface HostAlias {
 export interface SystemSettings {
   ai_provider: 'gemini' | 'openai' | 'openai_compatible';
   ai_model: string;
+  ai_fallback_models?: string;
   ai_api_key?: string;
   ai_base_url?: string | null;
   ai_system_prompt?: string;
@@ -78,10 +79,25 @@ export interface AiPreviewResponse {
   estimated_tokens: number;
   provider: string;
   model: string;
+  fallback_models?: string[];
   log_count: number;
   source_alias: string;
   app_name: string;
   system_prompt: string;
+}
+
+export interface AiDiagnosisStreamEvent {
+  stage: 'init' | 'calling' | 'failover' | 'complete' | 'error';
+  model?: string;
+  next_model?: string;
+  failed_model?: string;
+  error?: string;
+  message?: string;
+  result?: AiDiagnosisResponse;
+  fallback_models?: string[];
+  attempt?: number;
+  total_models?: number;
+  is_fallback?: boolean;
 }
 
 export interface AiDiagnosisRequest {
@@ -91,6 +107,8 @@ export interface AiDiagnosisRequest {
   system_prompt_override?: string;
   provider?: string;
   model?: string;
+  fallback_models?: string[];
+  onEvent?: (event: AiDiagnosisStreamEvent) => void;
 }
 
 export interface AiDiagnosisResponse {
@@ -98,6 +116,8 @@ export interface AiDiagnosisResponse {
   root_cause: string;
   remediation: string;
   model_used: string;
+  fallback_used?: boolean;
+  fallback_attempts?: string[];
   tokens_in?: number;
   tokens_out?: number;
   tokens_thoughts?: number;
@@ -146,3 +166,21 @@ export interface LogFacetsResponse {
   host_to_apps: Record<string, string[]>;
   app_to_hosts: Record<string, string[]>;
 }
+
+export interface AiModelInfo {
+  id: string;
+  name: string;
+  description?: string | null;
+  supports_thinking?: boolean;
+  is_deprecated?: boolean;
+}
+
+export interface AiModelsResponse {
+  provider: string;
+  models: AiModelInfo[];
+  has_api_key: boolean;
+  cached_at?: string | null;
+  is_live: boolean;
+  error?: string | null;
+}
+

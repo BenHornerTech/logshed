@@ -10,13 +10,14 @@ endpoints, as required by SPEC §4.2 and AGENTS.md.
 import asyncio
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
+import httpx
 from google import genai
 from google.genai import types as genai_types
 from openai import AsyncOpenAI, APITimeoutError
 
-from app.core.config import DEFAULT_AI_MODEL, is_debug_or_dev
+from app.core.config import DEFAULT_AI_MODEL, DEFAULT_AI_TIMEOUT, DEFAULT_AI_THINKING_BUDGET, is_debug_or_dev
 from app.core.redactor import redact
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,217 @@ A detailed explanation of why the event or failure occurred based on the log evi
 Step-by-step commands, configuration fixes, or debugging steps to resolve the issue."""
 
 SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
+
+
+class AiServiceUnavailableError(RuntimeError):
+    """Raised when an AI provider returns 503 / Service Unavailable / Model Overloaded."""
+    def __init__(self, message: str, code: int = 503):
+        super().__init__(message)
+        self.code = code
+
+
+def is_retryable_for_fallback(exc: Exception) -> bool:
+    """
+    Returns True if an exception represents a 503/504 Service Unavailable, Timeout,
+    Deadline Exceeded, Model Overload, or 404 Model Not Found error,
+    qualifying the request for failover to a fallback model.
+    """
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, APITimeoutError)):
+        return True
+    if isinstance(exc, AiServiceUnavailableError):
+        return True
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code in (404, 503, 504):
+        return True
+    err_str = str(exc).lower()
+    if "404" in err_str and ("not found" in err_str or "not_found" in err_str):
+        return True
+    if "503" in err_str or "504" in err_str:
+        return True
+    if "timeout" in err_str or "timed out" in err_str:
+        return True
+    if "deadline" in err_str or "expired" in err_str:
+        return True
+    if "overload" in err_str or "unavailable" in err_str:
+        return True
+    return False
+
+
+def supports_gemini_thinking(model_name: str) -> bool:
+    """Returns True if the Gemini model family supports reasoning/thinking budgets."""
+    m = model_name.lower()
+    return "3." in m or "2.5" in m or "thinking" in m or "think" in m
+
+
+def supports_openai_reasoning(model_name: str) -> bool:
+    """Returns True if the OpenAI/compatible model supports reasoning_effort parameter."""
+    m = model_name.lower()
+    return m.startswith(("o1", "o3", "o4")) or "-o1" in m or "-o3" in m or "reason" in m
+
+
+NON_TEXT_MODEL_KEYWORDS: tuple[str, ...] = (
+    # Audio / Speech / Transcription
+    "transcribe",
+    "transcription",
+    "whisper",
+    "audio",
+    "speech",
+    "voice",
+    "tts",
+    "stt",
+    "realtime",
+    # Image / Video / Multimodal Generation
+    "image",
+    "imagen",
+    "dall-e",
+    "dalle",
+    "flux",
+    "diffusion",
+    "midjourney",
+    "veo",
+    "video",
+    "canvas",
+    # Embeddings & Vector Similarity
+    "embedding",
+    "embed",
+    "bge-",
+    "e5-",
+    "gte-",
+    "rerank",
+    "similarity",
+    # Moderation & Guardrails
+    "moderation",
+    "guard",
+    "safety",
+    "aqa",
+    # Robotics & Specialized non-chat
+    "robotics",
+    "learnlm",
+    "canary",
+)
+
+
+def is_text_generation_model(model_id: str, description: Optional[str] = None) -> bool:
+    """
+    Returns True if model_id appears to be a text generation / chat model.
+    Returns False for non-text models (audio, transcribe, image, embedding, etc.).
+    """
+    low_id = (model_id or "").lower()
+    if not low_id:
+        return False
+
+    if any(k in low_id for k in NON_TEXT_MODEL_KEYWORDS):
+        return False
+
+    if description:
+        low_desc = description.lower()
+        if any(non_text in low_desc for non_text in (
+            "text embedding",
+            "generate images",
+            "image generation",
+            "transcribe speech",
+            "transcription",
+            "speech-to-text",
+            "text-to-speech",
+            "audio generation",
+            "generate video",
+            "video generation",
+        )):
+            return False
+
+    return True
+
+
+async def fetch_available_models(
+    provider: str,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """
+    Query provider APIs live to discover available text generation models.
+    Filters out non-text models (embeddings, audio, image generation).
+    Requires a valid API key (or base URL for local endpoints) - no hardcoded lists.
+    """
+    clean_provider = (provider or "gemini").lower()
+    discovered_models: list[dict[str, Any]] = []
+
+    if clean_provider == "gemini":
+        if not api_key:
+            return []
+        client = genai.Client(api_key=api_key)
+        pager = await client.aio.models.list()
+        async for m in pager:
+            raw_name = getattr(m, "name", "") or ""
+            model_id = raw_name.replace("models/", "").replace("publishers/google/models/", "")
+            display_name = getattr(m, "display_name", None) or model_id
+            description = getattr(m, "description", None) or ""
+            actions = (
+                getattr(m, "supported_actions", None)
+                or getattr(m, "supported_generation_methods", None)
+                or []
+            )
+
+            if actions and not any("generateContent" in a or "generate_content" in a for a in actions):
+                continue
+
+            low_id = model_id.lower()
+            if "gemini" not in low_id:
+                continue
+
+            if not is_text_generation_model(model_id, description):
+                continue
+
+            supports_thinking = supports_gemini_thinking(model_id)
+            discovered_models.append({
+                "id": model_id,
+                "name": display_name,
+                "description": description,
+                "supports_thinking": supports_thinking,
+                "is_deprecated": False,
+            })
+
+    elif clean_provider == "openai":
+        if not api_key:
+            return []
+        client = AsyncOpenAI(api_key=api_key)
+        paginator = client.models.list()
+        async for m in paginator:
+            model_id = m.id
+            low_id = model_id.lower()
+            is_chat = low_id.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-", "ft:gpt-", "ft:o1-"))
+            if not is_chat:
+                continue
+            if not is_text_generation_model(model_id):
+                continue
+
+            supports_thinking = supports_openai_reasoning(model_id)
+            discovered_models.append({
+                "id": model_id,
+                "name": model_id,
+                "description": None,
+                "supports_thinking": supports_thinking,
+                "is_deprecated": False,
+            })
+
+    elif clean_provider == "openai_compatible":
+        client = AsyncOpenAI(api_key=api_key or "no-key", base_url=base_url or "http://localhost:11434/v1")
+        paginator = client.models.list()
+        async for m in paginator:
+            model_id = m.id
+            if not is_text_generation_model(model_id):
+                continue
+            supports_thinking = supports_openai_reasoning(model_id)
+            discovered_models.append({
+                "id": model_id,
+                "name": model_id,
+                "description": None,
+                "supports_thinking": supports_thinking,
+                "is_deprecated": False,
+            })
+
+    # Sort descending by model id so newer versions appear at the top
+    discovered_models.sort(key=lambda item: item["id"].lower(), reverse=True)
+    return discovered_models
 
 
 def build_analysis_prompt(
@@ -151,7 +363,8 @@ async def dispatch_gemini_request(
     model: str,
     prompt: str,
     system_prompt: Optional[str] = None,
-    timeout: float = 60.0,
+    timeout: float = DEFAULT_AI_TIMEOUT,
+    max_retries: int = 1,
 ) -> tuple[str, int, int, int, int]:
     """
     Dispatch request to Google Gemini API via the google-genai SDK.
@@ -163,16 +376,30 @@ async def dispatch_gemini_request(
     effective_system_prompt = (system_prompt and system_prompt.strip()) or DEFAULT_SYSTEM_PROMPT
 
     try:
-        client = genai.Client(api_key=api_key)
+        http_options = genai_types.HttpOptions(
+            timeout=int(timeout * 1000),
+            retry_options=genai_types.HttpRetryOptions(
+                attempts=max_retries,
+                initial_delay=0.5,
+            ),
+        )
+        client = genai.Client(api_key=api_key, http_options=http_options)
+
+        config_kwargs: dict[str, Any] = {
+            "system_instruction": effective_system_prompt,
+            "temperature": 0.2,
+            "automatic_function_calling": genai_types.AutomaticFunctionCallingConfig(disable=True),
+        }
+        if supports_gemini_thinking(model) and DEFAULT_AI_THINKING_BUDGET is not None:
+            config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+                thinking_budget=DEFAULT_AI_THINKING_BUDGET
+            )
 
         response = await asyncio.wait_for(
             client.aio.models.generate_content(
                 model=model,
                 contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=effective_system_prompt,
-                    temperature=0.2,
-                ),
+                config=genai_types.GenerateContentConfig(**config_kwargs),
             ),
             timeout=timeout,
         )
@@ -203,16 +430,41 @@ async def dispatch_gemini_request(
 
         return text, tokens_in, tokens_out, tokens_thoughts, tokens_used
 
-    except (ValueError, asyncio.TimeoutError, TimeoutError):
+    except (asyncio.TimeoutError, TimeoutError):
+        raise TimeoutError("Request timed out")
+    except httpx.TimeoutException as te:
+        raise TimeoutError(f"Request timed out: {te}") from te
+    except (ValueError, AiServiceUnavailableError):
         raise
     except Exception as e:
-        clean_err = str(redact(str(e)[:500]))
+        msg = getattr(e, "message", None)
+        status_str = getattr(e, "status", None)
+        err_code = getattr(e, "code", None) or getattr(e, "status_code", None)
+        if msg and status_str:
+            clean_err = f"{err_code or ''} {status_str}: {msg}".strip()
+        elif msg:
+            clean_err = f"{err_code or ''}: {msg}".strip(" :")
+        else:
+            clean_err = str(e)[:500]
+        clean_err = str(redact(clean_err))
         err_msg = f"Gemini API error: {clean_err}"
         if is_debug_or_dev():
             logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
         else:
             logger.warning(f"AI analysis request failed: {clean_err}")
-        raise RuntimeError(err_msg)
+        err_lower = clean_err.lower()
+        if (
+            err_code in (404, 503, 504)
+            or "503" in clean_err
+            or "504" in clean_err
+            or ("404" in err_lower and ("not found" in err_lower or "not_found" in err_lower))
+            or "overload" in err_lower
+            or "unavailable" in err_lower
+            or "deadline" in err_lower
+            or "expired" in err_lower
+        ):
+            raise AiServiceUnavailableError(err_msg, code=err_code or 503) from e
+        raise RuntimeError(err_msg) from e
 
 
 async def dispatch_openai_request(
@@ -221,7 +473,7 @@ async def dispatch_openai_request(
     prompt: str,
     base_url: Optional[str] = None,
     system_prompt: Optional[str] = None,
-    timeout: float = 60.0,
+    timeout: float = DEFAULT_AI_TIMEOUT,
 ) -> tuple[str, int, int, int, int]:
     """
     Dispatch request to OpenAI or OpenAI-compatible endpoint (e.g. Ollama, vLLM, LocalAI)
@@ -237,14 +489,18 @@ async def dispatch_openai_request(
             timeout=timeout,
         )
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": [
                 {"role": "system", "content": effective_system_prompt},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.2,
-        )
+            "temperature": 0.2,
+        }
+        if supports_openai_reasoning(model):
+            create_kwargs["reasoning_effort"] = "low"
+
+        response = await client.chat.completions.create(**create_kwargs)
 
         choice = response.choices[0]
         text = choice.message.content
@@ -273,10 +529,14 @@ async def dispatch_openai_request(
 
         return text, tokens_in, tokens_out, tokens_thoughts, tokens_used
 
-    except (ValueError, asyncio.TimeoutError, TimeoutError):
-        raise
     except APITimeoutError as te:
         raise TimeoutError(f"OpenAI endpoint timed out: {te}") from te
+    except (asyncio.TimeoutError, TimeoutError):
+        raise TimeoutError("OpenAI endpoint timed out")
+    except httpx.TimeoutException as te:
+        raise TimeoutError(f"OpenAI endpoint timed out: {te}") from te
+    except (ValueError, AiServiceUnavailableError):
+        raise
     except Exception as e:
         clean_err = str(redact(str(e)[:500]))
         err_msg = f"OpenAI endpoint error: {clean_err}"
@@ -284,7 +544,19 @@ async def dispatch_openai_request(
             logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
         else:
             logger.warning(f"AI analysis request failed: {clean_err}")
-        raise RuntimeError(err_msg)
+        err_code = getattr(e, "code", None) or getattr(e, "status_code", None)
+        err_lower = clean_err.lower()
+        if (
+            err_code in (404, 503, 504)
+            or "503" in clean_err
+            or "504" in clean_err
+            or ("404" in err_lower and ("not found" in err_lower or "not_found" in err_lower))
+            or "overload" in err_lower
+            or "unavailable" in err_lower
+            or "deadline" in err_lower
+        ):
+            raise AiServiceUnavailableError(err_msg, code=err_code or 503) from e
+        raise RuntimeError(err_msg) from e
 
 
 MAX_LOG_TEXT_CHARS = 100_000
@@ -324,11 +596,14 @@ async def execute_ai_analysis(
     host_notes: Optional[str] = None,
     prompt_override: Optional[str] = None,
     system_prompt: Optional[str] = None,
-    timeout: float = 60.0,
-) -> tuple[str, str, str, str, str, int, int, int, int]:
+    timeout: float = DEFAULT_AI_TIMEOUT,
+    fallback_models: Optional[list[str]] = None,
+    on_progress: Optional[Callable[[dict], Any]] = None,
+) -> tuple[str, str, str, str, str, int, int, int, int, str, list[str]]:
     """
-    Unified entrypoint to run on-demand AI analysis.
-    Returns (summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used).
+    Unified entrypoint to run on-demand AI analysis with automatic multi-model failover.
+    Attempts primary model first; if it fails with 503 or timeout, attempts configured fallback models.
+    Returns (summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used, model_used, fallback_attempts).
     """
     redacted_logs = truncate_logs_to_budget(redacted_logs)
 
@@ -348,26 +623,99 @@ async def execute_ai_analysis(
         )
 
     norm_provider = (provider or "gemini").lower()
+    primary_model = model or (DEFAULT_AI_MODEL if norm_provider == "gemini" else ("gpt-4o" if norm_provider == "openai" else "llama3.2"))
 
-    if norm_provider == "gemini":
-        raw_text, tokens_in, tokens_out, tokens_thoughts, tokens_used = await dispatch_gemini_request(
-            api_key=api_key,
-            model=model or DEFAULT_AI_MODEL,
-            prompt=prompt,
-            system_prompt=system_prompt,
-            timeout=timeout,
-        )
-    elif norm_provider in ("openai", "openai_compatible"):
-        raw_text, tokens_in, tokens_out, tokens_thoughts, tokens_used = await dispatch_openai_request(
-            api_key=api_key,
-            model=model or ("gpt-4o" if norm_provider == "openai" else "llama3.2"),
-            prompt=prompt,
-            base_url=base_url,
-            system_prompt=system_prompt,
-            timeout=timeout,
-        )
-    else:
-        raise ValueError(f"Unsupported AI provider: {provider}")
+    # Build chain of distinct candidate models to try
+    models_to_try = [primary_model]
+    if fallback_models:
+        for fb in fallback_models:
+            clean_fb = fb.strip() if isinstance(fb, str) else ""
+            if clean_fb and clean_fb not in models_to_try:
+                models_to_try.append(clean_fb)
 
-    summary, root_cause, remediation = parse_structured_ai_response(raw_text)
-    return summary, root_cause, remediation, raw_text, prompt, tokens_in, tokens_out, tokens_thoughts, tokens_used
+    fallback_attempts: list[str] = []
+    last_error: Optional[Exception] = None
+
+    for idx, current_model in enumerate(models_to_try):
+        if on_progress:
+            prog_res = on_progress({
+                "stage": "calling",
+                "model": current_model,
+                "attempt": idx + 1,
+                "total_models": len(models_to_try),
+                "is_fallback": idx > 0,
+                "message": f"Querying model {current_model}...",
+            })
+            if asyncio.iscoroutine(prog_res):
+                await prog_res
+
+        try:
+            if norm_provider == "gemini":
+                raw_text, tokens_in, tokens_out, tokens_thoughts, tokens_used = await dispatch_gemini_request(
+                    api_key=api_key,
+                    model=current_model,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    timeout=timeout,
+                )
+            elif norm_provider in ("openai", "openai_compatible"):
+                raw_text, tokens_in, tokens_out, tokens_thoughts, tokens_used = await dispatch_openai_request(
+                    api_key=api_key,
+                    model=current_model,
+                    prompt=prompt,
+                    base_url=base_url,
+                    system_prompt=system_prompt,
+                    timeout=timeout,
+                )
+            else:
+                raise ValueError(f"Unsupported AI provider: {provider}")
+
+            summary, root_cause, remediation = parse_structured_ai_response(raw_text)
+            return (
+                summary,
+                root_cause,
+                remediation,
+                raw_text,
+                prompt,
+                tokens_in,
+                tokens_out,
+                tokens_thoughts,
+                tokens_used,
+                current_model,
+                fallback_attempts,
+            )
+
+        except Exception as exc:
+            last_error = exc
+            has_next = (idx + 1) < len(models_to_try)
+            if has_next and is_retryable_for_fallback(exc):
+                next_model = models_to_try[idx + 1]
+                if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or not str(exc).strip():
+                    err_desc = "Request timed out"
+                else:
+                    raw_str = str(exc)
+                    if raw_str.startswith("Gemini API error: "):
+                        raw_str = raw_str[len("Gemini API error: "):]
+                    elif raw_str.startswith("OpenAI endpoint error: "):
+                        raw_str = raw_str[len("OpenAI endpoint error: "):]
+                    err_desc = raw_str[:300].strip()
+                fallback_attempts.append(f"{current_model} failed: {err_desc}")
+                logger.warning(
+                    f"Model '{current_model}' failed with retryable error ({err_desc}). Failing over to fallback model '{next_model}'..."
+                )
+                if on_progress:
+                    prog_res = on_progress({
+                        "stage": "failover",
+                        "failed_model": current_model,
+                        "next_model": next_model,
+                        "error": err_desc,
+                        "message": f"{current_model} failed ({err_desc}). Failing over to {next_model}...",
+                    })
+                    if asyncio.iscoroutine(prog_res):
+                        await prog_res
+                continue
+            raise
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No models were executed.")

@@ -60,6 +60,17 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
       tokens_used: 330,
       audit_id: 12,
     });
+    vi.spyOn(aiApi, 'getAiModels').mockResolvedValue({
+      provider: 'gemini',
+      models: [
+        { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', supports_thinking: true },
+        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', supports_thinking: true },
+        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', supports_thinking: true },
+      ],
+      has_api_key: true,
+      cached_at: null,
+      is_live: true,
+    });
   });
 
   it('renders an editable textarea instead of read-only div with full prompt visibility', async () => {
@@ -452,5 +463,219 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     expect(screen.queryByText('Reset Prompt')).not.toBeInTheDocument();
     expect((promptTextarea as HTMLTextAreaElement).value).toContain('Updated context while prompt is custom');
   });
+
+  it('displays fallback badge and failover feedback banner when fallback_used is true', async () => {
+    vi.spyOn(aiApi, 'diagnoseLogs').mockResolvedValue({
+      summary: 'DNS server connection refused.',
+      root_cause: 'Upstream 1.1.1.1 DNS is unreachable.',
+      remediation: 'Check firewall routing and DNS configuration.',
+      model_used: 'gemini-2.5-flash',
+      fallback_used: true,
+      fallback_attempts: ['gemini-3.7-flash failed: 503 Model Overloaded'],
+      tokens_in: 285,
+      tokens_out: 45,
+      tokens_thoughts: 0,
+      tokens_used: 330,
+      audit_id: 15,
+    });
+
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    await waitFor(() => {
+      expect(aiApi.previewAiPrompt).toHaveBeenCalled();
+    });
+
+    const runBtn = screen.getByText('Run AI Analysis');
+    fireEvent.click(runBtn);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('gemini-2.5-flash').length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(screen.getByText('Fallback')).toBeInTheDocument();
+    expect(screen.getByText('Model Failover Active')).toBeInTheDocument();
+    expect(screen.getByText(/gemini-3.7-flash failed: 503 Model Overloaded/)).toBeInTheDocument();
+  });
+
+  it('displays configured fallback models from preview in sequential order', async () => {
+    vi.spyOn(aiApi, 'previewAiPrompt').mockResolvedValue({
+      ...samplePreview,
+      fallback_models: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+    });
+
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Primary Model')).toBeInTheDocument();
+    });
+
+    // Fallback models are listed in order
+    await waitFor(() => {
+      expect(screen.getByText('1st Fallback')).toBeInTheDocument();
+      expect(screen.getByText('2nd Fallback')).toBeInTheDocument();
+      expect(screen.getByText('gemini-2.5-flash')).toBeInTheDocument();
+      expect(screen.getByText('gemini-2.5-pro')).toBeInTheDocument();
+    });
+  });
+
+  it('allows editing fallback models and passes custom fallback_models to diagnoseLogs', async () => {
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Primary Model')).toBeInTheDocument();
+    });
+
+    // Select custom fallback model option from the Add Fallback dropdown
+    const fallbackSelect = await screen.findByDisplayValue('-- Add Fallback Model --');
+    fireEvent.change(fallbackSelect, { target: { value: '__custom_fallback__' } });
+
+    const customInput = await screen.findByPlaceholderText('Enter custom model ID');
+    fireEvent.change(customInput, { target: { value: 'custom-fallback-model' } });
+
+    const addBtn = screen.getByRole('button', { name: /Add/i });
+    fireEvent.click(addBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('1st Fallback')).toBeInTheDocument();
+      expect(screen.getByText('custom-fallback-model')).toBeInTheDocument();
+    });
+
+    const runBtn = screen.getByRole('button', { name: /Run AI Analysis/i });
+    fireEvent.click(runBtn);
+
+    await waitFor(() => {
+      expect(aiApi.diagnoseLogs).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fallback_models: ['custom-fallback-model'],
+        })
+      );
+    });
+  });
+
+  it('renders live in-flight progress feedback when streaming progress events occur', async () => {
+    let capturedOnEvent: any = null;
+    vi.spyOn(aiApi, 'diagnoseLogs').mockImplementation(async (req) => {
+      if (req.onEvent) {
+        capturedOnEvent = req.onEvent;
+        // Simulate in-flight progress calling event
+        req.onEvent({
+          stage: 'calling',
+          model: 'gemini-3.7-flash',
+          is_fallback: false,
+          message: 'Querying primary model (gemini-3.7-flash)...',
+        });
+      }
+      // Return a pending promise that we control
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          if (capturedOnEvent) {
+            // Simulate failover event
+            capturedOnEvent({
+              stage: 'failover',
+              failed_model: 'gemini-3.7-flash',
+              next_model: 'gemini-2.5-flash',
+              error: '503 Model Overloaded',
+            });
+          }
+          resolve({
+            summary: 'DNS resolved.',
+            root_cause: 'Failover cause.',
+            remediation: 'Restart dnsmasq.',
+            model_used: 'gemini-2.5-flash',
+            fallback_used: true,
+            fallback_attempts: ['gemini-3.7-flash failed: 503'],
+            tokens_in: 100,
+            tokens_out: 50,
+            tokens_thoughts: 0,
+            tokens_used: 150,
+            audit_id: 20,
+          });
+        }, 50);
+      });
+    });
+
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    await waitFor(() => {
+      expect(aiApi.previewAiPrompt).toHaveBeenCalled();
+    });
+
+    const runBtn = screen.getByRole('button', { name: /Run AI Analysis/i });
+    fireEvent.click(runBtn);
+
+    // Shows in-flight querying message and elapsed label
+    await waitFor(() => {
+      expect(screen.getByText(/Querying primary model \(gemini-3.7-flash\)\.\.\./)).toBeInTheDocument();
+      expect(screen.getByText(/Elapsed: 00:00/)).toBeInTheDocument();
+    });
+
+    // Eventually resolves and shows final result
+    await waitFor(() => {
+      expect(screen.getByText('Restart dnsmasq.')).toBeInTheDocument();
+    });
+  });
+
+  it('filters out fallback models from primary model dropdown and prunes fallback if set as primary', async () => {
+    vi.spyOn(aiApi, 'previewAiPrompt').mockResolvedValue({
+      ...samplePreview,
+      fallback_models: ['gemini-2.5-flash'],
+    });
+
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('1st Fallback')).toBeInTheDocument();
+      expect(screen.getByText('gemini-2.5-flash')).toBeInTheDocument();
+    });
+
+    // In Primary Model dropdown, gemini-2.5-flash should NOT be available as an option
+    const primarySelect = screen.getByDisplayValue(/gemini-3.7-flash/);
+    const options = Array.from(primarySelect.querySelectorAll('option')).map((o) => o.value);
+    expect(options).toContain('gemini-3.7-flash');
+    expect(options).not.toContain('gemini-2.5-flash');
+
+    // Switch to custom model and input gemini-2.5-flash
+    fireEvent.change(primarySelect, { target: { value: '__custom__' } });
+    const customInput = screen.getByPlaceholderText(/DEFAULT_AI_MODEL|gemini-3.7-flash/i);
+    fireEvent.change(customInput, { target: { value: 'gemini-2.5-flash' } });
+
+    // Fallback list should now be pruned
+    await waitFor(() => {
+      expect(screen.queryByText('1st Fallback')).toBeNull();
+      expect(screen.getByText(/No fallback models configured for this analysis/i)).toBeInTheDocument();
+    });
+  });
 });
+
+
 

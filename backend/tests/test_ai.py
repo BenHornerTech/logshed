@@ -3,6 +3,7 @@ Tests for AI engine, prompt construction, token estimation, Gemini/OpenAI dispat
 """
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +22,7 @@ from app.core.security import (
     hash_password,
     reset_crypto_cache,
 )
-from app.core.config import DEFAULT_AI_MODEL
+from app.core.config import DEFAULT_AI_MODEL, DEFAULT_AI_TIMEOUT
 from app.core.sse import sse_manager
 from app.main import create_app
 from app.models import SettingsResponse, SettingsUpdate, SettingsUpdateRequest
@@ -199,7 +200,16 @@ Multiple transaction queries deadlock on shared index.
             assert tokens_thoughts == 0
             assert tokens == 320
             assert mock_generate.called
-            mock_genai.Client.assert_called_once_with(api_key="test-key")
+            gen_config = mock_generate.call_args[1]["config"]
+            assert gen_config.automatic_function_calling.disable is True
+            assert mock_genai.Client.called
+            call_kwargs = mock_genai.Client.call_args[1]
+            assert call_kwargs["api_key"] == "test-key"
+            http_opts = call_kwargs.get("http_options")
+            assert http_opts is not None
+            assert http_opts.timeout == int(DEFAULT_AI_TIMEOUT * 1000)
+            assert http_opts.retry_options.attempts == 1
+            assert http_opts.retry_options.initial_delay == 0.5
 
     @pytest.mark.asyncio
     async def test_dispatch_gemini_error_redacted(self):
@@ -256,11 +266,71 @@ Multiple transaction queries deadlock on shared index.
             assert tokens_thoughts == 0
             assert tokens == 210
             assert mock_create.called
+            create_kwargs = mock_create.call_args[1]
+            assert "reasoning_effort" not in create_kwargs
             mock_openai_cls.assert_called_once_with(
                 api_key="sk-test",
                 base_url="http://localhost:11434/v1",
-                timeout=60.0,
+                timeout=DEFAULT_AI_TIMEOUT,
             )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_openai_reasoning_model_sets_effort(self):
+        mock_usage = MagicMock()
+        mock_usage.prompt_tokens = 100
+        mock_usage.completion_tokens = 40
+        mock_usage.completion_tokens_details = MagicMock(reasoning_tokens=20)
+
+        mock_choice = MagicMock()
+        mock_choice.message.content = "## Summary\nReasoning summary\n\n## Root Cause\nCause\n\n## Actionable Remediation\nFix"
+
+        mock_resp = MagicMock()
+        mock_resp.choices = [mock_choice]
+        mock_resp.usage = mock_usage
+
+        mock_create = AsyncMock(return_value=mock_resp)
+
+        with patch("app.services.ai_engine.AsyncOpenAI") as mock_openai_cls:
+            mock_client_instance = MagicMock()
+            mock_client_instance.chat.completions.create = mock_create
+            mock_openai_cls.return_value = mock_client_instance
+
+            text, _, _, thoughts, _ = await ai_engine.dispatch_openai_request(
+                api_key="sk-test",
+                model="o3-mini",
+                prompt="test prompt",
+            )
+            assert "Reasoning summary" in text
+            assert thoughts == 20
+            create_kwargs = mock_create.call_args[1]
+            assert create_kwargs.get("reasoning_effort") == "low"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_gemini_legacy_model_omits_thinking_config(self):
+        mock_resp = MagicMock()
+        mock_resp.text = "## Summary\nLegacy summary\n\n## Root Cause\nCause\n\n## Actionable Remediation\nFix"
+        mock_resp.usage_metadata = MagicMock(
+            prompt_token_count=100,
+            candidates_token_count=50,
+            thoughts_token_count=0,
+            total_token_count=150,
+        )
+
+        mock_generate = AsyncMock(return_value=mock_resp)
+        with patch("app.services.ai_engine.genai") as mock_genai:
+            mock_client_instance = MagicMock()
+            mock_client_instance.aio.models.generate_content = mock_generate
+            mock_genai.Client.return_value = mock_client_instance
+
+            await ai_engine.dispatch_gemini_request(
+                api_key="test-key",
+                model="gemini-1.5-flash",
+                prompt="test prompt",
+            )
+            gen_config = mock_generate.call_args[1]["config"]
+            assert gen_config.thinking_config is None
+            assert gen_config.automatic_function_calling.disable is True
+
 
     @pytest.mark.asyncio
     async def test_execute_ai_analysis_with_prompt_override(self):
@@ -272,24 +342,26 @@ Multiple transaction queries deadlock on shared index.
                 0,
                 150,
             )
-            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
-                provider="gemini",
-                model="gemini-3.7-flash",
-                api_key="key",
-                base_url=None,
-                source_alias="router",
-                app_name="dnsmasq",
-                redacted_logs="raw logs",
-                log_count=1,
-                prompt_override="Operator explicitly edited prompt payload",
-            )
+            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = (
+                await ai_engine.execute_ai_analysis(
+                    provider="gemini",
+                    model="gemini-3.7-flash",
+                    api_key="key",
+                    base_url=None,
+                    source_alias="router",
+                    app_name="dnsmasq",
+                    redacted_logs="raw logs",
+                    log_count=1,
+                    prompt_override="Operator explicitly edited prompt payload",
+                )
+            )[:9]
             assert prompt_sent == "Operator explicitly edited prompt payload"
             mock_dispatch.assert_called_once_with(
                 api_key="key",
                 model="gemini-3.7-flash",
                 prompt="Operator explicitly edited prompt payload",
                 system_prompt=None,
-                timeout=60.0,
+                timeout=DEFAULT_AI_TIMEOUT,
             )
 
     @pytest.mark.asyncio
@@ -302,17 +374,19 @@ Multiple transaction queries deadlock on shared index.
                 0,
                 160,
             )
-            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
-                provider="openai",
-                model="gpt-4o",
-                api_key="sk-test",
-                base_url="https://api.openai.com/v1",
-                source_alias="router",
-                app_name="dnsmasq",
-                redacted_logs="test log",
-                log_count=1,
-                timeout=45.0,
-            )
+            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = (
+                await ai_engine.execute_ai_analysis(
+                    provider="openai",
+                    model="gpt-4o",
+                    api_key="sk-test",
+                    base_url="https://api.openai.com/v1",
+                    source_alias="router",
+                    app_name="dnsmasq",
+                    redacted_logs="test log",
+                    log_count=1,
+                    timeout=45.0,
+                )
+            )[:9]
             assert summary == "OpenAI summary"
             mock_dispatch.assert_called_once_with(
                 api_key="sk-test",
@@ -336,16 +410,18 @@ Multiple transaction queries deadlock on shared index.
                 0,
                 150,
             )
-            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
-                provider="gemini",
-                model="gemini-3.7-flash",
-                api_key="key",
-                base_url=None,
-                source_alias="router",
-                app_name="dnsmasq",
-                redacted_logs=massive_logs_text,
-                log_count=700,
-            )
+            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = (
+                await ai_engine.execute_ai_analysis(
+                    provider="gemini",
+                    model="gemini-3.7-flash",
+                    api_key="key",
+                    base_url=None,
+                    source_alias="router",
+                    app_name="dnsmasq",
+                    redacted_logs=massive_logs_text,
+                    log_count=700,
+                )
+            )[:9]
             assert "[... Truncated older logs to fit token budget ...]" in prompt_sent
             call_prompt = mock_dispatch.call_args[1]["prompt"]
             assert "[... Truncated older logs to fit token budget ...]" in call_prompt
@@ -491,16 +567,18 @@ Multiple transaction queries deadlock on shared index.
                 0,
                 130,
             )
-            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = await ai_engine.execute_ai_analysis(
-                provider="openai_compatible",
-                model="llama3.2",
-                api_key="ollama-key",
-                base_url="http://localhost:11434/v1",
-                source_alias="router",
-                app_name="dnsmasq",
-                redacted_logs="test log",
-                log_count=1,
-            )
+            summary, root_cause, remediation, raw_response, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used = (
+                await ai_engine.execute_ai_analysis(
+                    provider="openai_compatible",
+                    model="llama3.2",
+                    api_key="ollama-key",
+                    base_url="http://localhost:11434/v1",
+                    source_alias="router",
+                    app_name="dnsmasq",
+                    redacted_logs="test log",
+                    log_count=1,
+                )
+            )[:9]
             assert summary == "Llama summary"
             mock_dispatch.assert_called_once_with(
                 api_key="ollama-key",
@@ -508,7 +586,7 @@ Multiple transaction queries deadlock on shared index.
                 prompt=prompt_sent,
                 base_url="http://localhost:11434/v1",
                 system_prompt=None,
-                timeout=60.0,
+                timeout=DEFAULT_AI_TIMEOUT,
             )
 
 
@@ -1297,5 +1375,567 @@ class TestDefaultModelFallback:
                 log_count=1,
             )
             assert mock_dispatch.call_args[1]["model"] == "gemini-3.7-flash"
+
+
+# ===================================================================
+# 7. Fast Failover and Multi-Model Fallback Chain
+# ===================================================================
+
+class TestAiFastFailoverAndFallback:
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_failover_on_503(self):
+        """Primary model failing with 503 fails over to the configured fallback model."""
+        calls = []
+
+        async def fake_dispatch(api_key, model, prompt, system_prompt=None, timeout=60.0):
+            calls.append(model)
+            if model == "gemini-3.7-flash":
+                raise ai_engine.AiServiceUnavailableError("Model is overloaded", code=503)
+            return (
+                "## Summary\nFallback summary\n\n## Root Cause\nFallback cause\n\n## Actionable Remediation\nFallback fix",
+                110,
+                45,
+                0,
+                155,
+            )
+
+        with patch("app.services.ai_engine.dispatch_gemini_request", side_effect=fake_dispatch):
+            res = await ai_engine.execute_ai_analysis(
+                provider="gemini",
+                model="gemini-3.7-flash",
+                api_key="key",
+                base_url=None,
+                source_alias="router",
+                app_name="app",
+                redacted_logs="logs",
+                log_count=1,
+                fallback_models=["gemini-2.5-flash"],
+            )
+            summary, root_cause, remediation, raw_resp, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used, model_used, fallback_attempts = res
+            assert model_used == "gemini-2.5-flash"
+            assert summary == "Fallback summary"
+            assert calls == ["gemini-3.7-flash", "gemini-2.5-flash"]
+            assert len(fallback_attempts) == 1
+            assert "gemini-3.7-flash failed" in fallback_attempts[0]
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_failover_on_timeout(self):
+        """Primary model timing out fails over to the configured fallback model."""
+        calls = []
+
+        async def fake_dispatch(api_key, model, prompt, system_prompt=None, timeout=DEFAULT_AI_TIMEOUT):
+            calls.append(model)
+            if model == "gemini-3.7-flash":
+                raise asyncio.TimeoutError()
+            return (
+                "## Summary\nTimeout fallback summary\n\n## Root Cause\nCause\n\n## Actionable Remediation\nFix",
+                90,
+                30,
+                0,
+                120,
+            )
+
+        with patch("app.services.ai_engine.dispatch_gemini_request", side_effect=fake_dispatch):
+            res = await ai_engine.execute_ai_analysis(
+                provider="gemini",
+                model="gemini-3.7-flash",
+                api_key="key",
+                base_url=None,
+                source_alias="router",
+                app_name="app",
+                redacted_logs="logs",
+                log_count=1,
+                fallback_models=["gemini-2.5-flash"],
+            )
+            summary, root_cause, remediation, raw_resp, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used, model_used, fallback_attempts = res
+            assert model_used == "gemini-2.5-flash"
+            assert summary == "Timeout fallback summary"
+            assert calls == ["gemini-3.7-flash", "gemini-2.5-flash"]
+            assert len(fallback_attempts) == 1
+            assert fallback_attempts[0] == "gemini-3.7-flash failed: Request timed out"
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_failover_on_504_deadline_exceeded(self):
+        """Primary model failing with 504 DEADLINE_EXCEEDED fails over to the configured fallback model."""
+        calls = []
+
+        async def fake_dispatch(api_key, model, prompt, system_prompt=None, timeout=DEFAULT_AI_TIMEOUT):
+            calls.append(model)
+            if model == "gemini-3.8-flash":
+                raise ai_engine.AiServiceUnavailableError(
+                    "Gemini API error: 504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'Deadline expired before operation could complete.'}}",
+                    code=504,
+                )
+            return (
+                "## Summary\n504 fallback summary\n\n## Root Cause\nCause\n\n## Actionable Remediation\nFix",
+                95,
+                35,
+                0,
+                130,
+            )
+
+        with patch("app.services.ai_engine.dispatch_gemini_request", side_effect=fake_dispatch):
+            res = await ai_engine.execute_ai_analysis(
+                provider="gemini",
+                model="gemini-3.8-flash",
+                api_key="key",
+                base_url=None,
+                source_alias="router",
+                app_name="app",
+                redacted_logs="logs",
+                log_count=1,
+                fallback_models=["gemini-3.7-flash"],
+            )
+            summary, root_cause, remediation, raw_resp, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used, model_used, fallback_attempts = res
+            assert model_used == "gemini-3.7-flash"
+            assert summary == "504 fallback summary"
+            assert calls == ["gemini-3.8-flash", "gemini-3.7-flash"]
+            assert len(fallback_attempts) == 1
+            assert "gemini-3.8-flash failed" in fallback_attempts[0]
+            assert "504" in fallback_attempts[0]
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_failover_on_404_not_found(self):
+        """Primary model not found (404) fails over to the configured fallback model."""
+        calls = []
+
+        async def fake_dispatch(api_key, model, prompt, system_prompt=None, timeout=DEFAULT_AI_TIMEOUT):
+            calls.append(model)
+            if model == "nonexistent-model":
+                raise ai_engine.AiServiceUnavailableError(
+                    "Gemini API error: 404 NOT_FOUND. models/nonexistent-model is not found.",
+                    code=404,
+                )
+            return (
+                "## Summary\n404 fallback summary\n\n## Root Cause\nCause\n\n## Actionable Remediation\nFix",
+                90,
+                30,
+                0,
+                120,
+            )
+
+        with patch("app.services.ai_engine.dispatch_gemini_request", side_effect=fake_dispatch):
+            res = await ai_engine.execute_ai_analysis(
+                provider="gemini",
+                model="nonexistent-model",
+                api_key="key",
+                base_url=None,
+                source_alias="router",
+                app_name="app",
+                redacted_logs="logs",
+                log_count=1,
+                fallback_models=["gemini-3.7-flash"],
+            )
+            summary, root_cause, remediation, raw_resp, prompt_sent, tokens_in, tokens_out, tokens_thoughts, tokens_used, model_used, fallback_attempts = res
+            assert model_used == "gemini-3.7-flash"
+            assert summary == "404 fallback summary"
+            assert calls == ["nonexistent-model", "gemini-3.7-flash"]
+            assert len(fallback_attempts) == 1
+            assert "nonexistent-model failed" in fallback_attempts[0]
+            assert "404" in fallback_attempts[0]
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_no_failover_on_client_error(self):
+        """Non-retryable client errors (e.g. invalid auth) do NOT trigger fallback."""
+        calls = []
+
+        async def fake_dispatch(api_key, model, prompt, system_prompt=None, timeout=60.0):
+            calls.append(model)
+            raise ValueError("Invalid API key provided")
+
+        with patch("app.services.ai_engine.dispatch_gemini_request", side_effect=fake_dispatch):
+            with pytest.raises(ValueError) as exc:
+                await ai_engine.execute_ai_analysis(
+                    provider="gemini",
+                    model="gemini-3.7-flash",
+                    api_key="bad-key",
+                    base_url=None,
+                    source_alias="router",
+                    app_name="app",
+                    redacted_logs="logs",
+                    log_count=1,
+                    fallback_models=["gemini-2.5-flash"],
+                )
+            assert "Invalid API key" in str(exc.value)
+            assert calls == ["gemini-3.7-flash"]
+
+    @pytest.mark.asyncio
+    async def test_execute_ai_analysis_all_fallbacks_fail(self):
+        """When all models in chain fail with 503, the final exception is raised."""
+        calls = []
+
+        async def fake_dispatch(api_key, model, prompt, system_prompt=None, timeout=60.0):
+            calls.append(model)
+            raise ai_engine.AiServiceUnavailableError(f"{model} overloaded", code=503)
+
+        with patch("app.services.ai_engine.dispatch_gemini_request", side_effect=fake_dispatch):
+            with pytest.raises(ai_engine.AiServiceUnavailableError):
+                await ai_engine.execute_ai_analysis(
+                    provider="gemini",
+                    model="gemini-3.7-flash",
+                    api_key="key",
+                    base_url=None,
+                    source_alias="router",
+                    app_name="app",
+                    redacted_logs="logs",
+                    log_count=1,
+                    fallback_models=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+                )
+            assert calls == ["gemini-3.7-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+
+    @pytest.mark.asyncio
+    async def test_diagnose_endpoint_with_fallback_success_and_audit(self, populated_db, auth_client):
+        """Diagnose endpoint correctly invokes fallback model, reports fallback in response, and logs used model in audit table."""
+        # Configure fallback models in system settings
+        conn = sqlite3.connect(populated_db)
+        conn.execute(
+            "INSERT INTO system_settings (key, value, updated_at, is_encrypted) VALUES ('ai_fallback_models', 'gemini-2.5-flash', datetime('now'), 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        mock_fallback_response = (
+            "## Summary\nFallback analysis succeeded.\n\n"
+            "## Root Cause\nDNS server connection issue.\n\n"
+            "## Actionable Remediation\nCheck network routing."
+        )
+
+        async def fake_dispatch(api_key, model, prompt, system_prompt=None, timeout=60.0):
+            if model == "gemini-3.7-flash":
+                raise ai_engine.AiServiceUnavailableError("Model 3.7 overloaded", code=503)
+            return (
+                mock_fallback_response,
+                150,
+                55,
+                0,
+                205,
+            )
+
+        with patch("app.services.ai_engine.dispatch_gemini_request", side_effect=fake_dispatch):
+            res = await auth_client.post(
+                "/api/ai/diagnose",
+                json={"log_ids": [1, 2]},
+            )
+            assert res.status_code == 200
+            data = res.json()
+            assert data["summary"] == "Fallback analysis succeeded."
+            assert data["model_used"] == "gemini-2.5-flash"
+            assert data["fallback_used"] is True
+            assert len(data["fallback_attempts"]) == 1
+            assert "gemini-3.7-flash failed" in data["fallback_attempts"][0]
+
+            audit_id = data["audit_id"]
+            assert audit_id is not None
+
+            # Verify that ai_audit_log accurately recorded the fallback model
+            audit_res = await auth_client.get("/api/ai/audit?limit=5")
+            assert audit_res.status_code == 200
+            matching = [item for item in audit_res.json()["items"] if item["id"] == audit_id]
+            assert len(matching) == 1
+            assert matching[0]["model"] == "gemini-2.5-flash"
+
+    @pytest.mark.asyncio
+    async def test_settings_ai_fallback_models_crud(self, populated_db, auth_client):
+        """Settings endpoint successfully reads and updates ai_fallback_models."""
+        get_res = await auth_client.get("/api/settings")
+        assert get_res.status_code == 200
+        assert "ai_fallback_models" in get_res.json()
+        assert get_res.json()["ai_fallback_models"] == ""
+
+        # Update fallback models
+        update_res = await auth_client.post(
+            "/api/settings",
+            json={"ai_fallback_models": "gemini-2.5-flash, gemini-2.5-flash-lite"},
+        )
+        assert update_res.status_code == 200
+        assert update_res.json()["status"] == "ok"
+
+        # Read back
+        get_res2 = await auth_client.get("/api/settings")
+        assert get_res2.status_code == 200
+        assert get_res2.json()["ai_fallback_models"] == "gemini-2.5-flash, gemini-2.5-flash-lite"
+
+    @pytest.mark.asyncio
+    async def test_preview_returns_configured_fallback_models(self, populated_db, auth_client):
+        """Preview endpoint returns configured fallback_models from settings."""
+        # Configure fallback models in settings
+        await auth_client.post(
+            "/api/settings",
+            json={"ai_fallback_models": "gemini-2.5-flash, gemini-2.5-flash-lite"},
+        )
+
+        res = await auth_client.post(
+            "/api/ai/preview",
+            json={"log_ids": [1, 2]},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert "fallback_models" in data
+        assert data["fallback_models"] == ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+
+    @pytest.mark.asyncio
+    async def test_diagnose_logs_stream_sse_events(self, populated_db, auth_client):
+        """Streaming diagnose endpoint emits SSE events for init, calling, failover, and complete."""
+        await auth_client.post(
+            "/api/settings",
+            json={"ai_fallback_models": "gemini-2.5-flash"},
+        )
+
+        async def fake_dispatch(api_key, model, prompt, system_prompt=None, timeout=60.0):
+            if model == "gemini-3.7-flash":
+                raise ai_engine.AiServiceUnavailableError("503 Model Overloaded", code=503)
+            return (
+                "## Summary\nStreamed summary\n\n## Root Cause\nStreamed cause\n\n## Actionable Remediation\nStreamed fix",
+                120,
+                35,
+                0,
+                155,
+            )
+
+        with patch("app.services.ai_engine.dispatch_gemini_request", side_effect=fake_dispatch):
+            res = await auth_client.post(
+                "/api/ai/diagnose/stream",
+                json={"log_ids": [1, 2]},
+            )
+            assert res.status_code == 200
+            assert "text/event-stream" in res.headers["content-type"]
+
+            # Parse SSE lines
+            lines = res.text.strip().split("\n\n")
+            events = []
+            for line in lines:
+                if line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+
+            stages = [e.get("stage") for e in events]
+            assert "init" in stages
+            assert "calling" in stages
+            assert "failover" in stages
+            assert "complete" in stages
+
+            complete_event = next(e for e in events if e.get("stage") == "complete")
+            assert complete_event["result"]["model_used"] == "gemini-2.5-flash"
+            assert complete_event["result"]["fallback_used"] is True
+
+
+class TestAiModelDiscovery:
+    """Tests for dynamic model discovery, caching, and model listing API."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_available_models_gemini_success(self):
+        """Discovers Gemini text models, filters out embeddings/imagen, and flags thinking support."""
+        class MockModel:
+            def __init__(self, name, display_name, supported_actions=None):
+                self.name = name
+                self.display_name = display_name
+                self.description = "A model"
+                self.supported_actions = supported_actions or ["generateContent"]
+
+        class AsyncIterator:
+            def __init__(self, items):
+                self.items = items
+            def __aiter__(self):
+                self._iter = iter(self.items)
+                return self
+            async def __anext__(self):
+                try:
+                    return next(self._iter)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        mock_models = [
+            MockModel("models/gemini-3.7-flash", "Gemini 3.7 Flash"),
+            MockModel("models/gemini-2.5-flash", "Gemini 2.5 Flash"),
+            MockModel("models/text-embedding-004", "Text Embedding", supported_actions=["embedContent"]),
+            MockModel("models/imagen-3.0-generate-002", "Imagen 3", supported_actions=["imageGeneration"]),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.aio.models.list = AsyncMock(return_value=AsyncIterator(mock_models))
+
+        with patch("app.services.ai_engine.genai.Client", return_value=mock_client):
+            models = await ai_engine.fetch_available_models("gemini", api_key="test-gemini-key")
+
+            model_ids = [m["id"] for m in models]
+            assert "gemini-3.7-flash" in model_ids
+            assert "gemini-2.5-flash" in model_ids
+            assert "text-embedding-004" not in model_ids
+            assert "imagen-3.0-generate-002" not in model_ids
+
+            m_37 = next(m for m in models if m["id"] == "gemini-3.7-flash")
+            assert m_37["supports_thinking"] is True
+
+            m_25 = next(m for m in models if m["id"] == "gemini-2.5-flash")
+            assert m_25["supports_thinking"] is True
+
+    @pytest.mark.asyncio
+    async def test_fetch_available_models_openai_success(self):
+        """Discovers OpenAI chat models, filters out embeddings/audio, and flags reasoning."""
+        class MockModel:
+            def __init__(self, model_id):
+                self.id = model_id
+
+        class AsyncIterator:
+            def __init__(self, items):
+                self.items = items
+            def __aiter__(self):
+                self._iter = iter(self.items)
+                return self
+            async def __anext__(self):
+                try:
+                    return next(self._iter)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        mock_models = [
+            MockModel("gpt-4o"),
+            MockModel("o3-mini"),
+            MockModel("text-embedding-3-small"),
+            MockModel("whisper-1"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.models.list = MagicMock(return_value=AsyncIterator(mock_models))
+
+        with patch("app.services.ai_engine.AsyncOpenAI", return_value=mock_client):
+            models = await ai_engine.fetch_available_models("openai", api_key="test-openai-key")
+
+            model_ids = [m["id"] for m in models]
+            assert "gpt-4o" in model_ids
+            assert "o3-mini" in model_ids
+            assert "text-embedding-3-small" not in model_ids
+            assert "whisper-1" not in model_ids
+
+            o3 = next(m for m in models if m["id"] == "o3-mini")
+            assert o3["supports_thinking"] is True
+
+            gpt4 = next(m for m in models if m["id"] == "gpt-4o")
+            assert gpt4["supports_thinking"] is False
+
+    @pytest.mark.asyncio
+    async def test_fetch_available_models_openai_compatible_filters_non_text(self):
+        """OpenAI-compatible endpoints filter out transcribe, image, whisper, and embeddings."""
+        class MockModel:
+            def __init__(self, model_id):
+                self.id = model_id
+
+        class AsyncIterator:
+            def __init__(self, items):
+                self.items = items
+            def __aiter__(self):
+                self._iter = iter(self.items)
+                return self
+            async def __anext__(self):
+                try:
+                    return next(self._iter)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        mock_models = [
+            MockModel("llama3.2"),
+            MockModel("mistral-small"),
+            MockModel("transcribe"),
+            MockModel("image"),
+            MockModel("whisper-large-v3"),
+            MockModel("nomic-embed-text"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.models.list = MagicMock(return_value=AsyncIterator(mock_models))
+
+        with patch("app.services.ai_engine.AsyncOpenAI", return_value=mock_client):
+            models = await ai_engine.fetch_available_models("openai_compatible", base_url="http://localhost:11434/v1")
+            model_ids = [m["id"] for m in models]
+            assert "llama3.2" in model_ids
+            assert "mistral-small" in model_ids
+            assert "transcribe" not in model_ids
+            assert "image" not in model_ids
+            assert "whisper-large-v3" not in model_ids
+            assert "nomic-embed-text" not in model_ids
+
+    def test_is_text_generation_model_classification(self):
+        """Verifies text vs non-text model detection."""
+        assert ai_engine.is_text_generation_model("gemini-3.7-flash") is True
+        assert ai_engine.is_text_generation_model("gpt-4o") is True
+        assert ai_engine.is_text_generation_model("llama3.2") is True
+        assert ai_engine.is_text_generation_model("o3-mini") is True
+
+        # Non-text models must return False
+        assert ai_engine.is_text_generation_model("transcribe") is False
+        assert ai_engine.is_text_generation_model("image") is False
+        assert ai_engine.is_text_generation_model("whisper-1") is False
+        assert ai_engine.is_text_generation_model("text-embedding-3-small") is False
+        assert ai_engine.is_text_generation_model("tts-1") is False
+        assert ai_engine.is_text_generation_model("dall-e-3") is False
+        assert ai_engine.is_text_generation_model("imagen-3.0-generate-002") is False
+
+    @pytest.mark.asyncio
+    async def test_fetch_available_models_no_key_returns_empty(self):
+        """When no API key is provided, returns an empty list without calling provider."""
+        models = await ai_engine.fetch_available_models("gemini", api_key=None)
+        assert models == []
+
+        models_openai = await ai_engine.fetch_available_models("openai", api_key="")
+        assert models_openai == []
+
+    @pytest.mark.asyncio
+    async def test_get_ai_models_endpoint_no_key_prompts_user(self, populated_db, auth_client):
+        """GET /api/ai/models without API key returns has_api_key=False and helpful message."""
+        # Clear the API key seeded by populated_db
+        await auth_client.post("/api/settings", json={"ai_api_key": ""})
+
+        res = await auth_client.get("/api/ai/models?provider=gemini")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["has_api_key"] is False
+        assert data["models"] == []
+        assert "No API key configured for Google Gemini" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_get_ai_models_endpoint_caching_and_refresh(self, populated_db, auth_client):
+        """GET /api/ai/models caches results in SQLite and refreshes on refresh=True."""
+        # 1. Save an API key
+        save_res = await auth_client.post(
+            "/api/settings",
+            json={"ai_api_key": "valid-test-key", "ai_provider": "gemini"},
+        )
+        assert save_res.status_code == 200
+
+        mock_discovered = [
+            {"id": "gemini-3.7-flash", "name": "Gemini 3.7 Flash", "description": "Fast", "supports_thinking": True, "is_deprecated": False},
+            {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "description": "Fast", "supports_thinking": True, "is_deprecated": False},
+        ]
+
+        with patch("app.api.ai.fetch_available_models", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = mock_discovered
+
+            # First call: cache miss, triggers live fetch
+            res1 = await auth_client.get("/api/ai/models?provider=gemini")
+            assert res1.status_code == 200
+            data1 = res1.json()
+            assert data1["has_api_key"] is True
+            assert data1["is_live"] is True
+            assert len(data1["models"]) == 2
+            assert mock_fetch.call_count == 1
+
+            # Second call without refresh: returns cached data without calling provider again
+            res2 = await auth_client.get("/api/ai/models?provider=gemini")
+            assert res2.status_code == 200
+            data2 = res2.json()
+            assert data2["has_api_key"] is True
+            assert data2["is_live"] is False
+            assert len(data2["models"]) == 2
+            assert mock_fetch.call_count == 1  # No additional call!
+
+            # Third call with refresh=True: forces fresh live query
+            res3 = await auth_client.get("/api/ai/models?provider=gemini&refresh=true")
+            assert res3.status_code == 200
+            data3 = res3.json()
+            assert data3["is_live"] is True
+            assert mock_fetch.call_count == 2
+
+
+
 
 

@@ -61,3 +61,52 @@ export function parseFullEnvelope(
     userPrompt: fullText.trim(),
   };
 }
+
+/**
+ * Format a 1-based index into an ordinal string: 1 -> "1st", 2 -> "2nd", 3 -> "3rd", 4 -> "4th", etc.
+ */
+export function getOrdinalSuffix(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n}st`;
+  if (mod10 === 2 && mod100 !== 12) return `${n}nd`;
+  if (mod10 === 3 && mod100 !== 13) return `${n}rd`;
+  return `${n}th`;
+}
+
+export const NON_TEXT_MODEL_KEYWORDS: string[] = [
+  'transcribe',
+  'transcription',
+  'whisper',
+  'audio',
+  'speech',
+  'voice',
+  'tts',
+  'stt',
+  'realtime',
+  'image',
+  'imagen',
+  'dall-e',
+  'dalle',
+  'flux',
+  'diffusion',
+  'midjourney',
+  'veo',
+  'video',
+  'canvas',
+  'embedding',
+  'embed',
+  'moderation',
+  'rerank',
+];
+
+/**
+ * Returns True if modelId is a text-generation/chat model, False if it is an audio/image/embedding model.
+ */
+export function isTextModel(modelId: string): boolean {
+  const low = (modelId || '').toLowerCase();
+  if (!low) return false;
+  return !NON_TEXT_MODEL_KEYWORDS.some((kw) => low.includes(kw));
+}
+
+

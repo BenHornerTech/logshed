@@ -1,9 +1,24 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
-import { Sparkles, Copy, Check, Shield, RefreshCw, AlertCircle, Info, RotateCcw } from 'lucide-react';
-import { LogEntry, AiPreviewResponse, AiDiagnosisResponse } from '../../types.ts';
-import { previewAiPrompt, diagnoseLogs } from '../../api/ai.ts';
+import {
+  Sparkles,
+  Copy,
+  Check,
+  Shield,
+  RefreshCw,
+  AlertCircle,
+  Info,
+  RotateCcw,
+  Clock,
+  ArrowRight,
+  ArrowUp,
+  ArrowDown,
+  Plus,
+  X,
+} from 'lucide-react';
+import { LogEntry, AiPreviewResponse, AiDiagnosisResponse, AiModelInfo } from '../../types.ts';
+import { previewAiPrompt, diagnoseLogs, getAiModels } from '../../api/ai.ts';
 import { useClipboard } from '../../utils/hooks.ts';
-import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, parseFullEnvelope, normalizePrompt } from '../../utils/aiPrompt.ts';
+import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, buildFullEnvelope, parseFullEnvelope, normalizePrompt, getOrdinalSuffix } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 
@@ -29,8 +44,31 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const [userContext, setUserContext] = useState<string>('');
   const [provider, setProvider] = useState<string>('gemini');
   const [model, setModel] = useState<string>(DEFAULT_AI_MODEL);
+  const [fallbackModels, setFallbackModels] = useState<string>('');
+
+  // Model discovery states
+  const [availableModels, setAvailableModels] = useState<AiModelInfo[]>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState<boolean>(false);
+  const [hasApiKeyForProvider, setHasApiKeyForProvider] = useState<boolean>(true);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [isCustomModel, setIsCustomModel] = useState<boolean>(false);
+  const [selectedFallbackToAdd, setSelectedFallbackToAdd] = useState<string>('');
+  const [customFallbackInput, setCustomFallbackInput] = useState<string>('');
+  const [showCustomFallbackInput, setShowCustomFallbackInput] = useState<boolean>(false);
 
   const [isDiagnosing, setIsDiagnosing] = useState<boolean>(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+  const [streamProgress, setStreamProgress] = useState<{
+    stage: 'init' | 'calling' | 'failover' | 'complete' | 'error';
+    currentModel?: string;
+    failedModel?: string;
+    nextModel?: string;
+    message?: string;
+    failovers: Array<{ failedModel: string; nextModel: string; error?: string }>;
+  }>({
+    stage: 'init',
+    failovers: [],
+  });
   const [analysisResult, setAnalysisResult] = useState<AiDiagnosisResponse | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
@@ -73,8 +111,33 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       setPromptText('');
       setSystemPrompt(DEFAULT_SYSTEM_PROMPT);
       setPromptViewMode('analysis');
+      setFallbackModels('');
+      setStreamProgress({ stage: 'init', failovers: [] });
+      setElapsedSeconds(0);
     }
   }, [isOpen, selectedLogs]);
+
+  // Timer effect to track elapsed seconds while diagnosing
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    if (isDiagnosing) {
+      setElapsedSeconds(0);
+      interval = setInterval(() => {
+        setElapsedSeconds((prev) => prev + 1);
+      }, 1000);
+    } else {
+      setElapsedSeconds(0);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isDiagnosing]);
+
+  const formatElapsed = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
 
   // Auto-expand prompt textarea to avoid premature CSS height clipping
   useEffect(() => {
@@ -110,15 +173,77 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       setPreview(res);
       setProvider(res.provider);
       setModel(res.model);
+      const initialFallbacks = res.fallback_models && res.fallback_models.length > 0
+        ? res.fallback_models.join(', ')
+        : '';
+      setFallbackModels(initialFallbacks);
       const initialSys = res.system_prompt || DEFAULT_SYSTEM_PROMPT;
       setSystemPrompt(initialSys);
       setPromptText(buildCombinedPrompt(res.redacted_prompt, userContext));
+      loadModels(res.provider);
     } catch (err: any) {
       setPreviewError(err.message || 'Failed to generate redacted AI preview.');
     } finally {
       setIsLoadingPreview(false);
     }
   };
+
+  const loadModels = async (prov: string) => {
+    try {
+      setIsLoadingModels(true);
+      setModelsError(null);
+      const res = await getAiModels(prov);
+      setAvailableModels(res.models || []);
+      setHasApiKeyForProvider(res.has_api_key);
+      if (res.error) setModelsError(res.error);
+    } catch (err: any) {
+      setModelsError(err.message || 'Failed to load models.');
+      setAvailableModels([]);
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
+
+  const handleProviderChange = (newProvider: string) => {
+    setProvider(newProvider);
+    setIsCustomModel(false);
+    setSelectedFallbackToAdd('');
+    setShowCustomFallbackInput(false);
+    loadModels(newProvider);
+  };
+
+  const fallbackList = fallbackModels
+    ? fallbackModels.split(',').map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  const moveFallback = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= fallbackList.length) return;
+    const copy = [...fallbackList];
+    const [removed] = copy.splice(index, 1);
+    copy.splice(target, 0, removed);
+    setFallbackModels(copy.join(', '));
+  };
+
+  const removeFallback = (index: number) => {
+    const copy = fallbackList.filter((_, i) => i !== index);
+    setFallbackModels(copy.join(', '));
+  };
+
+  const addFallback = (modelName: string) => {
+    const trimmed = modelName.trim();
+    if (!trimmed || fallbackList.includes(trimmed)) return;
+    setFallbackModels([...fallbackList, trimmed].join(', '));
+  };
+
+  const handlePrimaryModelChange = (newModel: string) => {
+    setModel(newModel);
+    if (fallbackList.includes(newModel)) {
+      const updated = fallbackList.filter((m) => m !== newModel);
+      setFallbackModels(updated.join(', '));
+    }
+  };
+
 
   const handleUserContextChange = (newContext: string) => {
     const prevDefault = buildCombinedPrompt(preview?.redacted_prompt || '', userContext);
@@ -163,9 +288,21 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       return;
     }
 
+    const parsedFallbacks = fallbackModels
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean);
+
     try {
       setIsDiagnosing(true);
       setAnalysisError(null);
+      setStreamProgress({
+        stage: 'init',
+        currentModel: model,
+        message: `Initiating diagnosis with ${model}...`,
+        failovers: [],
+      });
+
       const res = await diagnoseLogs({
         log_ids: validLogIds,
         user_context: userContext.trim() || undefined,
@@ -173,6 +310,42 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
         system_prompt_override: hasEditedSystem ? systemPrompt.trim() : undefined,
         provider,
         model,
+        fallback_models: parsedFallbacks.length > 0 ? parsedFallbacks : undefined,
+        onEvent: (evt) => {
+          if (evt.stage === 'calling') {
+            setStreamProgress((prev) => ({
+              ...prev,
+              stage: 'calling',
+              currentModel: evt.model || prev.currentModel,
+              message: evt.is_fallback
+                ? `Querying fallback model (${evt.model})...`
+                : `Querying primary model (${evt.model})...`,
+            }));
+          } else if (evt.stage === 'failover') {
+            setStreamProgress((prev) => ({
+              ...prev,
+              stage: 'failover',
+              failedModel: evt.failed_model,
+              nextModel: evt.next_model,
+              currentModel: evt.next_model,
+              message: `Model ${evt.failed_model} overloaded. Failing over to ${evt.next_model}...`,
+              failovers: [
+                ...prev.failovers,
+                {
+                  failedModel: evt.failed_model || '',
+                  nextModel: evt.next_model || '',
+                  error: evt.error,
+                },
+              ],
+            }));
+          } else if (evt.stage === 'error') {
+            setStreamProgress((prev) => ({
+              ...prev,
+              stage: 'error',
+              message: evt.message,
+            }));
+          }
+        },
       });
       setAnalysisResult(res);
     } catch (err: any) {
@@ -339,33 +512,253 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
             </div>
 
             {/* Provider & Model Selectors */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                  AI Provider
-                </label>
-                <select
-                  value={provider}
-                  onChange={(e) => setProvider(e.target.value)}
-                  className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
-                >
-                  <option value="gemini">Google Gemini</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="openai_compatible">OpenAI-Compatible (Ollama / LocalAI)</option>
-                </select>
+            <div className="space-y-3">
+              {/* Missing API Key Warning */}
+              {!hasApiKeyForProvider && provider !== 'openai_compatible' && (
+                <div className="p-2.5 bg-amber-950/40 border border-amber-800/60 rounded-lg flex items-start gap-2 text-amber-300 text-xs font-mono">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <span>
+                    No API key configured for {provider === 'gemini' ? 'Google Gemini' : 'OpenAI'}. Please configure your API key in Settings to load models and run AI analysis.
+                  </span>
+                </div>
+              )}
+
+              {/* Models Loading Error Notice */}
+              {modelsError && (
+                <div className="p-2.5 bg-red-950/40 border border-red-800/60 rounded-lg flex items-start gap-2 text-red-300 text-xs font-mono">
+                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <span>{modelsError}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
+                    AI Provider
+                  </label>
+                  <select
+                    value={provider}
+                    onChange={(e) => handleProviderChange(e.target.value)}
+                    className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+                  >
+                    <option value="gemini">Google Gemini</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="openai_compatible">OpenAI-Compatible (Ollama / LocalAI)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400 uppercase">
+                      <span>Primary Model</span>
+                      {isLoadingModels && (
+                        <RefreshCw className="w-3 h-3 text-accent-400 animate-spin" />
+                      )}
+                    </label>
+                    {isCustomModel && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCustomModel(false);
+                          const validModels = availableModels.filter(
+                            (m) => !fallbackList.includes(m.id)
+                          );
+                          if (validModels.length > 0) {
+                            handlePrimaryModelChange(validModels[0].id);
+                          } else if (availableModels.length > 0) {
+                            handlePrimaryModelChange(availableModels[0].id);
+                          }
+                        }}
+                        className="text-[10px] text-accent-400 hover:text-accent-300 underline cursor-pointer"
+                      >
+                        Use dropdown
+                      </button>
+                    )}
+                  </div>
+
+                  {availableModels.length > 0 && !isCustomModel ? (
+                    <select
+                      value={availableModels.some((m) => m.id === model) ? model : '__custom__'}
+                      onChange={(e) => {
+                        if (e.target.value === '__custom__') {
+                          setIsCustomModel(true);
+                        } else {
+                          handlePrimaryModelChange(e.target.value);
+                        }
+                      }}
+                      className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+                    >
+                      {availableModels
+                        .filter((m) => m.id === model || !fallbackList.includes(m.id))
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.id} {m.supports_thinking ? ' [Reasoning]' : ''}
+                          </option>
+                        ))}
+                      {!availableModels.some((m) => m.id === model) && model && (
+                        <option value={model}>{model} (Selected / Custom)</option>
+                      )}
+                      <option value="__custom__">Custom model name...</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={model}
+                      onChange={(e) => handlePrimaryModelChange(e.target.value)}
+                      placeholder={provider === 'gemini' ? DEFAULT_AI_MODEL : provider === 'openai' ? 'gpt-4o' : 'llama3.2'}
+                      className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+                    />
+                  )}
+                </div>
               </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                  Model Identifier
-                </label>
-                <input
-                  type="text"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder={provider === 'gemini' ? DEFAULT_AI_MODEL : provider === 'openai' ? 'gpt-4o' : 'llama3.2'}
-                  className="w-full bg-dark-950 border border-dark-700 rounded px-2.5 py-1.5 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
-                />
+              {/* Fallback Models Ordered Chain */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-semibold text-slate-400 uppercase">
+                    Fallback Models (Sequential Failover Chain)
+                  </label>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    Queried in order on 503, 504, or timeout
+                  </span>
+                </div>
+
+                {fallbackList.length === 0 ? (
+                  <div className="p-2 bg-dark-950 border border-dark-800 rounded text-[11px] text-slate-500 font-mono">
+                    No fallback models configured for this analysis.
+                  </div>
+                ) : (
+                  <div className="space-y-1 max-h-36 overflow-y-auto">
+                    {fallbackList.map((fb, idx) => {
+                      const isThinking = availableModels.find((m) => m.id === fb)?.supports_thinking;
+                      return (
+                        <div
+                          key={idx}
+                          className="flex items-center justify-between p-1.5 bg-dark-950 border border-dark-800 rounded text-xs font-mono"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-semibold shrink-0">
+                              {`${getOrdinalSuffix(idx + 1)} Fallback`}
+                            </span>
+                            <span className="text-slate-200 font-medium truncate">{fb}</span>
+                            {isThinking && (
+                              <span className="px-1 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[9px] shrink-0">
+                                Reasoning
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0 ml-2">
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={() => moveFallback(idx, -1)}
+                              className="p-0.5 text-slate-400 hover:text-slate-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
+                              title="Move up in priority"
+                              aria-label="Move fallback up"
+                            >
+                              <ArrowUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === fallbackList.length - 1}
+                              onClick={() => moveFallback(idx, 1)}
+                              className="p-0.5 text-slate-400 hover:text-slate-200 disabled:opacity-20 disabled:cursor-not-allowed cursor-pointer"
+                              title="Move down in priority"
+                              aria-label="Move fallback down"
+                            >
+                              <ArrowDown className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeFallback(idx)}
+                              className="p-0.5 text-red-400 hover:text-red-300 cursor-pointer"
+                              title="Remove fallback model"
+                              aria-label="Remove fallback"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Add Fallback Model Selector */}
+                <div className="pt-1">
+                  {!showCustomFallbackInput ? (
+                    <div className="flex items-center gap-2 w-full">
+                      <select
+                        value={selectedFallbackToAdd}
+                        onChange={(e) => {
+                          if (e.target.value === '__custom_fallback__') {
+                            setShowCustomFallbackInput(true);
+                            setSelectedFallbackToAdd('');
+                          } else {
+                            setSelectedFallbackToAdd(e.target.value);
+                          }
+                        }}
+                        className="flex-1 min-w-0 bg-dark-950 border border-dark-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono truncate"
+                      >
+                        <option value="">-- Add Fallback Model --</option>
+                        {availableModels
+                          .filter((m) => m.id !== model && !fallbackList.includes(m.id))
+                          .map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.id} {m.supports_thinking ? ' [Reasoning]' : ''}
+                            </option>
+                          ))}
+                        <option value="__custom_fallback__">Custom fallback model...</option>
+                      </select>
+                      <button
+                        type="button"
+                        disabled={!selectedFallbackToAdd}
+                        onClick={() => {
+                          addFallback(selectedFallbackToAdd);
+                          setSelectedFallbackToAdd('');
+                        }}
+                        className="shrink-0 px-2.5 py-1 bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded text-xs text-slate-200 font-mono flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 w-full">
+                      <input
+                        type="text"
+                        value={customFallbackInput}
+                        onChange={(e) => setCustomFallbackInput(e.target.value)}
+                        placeholder="Enter custom model ID"
+                        className="flex-1 min-w-0 bg-dark-950 border border-dark-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono"
+                      />
+                      <button
+                        type="button"
+                        disabled={!customFallbackInput.trim()}
+                        onClick={() => {
+                          addFallback(customFallbackInput);
+                          setCustomFallbackInput('');
+                          setShowCustomFallbackInput(false);
+                        }}
+                        className="shrink-0 px-2.5 py-1 bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded text-xs text-slate-200 font-mono flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowCustomFallbackInput(false);
+                          setCustomFallbackInput('');
+                        }}
+                        className="shrink-0 p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
+                        title="Cancel custom fallback"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -389,6 +782,78 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               </div>
             )}
 
+            {/* In-Flight Live Progress & Failover Pipeline Card */}
+            {isDiagnosing && (
+              <div className="p-3.5 bg-dark-950 border border-accent-800/60 rounded-lg space-y-2.5 animate-in fade-in">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="w-4 h-4 text-accent-400 animate-spin" />
+                    <span className="font-semibold text-slate-200 text-xs">
+                      {streamProgress.message || `Analyzing logs with ${streamProgress.currentModel || model}...`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 font-mono text-[11px] bg-dark-900 border border-dark-700 px-2 py-0.5 rounded text-slate-300">
+                    <Clock className="w-3.5 h-3.5 text-accent-400" />
+                    <span>Elapsed: {formatElapsed(elapsedSeconds)}</span>
+                  </div>
+                </div>
+
+                {/* Real-time Failover Alert Banner */}
+                {streamProgress.failovers.length > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    {streamProgress.failovers.map((fo, idx) => (
+                      <div
+                        key={idx}
+                        className="p-2 bg-amber-950/50 border border-amber-800/70 rounded text-[11px] text-amber-200 flex items-start gap-2"
+                      >
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <span className="font-semibold text-amber-300">Failover Active:</span>{' '}
+                          Model <span className="font-mono text-amber-100">{fo.failedModel}</span> encountered an overload or timeout error. Failing over to <span className="font-mono text-amber-100">{fo.nextModel}</span>...
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Live Chain Status Pills */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px] font-mono">
+                  <span className="text-slate-500 uppercase font-semibold">Chain Status:</span>
+                  <span
+                    className={`px-2 py-0.5 rounded border ${
+                      streamProgress.failovers.some((f) => f.failedModel === model)
+                        ? 'bg-amber-950/60 border-amber-800 text-amber-400 line-through'
+                        : streamProgress.currentModel === model
+                        ? 'bg-accent-950/80 border-accent-600 text-accent-300 animate-pulse'
+                        : 'bg-dark-900 border-dark-700 text-slate-400'
+                    }`}
+                  >
+                    {model}
+                  </span>
+                  {fallbackModels
+                    .split(',')
+                    .map((m) => m.trim())
+                    .filter(Boolean)
+                    .map((fb, idx) => (
+                      <React.Fragment key={idx}>
+                        <ArrowRight className="w-3 h-3 text-slate-600 shrink-0" />
+                        <span
+                          className={`px-2 py-0.5 rounded border ${
+                            streamProgress.failovers.some((f) => f.failedModel === fb)
+                              ? 'bg-amber-950/60 border-amber-800 text-amber-400 line-through'
+                              : streamProgress.currentModel === fb
+                              ? 'bg-amber-950/80 border-amber-600 text-amber-300 animate-pulse'
+                              : 'bg-dark-900 border-dark-700 text-slate-400'
+                          }`}
+                        >
+                          {fb}
+                        </span>
+                      </React.Fragment>
+                    ))}
+                </div>
+              </div>
+            )}
+
             {/* AI Advisory Disclaimer */}
             <div className="p-3 bg-dark-950/80 border border-dark-700/80 rounded-lg flex items-start gap-2.5 text-slate-400 text-[11px] leading-relaxed">
               <AlertCircle className="w-4 h-4 text-amber-400/90 shrink-0 mt-0.5" />
@@ -402,12 +867,12 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               <button
                 onClick={handleRunAnalysis}
                 disabled={isDiagnosing}
-                className="bg-accent-600 hover:bg-accent-500 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition shadow-md"
+                className="bg-accent-600 hover:bg-accent-500 disabled:opacity-50 text-white font-medium px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition shadow-md cursor-pointer disabled:cursor-not-allowed"
               >
                 {isDiagnosing ? (
                   <>
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Running analysis...</span>
+                    <span>Running analysis ({formatElapsed(elapsedSeconds)})...</span>
                   </>
                 ) : (
                   <>
@@ -440,6 +905,11 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                 <div className="flex items-center gap-1.5 font-mono text-[11px] bg-dark-900 border border-dark-700 px-2 py-0.5 rounded text-slate-300">
                   <span className="text-slate-400 text-[10px] uppercase font-semibold">Model:</span>
                   <span className="text-accent-400 font-medium">{analysisResult.model_used}</span>
+                  {analysisResult.fallback_used && (
+                    <span className="bg-amber-950/80 border border-amber-700 text-amber-300 px-1.5 py-0.5 rounded text-[9px] font-semibold tracking-wide uppercase">
+                      Fallback
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -466,6 +936,30 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Fallback notification banner if failover occurred */}
+            {analysisResult.fallback_used && (
+              <div className="p-3 bg-amber-950/40 border border-amber-800/70 rounded-lg flex items-start gap-2.5 text-amber-200 text-xs leading-relaxed">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-semibold text-amber-300">
+                    Model Failover Active
+                  </div>
+                  <div className="text-[11px] text-amber-200/90">
+                    Primary model encountered a temporary 503 overload or timeout. Diagnosis was successfully generated using fallback model <strong className="font-mono text-amber-100">{analysisResult.model_used}</strong>.
+                  </div>
+                  {analysisResult.fallback_attempts && analysisResult.fallback_attempts.length > 0 && (
+                    <div className="pt-1 space-y-0.5">
+                      {analysisResult.fallback_attempts.map((att, idx) => (
+                        <div key={idx} className="font-mono text-[10px] text-amber-300/80">
+                          - {att}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Summary */}
             <div className="bg-dark-950 p-3 rounded-lg border border-dark-700">
