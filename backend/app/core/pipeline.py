@@ -6,6 +6,7 @@ Provides the shared queue, multiline assembly, and SQLite batch consumer.
 import asyncio
 import datetime
 import logging
+import re
 import threading
 import time
 import traceback
@@ -234,6 +235,73 @@ def get_ingest_rate() -> float:
 def reset_ingest_rate() -> None:
     """Resets the ingestion rate tracker (useful for tests)."""
     _rate_tracker.reset()
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\].*?(?:\x07|\x1b\\)|[@-Z\\-_])")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean_log_text(text: str) -> str:
+    """Strip ANSI color/formatting codes and non-printable control characters."""
+    if not text:
+        return text
+    return _CONTROL_CHARS_RE.sub("", _ANSI_ESCAPE_RE.sub("", text))
+
+
+SEVERITY_LEVEL_MAP = {
+    "emerg": 0,
+    "emergency": 0,
+    "alert": 1,
+    "crit": 2,
+    "critical": 2,
+    "fatal": 2,
+    "panic": 2,
+    "err": 3,
+    "error": 3,
+    "warn": 4,
+    "warning": 4,
+    "notice": 5,
+    "log": 6,
+    "info": 6,
+    "informational": 6,
+    "debug": 7,
+    "trace": 7,
+    "verbose": 7,
+}
+
+_RE_KV = re.compile(r"""\b(?:level|lvl|severity)\s*=\s*["']?([a-zA-Z]+)["']?""")
+_RE_JSON = re.compile(r"""["'](?:level|severity)["']\s*:\s*["']([a-zA-Z]+)["']""")
+_RE_BRACKET = re.compile(r"""\[\s*([a-zA-Z]+)\s*\]""")
+_RE_COLON = re.compile(r"""(?:^|[\s\]])([a-zA-Z]+):(?:\s|$)""")
+_RE_AFTER_TS = re.compile(
+    r"""^(?:[0-9T:.,Z+-]{8,}|\w{3}\s+\d+\s+[0-9:]{8})(?:\s+[0-9:.,Z+-]+)?(?:\s+(?:UTC|GMT|CET|EET|WET|MSK|[A-Z]{1,2}[SD]T))?\s+\[?([a-zA-Z]+)\]?\b"""
+)
+
+
+def detect_severity(raw_line: str) -> int:
+    """
+    Detect log severity from line content, falling back to RFC Info (severity 6).
+    Inspects common log formats (logfmt, JSON, brackets, prefix: colon, timestamps)
+    without misinterpreting informational messages emitted on Docker stderr.
+    """
+    clean = clean_log_text(raw_line).strip()
+    if not clean:
+        return 6
+
+    if clean.startswith("Traceback (most recent call last):") or clean.startswith("Exception:"):
+        return 3
+    if clean.startswith("panic:"):
+        return 2
+
+    header = clean[:200]
+
+    for regex in (_RE_KV, _RE_JSON, _RE_BRACKET, _RE_COLON, _RE_AFTER_TS):
+        for m in regex.finditer(header):
+            lvl = m.group(1).lower()
+            if lvl in SEVERITY_LEVEL_MAP:
+                return SEVERITY_LEVEL_MAP[lvl]
+
+    return 6
 
 
 def _is_continuation(line: str) -> bool:

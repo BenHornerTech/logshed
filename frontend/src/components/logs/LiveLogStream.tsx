@@ -20,7 +20,7 @@ import { LogDetailModal } from './LogDetailModal.tsx';
 import { fetchLogs, fetchLogFacets } from '../../api/logs.ts';
 import { fetchAliases } from '../../api/aliases.ts';
 import { useMediaQuery } from '../../utils/hooks.ts';
-import { stripAnsi } from '../../utils/formatters.ts';
+import { stripAnsi, cleanLogMessageForDisplay } from '../../utils/formatters.ts';
 
 function cleanIsoString(ts: string): string {
   let parseable = ts.trim();
@@ -1088,7 +1088,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
                     {/* Line 2: Message Payload (break-all, 2 lines clamp) */}
                     <div className="text-slate-200 text-xs font-mono break-all line-clamp-2 select-text leading-snug">
-                      {stripAnsi(log.message)}
+                      {cleanLogMessageForDisplay(log.message)}
                     </div>
 
                     {/* Line 3: Host Alias + AI Action */}
@@ -1167,7 +1167,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
                     {/* Raw Text Message without dangerouslySetInnerHTML */}
                     <div className="text-slate-200 truncate pr-3 select-text" title={stripAnsi(log.message)}>
-                      {stripAnsi(log.message)}
+                      {cleanLogMessageForDisplay(log.message)}
                     </div>
 
                     {/* Quick Row Actions */}

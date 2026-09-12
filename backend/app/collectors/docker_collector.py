@@ -23,7 +23,12 @@ import httpx
 
 from app.collectors.syslog import AliasCache
 from app.core.config import get_db_path
-from app.core.pipeline import KeyedMultilineAssembler
+from app.core.pipeline import (
+    KeyedMultilineAssembler,
+    detect_severity,
+    clean_log_text,
+    SEVERITY_LEVEL_MAP,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,66 +203,9 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\].*?(?:\x07|\x1b\\)
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
-def _clean_text(text: str) -> str:
-    """Strip ANSI color/formatting codes and non-printable control characters."""
-    if not text:
-        return text
-    return _CONTROL_CHARS_RE.sub("", _ANSI_ESCAPE_RE.sub("", text))
-
-
-_SEVERITY_LEVEL_MAP = {
-    "emerg": 0,
-    "emergency": 0,
-    "alert": 1,
-    "crit": 2,
-    "critical": 2,
-    "fatal": 2,
-    "panic": 2,
-    "err": 3,
-    "error": 3,
-    "warn": 4,
-    "warning": 4,
-    "notice": 5,
-    "log": 6,
-    "info": 6,
-    "informational": 6,
-    "debug": 7,
-    "trace": 7,
-    "verbose": 7,
-}
-
-_RE_KV = re.compile(r"""\b(?:level|lvl|severity)\s*=\s*["']?([a-zA-Z]+)["']?""")
-_RE_JSON = re.compile(r"""["'](?:level|severity)["']\s*:\s*["']([a-zA-Z]+)["']""")
-_RE_BRACKET = re.compile(r"""\[\s*([a-zA-Z]+)\s*\]""")
-_RE_COLON = re.compile(r"""(?:^|[\s\]])([a-zA-Z]+):(?:\s|$)""")
-_RE_AFTER_TS = re.compile(r"""^(?:[0-9T:.,Z+-]{8,}|\w{3}\s+\d+\s+[0-9:]{8})(?:\s+[0-9:.,Z+-]+)?\s+\[?([a-zA-Z]+)\]?\b""")
-
-
-def _detect_severity(raw_line: str) -> int:
-    """
-    Detect log severity from line content, falling back to RFC Info (severity 6).
-    Inspects common log formats (logfmt, JSON, brackets, prefix: colon, timestamps)
-    without misinterpreting informational messages emitted on Docker stderr.
-    """
-    clean = _clean_text(raw_line).strip()
-    if not clean:
-        return 6
-
-    if clean.startswith("Traceback (most recent call last):") or clean.startswith("Exception:"):
-        return 3
-    if clean.startswith("panic:"):
-        return 2
-
-    header = clean[:200]
-
-    for regex in (_RE_KV, _RE_JSON, _RE_BRACKET, _RE_COLON, _RE_AFTER_TS):
-        m = regex.search(header)
-        if m:
-            lvl = m.group(1).lower()
-            if lvl in _SEVERITY_LEVEL_MAP:
-                return _SEVERITY_LEVEL_MAP[lvl]
-
-    return 6
+_clean_text = clean_log_text
+_SEVERITY_LEVEL_MAP = SEVERITY_LEVEL_MAP
+_detect_severity = detect_severity
 
 
 _DOCKER_TIMESTAMP_RE = re.compile(

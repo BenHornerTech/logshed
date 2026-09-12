@@ -14,9 +14,46 @@ from pathlib import Path
 from typing import Any
 
 from app.core.migrations import get_connection
-from app.core.pipeline import KeyedMultilineAssembler
+from app.core.pipeline import KeyedMultilineAssembler, detect_severity, SEVERITY_LEVEL_MAP
 
 logger = logging.getLogger(__name__)
+
+def _parse_iso_or_datetime(
+    ts_str: str,
+    now: datetime.datetime,
+    local_tz: datetime.tzinfo,
+) -> str:
+    """Parse an ISO 8601, RFC 3339, or standard datetime string to UTC ISO format."""
+    ts_clean = ts_str.strip().replace("Z", "+00:00").replace("/", "-")
+    ts_clean = re.sub(r"\s+(?:UTC|GMT)\b", "+00:00", ts_clean, flags=re.IGNORECASE)
+    # Strip any remaining timezone abbreviations like BST, EST, PDT
+    ts_clean = re.sub(r"\s+[A-Z]{2,5}(?=$|[+-])", "", ts_clean)
+    if "," in ts_clean:
+        ts_clean = ts_clean.replace(",", ".")
+    if " " in ts_clean and "T" not in ts_clean:
+        ts_clean = ts_clean.replace(" ", "T", 1)
+    try:
+        dt = datetime.datetime.fromisoformat(ts_clean)
+        if dt.tzinfo is None:
+            candidate_a = dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+            candidate_b = dt.replace(tzinfo=datetime.timezone.utc)
+            if abs((candidate_b - now).total_seconds()) < abs((candidate_a - now).total_seconds()):
+                dt_utc = candidate_b
+            else:
+                dt_utc = candidate_a
+        else:
+            dt_utc = dt.astimezone(datetime.timezone.utc)
+        diff_seconds = (dt_utc - now).total_seconds()
+        if diff_seconds > 60:
+            offset_hours = round(diff_seconds / 3600)
+            if offset_hours > 0:
+                dt_utc -= datetime.timedelta(hours=offset_hours)
+            if (dt_utc - now).total_seconds() > 60:
+                dt_utc = now
+        return dt_utc.isoformat()
+    except Exception:
+        return ts_str
+
 
 def parse_syslog_message(
     data: bytes,
@@ -53,13 +90,45 @@ def parse_syslog_message(
     content = raw_str
     
     # Parse PRI
+    has_pri = False
     pri_match = re.match(r"^<(\d{1,3})>", content)
     if pri_match:
+        has_pri = True
         pri = int(pri_match.group(1))
         result["facility"] = pri // 8
         result["severity"] = pri % 8
         content = content[pri_match.end():]
         
+    def _parse_msg_into_app_and_content(msg_part: str) -> None:
+        # 1. TAG[PID]: CONTENT or TAG: CONTENT
+        m = re.match(r"^([^:\s\[]+?)(?:\[\d+\])?:\s*(.*)", msg_part)
+        if m:
+            result["app_name"] = m.group(1)
+            result["message"] = m.group(2)
+            return
+        # 2. TAG[PID] CONTENT (PID without colon)
+        m = re.match(r"^([^:\s\[]+)\[\d+\]\s+(.*)", msg_part)
+        if m:
+            result["app_name"] = m.group(1)
+            result["message"] = m.group(2)
+            return
+        # 3. [TAG]: CONTENT or [TAG] CONTENT (bracketed process tag, e.g. [kernel])
+        m = re.match(r"^\[([^\]]+)\]:?\s*(.*)", msg_part)
+        if m:
+            if m.group(1).lower() not in SEVERITY_LEVEL_MAP:
+                result["app_name"] = m.group(1)
+                result["message"] = m.group(2)
+                return
+        # 4. TAG CONTENT (space-separated, no colon)
+        m = re.match(r"^([^:\s]+)\s+(.*)", msg_part)
+        if m:
+            if m.group(1).lower() not in SEVERITY_LEVEL_MAP:
+                result["app_name"] = m.group(1)
+                result["message"] = m.group(2)
+                return
+        # 5. Fallback: single word or unparsed
+        result["message"] = msg_part
+
     # Check RFC 5424: version MUST be exactly '1' followed by a space.
     # This prevents misidentifying RFC 3164 messages that start with a digit.
     if content.startswith("1 "):
@@ -134,119 +203,127 @@ def parse_syslog_message(
         else:
             # Not enough fields for valid 5424 - treat as unparsed
             pass
-    else:
-        # RFC 3164
-        # Mmm dd HH:MM:SS or Mmm  d HH:MM:SS
-        ts_match = re.match(r"^([A-Z][a-z]{2}\s+\d+\s+\d{2}:\d{2}:\d{2})\s+", content)
-        if ts_match:
-            ts_str = ts_match.group(1)
-            content = content[ts_match.end():]
-            
-            # Try to parse timestamp
-            try:
-                # Add current year since RFC 3164 doesn't include it
-                # Handle space-padded day
-                ts_str_clean = re.sub(r'\s+', ' ', ts_str)
-                dt = datetime.datetime.strptime(f"{now.year} {ts_str_clean}", "%Y %b %d %H:%M:%S")
-                parsed_month = dt.month
-                # Year boundary heuristic: if parsed month is ahead of current month,
-                # the message likely came from the previous year.
-                # Conversely, if receiver is in December and sender in positive timezone emitted January,
-                # the message belongs to the next year.
-                if parsed_month > now.month:
-                    dt = dt.replace(year=now.year - 1)
-                elif now.month == 12 and parsed_month == 1:
-                    dt = dt.replace(year=now.year + 1)
+    elif (ts_match := re.match(r"^([A-Z][a-z]{2}\s+\d+\s+\d{2}:\d{2}:\d{2})\s+", content)):
+        # RFC 3164: Mmm dd HH:MM:SS or Mmm  d HH:MM:SS
+        ts_str = ts_match.group(1)
+        content = content[ts_match.end():]
+        
+        # Try to parse timestamp
+        try:
+            # Add current year since RFC 3164 doesn't include it
+            # Handle space-padded day
+            ts_str_clean = re.sub(r'\s+', ' ', ts_str)
+            dt = datetime.datetime.strptime(f"{now.year} {ts_str_clean}", "%Y %b %d %H:%M:%S")
+            parsed_month = dt.month
+            # Year boundary heuristic: if parsed month is ahead of current month,
+            # the message likely came from the previous year.
+            # Conversely, if receiver is in December and sender in positive timezone emitted January,
+            # the message belongs to the next year.
+            if parsed_month > now.month:
+                dt = dt.replace(year=now.year - 1)
+            elif now.month == 12 and parsed_month == 1:
+                dt = dt.replace(year=now.year + 1)
 
-                # RFC 3164 timestamps lack timezone information and are emitted either in
-                # the sender's local time or in UTC.
-                # Evaluate candidate interpretations of dt:
-                # Candidate A: dt interpreted in the container's local timezone converted to UTC.
-                # Candidate B: dt interpreted directly as UTC.
-                candidate_a = dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
-                candidate_b = dt.replace(tzinfo=datetime.timezone.utc)
+            # RFC 3164 timestamps lack timezone information and are emitted either in
+            # the sender's local time or in UTC.
+            candidate_a = dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+            candidate_b = dt.replace(tzinfo=datetime.timezone.utc)
 
-                diff_a = abs((candidate_a - now).total_seconds())
-                diff_b = abs((candidate_b - now).total_seconds())
+            diff_a = abs((candidate_a - now).total_seconds())
+            diff_b = abs((candidate_b - now).total_seconds())
 
-                if diff_b < diff_a:
-                    dt_utc = candidate_b
-                else:
-                    dt_utc = candidate_a
-
-                # If the resulting UTC timestamp is in the future compared to arrival time (now),
-                # the sender is in a positive timezone ahead of the container's timezone.
-                # Compensate for the sender timezone offset difference.
-                diff_seconds = (dt_utc - now).total_seconds()
-                if diff_seconds > 60:
-                    offset_hours = round(diff_seconds / 3600)
-                    if offset_hours > 0:
-                        dt_utc -= datetime.timedelta(hours=offset_hours)
-                    if (dt_utc - now).total_seconds() > 60:
-                        dt_utc = now
-                
-                # Preserve microsecond arrival precision for proper sub-second ordering
-                dt_utc = dt_utc.replace(microsecond=now.microsecond)
-                result["timestamp"] = dt_utc.isoformat()
-            except ValueError:
-                pass
-                
-            # Helper to parse RFC 3164 MSG part into app_name and message
-            def _parse_rfc3164_msg(msg_part: str) -> None:
-                # 1. TAG[PID]: CONTENT or TAG: CONTENT
-                m = re.match(r"^([^:\s\[]+?)(?:\[\d+\])?:\s*(.*)", msg_part)
-                if m:
-                    result["app_name"] = m.group(1)
-                    result["message"] = m.group(2)
-                    return
-                # 2. TAG[PID] CONTENT (PID without colon)
-                m = re.match(r"^([^:\s\[]+)\[\d+\]\s+(.*)", msg_part)
-                if m:
-                    result["app_name"] = m.group(1)
-                    result["message"] = m.group(2)
-                    return
-                # 3. [TAG]: CONTENT or [TAG] CONTENT (bracketed process tag, e.g. [kernel])
-                m = re.match(r"^\[([^\]]+)\]:?\s*(.*)", msg_part)
-                if m:
-                    result["app_name"] = m.group(1)
-                    result["message"] = m.group(2)
-                    return
-                # 4. TAG CONTENT (space-separated, no colon)
-                m = re.match(r"^([^:\s]+)\s+(.*)", msg_part)
-                if m:
-                    result["app_name"] = m.group(1)
-                    result["message"] = m.group(2)
-                    return
-                # 5. Fallback: single word or unparsed
-                result["message"] = msg_part
-
-            # RFC 3164 Section 4.1.2 / 4.1.3: The HOSTNAME field is optional.
-            # If omitted, MSG (TAG[PID]: or TAG:) immediately follows TIMESTAMP.
-            parts = content.split(" ", 1)
-            first_token = parts[0]
-
-            is_nil_hostname = (len(parts) == 2 and first_token == "-")
-
-            # Determine if first_token is a valid HOSTNAME:
-            # A valid hostname never contains brackets ('[' or ']') and does not end with ':'
-            # (unless it is an IPv6 address ending in '::').
-            is_valid_hostname = (
-                len(parts) == 2
-                and bool(first_token)
-                and first_token != "-"
-                and "[" not in first_token
-                and "]" not in first_token
-                and not (first_token.endswith(":") and not first_token.endswith("::"))
-            )
-
-            if is_valid_hostname:
-                result["hostname"] = first_token
-                _parse_rfc3164_msg(parts[1])
-            elif is_nil_hostname:
-                _parse_rfc3164_msg(parts[1])
+            if diff_b < diff_a:
+                dt_utc = candidate_b
             else:
-                _parse_rfc3164_msg(content)
-                        
+                dt_utc = candidate_a
+
+            diff_seconds = (dt_utc - now).total_seconds()
+            if diff_seconds > 60:
+                offset_hours = round(diff_seconds / 3600)
+                if offset_hours > 0:
+                    dt_utc -= datetime.timedelta(hours=offset_hours)
+                if (dt_utc - now).total_seconds() > 60:
+                    dt_utc = now
+            
+            # Preserve microsecond arrival precision for proper sub-second ordering
+            dt_utc = dt_utc.replace(microsecond=now.microsecond)
+            result["timestamp"] = dt_utc.isoformat()
+        except ValueError:
+            pass
+
+        # RFC 3164 Section 4.1.2 / 4.1.3: The HOSTNAME field is optional.
+        parts = content.split(" ", 1)
+        first_token = parts[0]
+        is_nil_hostname = (len(parts) == 2 and first_token == "-")
+        is_valid_hostname = (
+            len(parts) == 2
+            and bool(first_token)
+            and first_token != "-"
+            and "[" not in first_token
+            and "]" not in first_token
+            and first_token.lower() not in SEVERITY_LEVEL_MAP
+            and not (first_token.endswith(":") and not first_token.endswith("::"))
+        )
+
+        if is_valid_hostname:
+            result["hostname"] = first_token
+            _parse_msg_into_app_and_content(parts[1])
+        elif is_nil_hostname:
+            _parse_msg_into_app_and_content(parts[1])
+        else:
+            _parse_msg_into_app_and_content(content)
+    elif (m_bracket := re.match(r"^\[(\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:\s+(?:UTC|GMT|CET|EET|WET|MSK|[A-Z]{1,2}[SD]T)(?:[+-]\d{1,4})?|Z|[+-]\d{2}:?\d{2})?)\]\s*", content)):
+        # Bracketed timestamp envelope: [TIMESTAMP] [HOST] [APP] MSG or [TIMESTAMP] MSG
+        result["timestamp"] = _parse_iso_or_datetime(m_bracket.group(1), now, local_tz)
+        rem = content[m_bracket.end():]
+        m_env = re.match(r"^\[([^\]]+)\]\s+\[([^\]]+)\]\s*(.*)", rem)
+        if m_env:
+            result["hostname"] = m_env.group(1)
+            result["app_name"] = m_env.group(2)
+            result["message"] = m_env.group(3)
+        else:
+            m_host = re.match(r"^\[([^\]]+)\]\s*(.*)", rem)
+            if m_host and m_host.group(1).lower() not in SEVERITY_LEVEL_MAP:
+                result["hostname"] = m_host.group(1)
+                _parse_msg_into_app_and_content(m_host.group(2))
+            else:
+                _parse_msg_into_app_and_content(rem)
+    elif (m_iso := re.match(r"^(\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:\s+(?:UTC|GMT|CET|EET|WET|MSK|[A-Z]{1,2}[SD]T)(?:[+-]\d{1,4})?|Z|[+-]\d{2}:?\d{2})?)\s+", content)):
+        # Unbracketed ISO 8601 / RFC 3339 / standard datetime: TIMESTAMP HOSTNAME TAG: MSG
+        result["timestamp"] = _parse_iso_or_datetime(m_iso.group(1), now, local_tz)
+        rem = content[m_iso.end():]
+        parts = rem.split(" ", 1)
+        first_token = parts[0]
+        is_valid_hostname = (
+            len(parts) == 2
+            and bool(first_token)
+            and first_token != "-"
+            and "[" not in first_token
+            and "]" not in first_token
+            and first_token.lower() not in SEVERITY_LEVEL_MAP
+            and not (first_token.endswith(":") and not first_token.endswith("::"))
+        )
+        if is_valid_hostname:
+            result["hostname"] = first_token
+            _parse_msg_into_app_and_content(parts[1])
+        elif len(parts) == 2 and first_token == "-":
+            _parse_msg_into_app_and_content(parts[1])
+        else:
+            _parse_msg_into_app_and_content(rem)
+    else:
+        # Fallback: unparsed message without recognized timestamp
+        result["message"] = content
+
+    # Content-based severity fallback inspection:
+    # If PRI was missing or has a generic default/notice priority (>= 5),
+    # inspect message content for explicit severity keywords (e.g. error, warn, panic)
+    if not has_pri or result["severity"] >= 5:
+        content_sev = detect_severity(result["message"])
+        if not has_pri:
+            result["severity"] = content_sev
+        elif content_sev < result["severity"]:
+            result["severity"] = content_sev
+
     return result
 
 

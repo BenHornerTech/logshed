@@ -351,6 +351,55 @@ class TestSyslogParsing:
         assert result["app_name"] == "crond"
         assert result["message"] == "test message"
 
+    def test_iso_datetime_unbracketed_without_rfc5424_prefix(self):
+        """Standard ISO/SQL datetime without RFC 5424 '1 ' prefix should parse timestamp and content."""
+        arrival_now = datetime.datetime(2026, 9, 12, 6, 35, 3, 0, tzinfo=datetime.timezone.utc)
+        raw = b"2026-09-12 06:35:02  INFO      All scopes processed"
+        result = parse_syslog_message(raw, "10.0.0.1", now=arrival_now, local_tz=datetime.timezone.utc)
+
+        assert result["timestamp"] == "2026-09-12T06:35:02+00:00"
+        assert result["severity"] == 6
+        assert result["app_name"] == "unknown"
+        assert "All scopes processed" in result["message"]
+
+    def test_bracketed_timestamp_host_app_envelope(self):
+        """Bracketed timestamp envelope [TIMESTAMP] [HOST] [APP] MSG should parse all structured fields."""
+        arrival_now = datetime.datetime(2026, 9, 12, 4, 3, 50, 0, tzinfo=datetime.timezone.utc)
+        raw = (
+            b"[2026-09-12T04:03:48.907889+00:00] [docker-unraid] [UptimeKuma] "
+            b"2026-09-12T05:03:48+01:00 [MONITOR] WARN: Monitor #16 'SABnzbd': Pending: connect failed"
+        )
+        result = parse_syslog_message(raw, "10.0.0.1", now=arrival_now, local_tz=datetime.timezone.utc)
+
+        assert result["timestamp"] == "2026-09-12T04:03:48.907889+00:00"
+        assert result["hostname"] == "docker-unraid"
+        assert result["app_name"] == "UptimeKuma"
+        assert result["severity"] == 4  # Upgraded to Warning from WARN: in message
+        assert "Pending: connect failed" in result["message"]
+
+    def test_syslog_severity_promotion_from_notice_to_error(self):
+        """Syslog message sent with notice/info PRI promoted to error when message contains [error]."""
+        arrival_now = datetime.datetime(2026, 9, 12, 7, 43, 1, 0, tzinfo=datetime.timezone.utc)
+        # PRI 14 is user.info (facility 1, severity 6)
+        raw = b'<14>Sep 12 07:43:00 unraid nginx: 2026/09/12 07:43:00 [error] 2360609#2360609: *268403 open() failed'
+        result = parse_syslog_message(raw, "192.168.1.5", now=arrival_now, local_tz=datetime.timezone.utc)
+
+        assert result["hostname"] == "unraid"
+        assert result["app_name"] == "nginx"
+        assert result["severity"] == 3  # Promoted from 6 (info) to 3 (error)
+        assert "[error]" in result["message"]
+
+    def test_syslog_slash_datetime_parsing(self):
+        """Syslog message beginning with slash datetime format YYYY/MM/DD HH:MM:SS."""
+        arrival_now = datetime.datetime(2026, 9, 12, 7, 43, 1, 0, tzinfo=datetime.timezone.utc)
+        raw = b'2026/09/12 07:43:00 srv01 nginx: [error] request failed'
+        result = parse_syslog_message(raw, "10.0.0.1", now=arrival_now, local_tz=datetime.timezone.utc)
+
+        assert result["timestamp"] == "2026-09-12T07:43:00+00:00"
+        assert result["hostname"] == "srv01"
+        assert result["app_name"] == "nginx"
+        assert result["severity"] == 3  # Promoted to Error
+
 
 # ===================================================================
 # 2. Network Listeners & Protocols
