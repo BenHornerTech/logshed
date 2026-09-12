@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Dynamic Stream Display Cleaning**: Client-side message cleaning in `LiveLogStream` dynamically stripping redundant leading timestamps, repeated severity prefixes (`[error]`, `WARN:`, `INFO`, `LOG:`), and timezone codes from stream table cells while preserving subsystem brackets (e.g. `[MONITOR]`, `[celery.worker.strategy]`, Postgres session PIDs) and keeping raw database payloads intact.
+- **Extended Ingestion Timestamp & Severity Formats**: Syslog and Docker collectors now parse ISO 8601/RFC 3339 timestamps and slash dates (`YYYY/MM/DD`) without requiring RFC 5424 version headers, support bracketed envelopes (`[TIMESTAMP] [HOST] [APP]`), handle Python logging comma-separated milliseconds, named timezones (`UTC`, `BST`, etc.), and perform content-based severity fallback promotion for unprioritized syslog messages.
+
 ---
 
 ## [1.1.0] - 2026-09-11
