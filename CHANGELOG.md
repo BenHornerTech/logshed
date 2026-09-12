@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Settings Unsaved Changes Guard**: Tab navigation guard in `App` intercepting navigation away from `SettingsPanel` when unsaved changes exist, prompting a confirmation dialog with options to Keep Editing, Discard & Leave, or Save & Continue. Also adds browser `beforeunload` protection against accidental tab closure or refresh.
+- **Docking Sticky Action Bar**: Streamlined configuration save workflow in `SettingsPanel` with a sticky floating action bar (`sticky bottom-4`) that floats above the bottom of the viewport while scrolling through the settings form and naturally locks into place between the configuration form and password section. Includes real-time inline saving feedback, state discard reverting, and removed redundant static buttons.
 - **Dynamic Stream Display Cleaning**: Client-side message cleaning in `LiveLogStream` dynamically stripping redundant leading timestamps, repeated severity prefixes (`[error]`, `WARN:`, `INFO`, `LOG:`), and timezone codes from stream table cells while preserving subsystem brackets (e.g. `[MONITOR]`, `[celery.worker.strategy]`, Postgres session PIDs) and keeping raw database payloads intact.
 - **Extended Ingestion Timestamp & Severity Formats**: Syslog and Docker collectors now parse ISO 8601/RFC 3339 timestamps and slash dates (`YYYY/MM/DD`) without requiring RFC 5424 version headers, support bracketed envelopes (`[TIMESTAMP] [HOST] [APP]`), handle Python logging comma-separated milliseconds, named timezones (`UTC`, `BST`, etc.), and perform content-based severity fallback promotion for unprioritized syslog messages.
 
