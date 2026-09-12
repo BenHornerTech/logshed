@@ -98,6 +98,8 @@ export const NON_TEXT_MODEL_KEYWORDS: string[] = [
   'embed',
   'moderation',
   'rerank',
+  'computer-use',
+  'computer_use',
 ];
 
 /**

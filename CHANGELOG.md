@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Computer-Use Model Exclusion**: Excluded computer-use agent models (such as `gemini-2.5-computer-use-preview-10-2025`) from suggested AI model dropdowns in backend discovery, caching, and frontend model validation.
+- **Log Detail Slide-Over Width**: Fixed `SlideOver` width constraint handling by removing conflicting CSS classes and setting a consistent desktop width for `LogDetailModal` so the inspector no longer fluctuates in width based on log message length.
+
+---
+
+## [1.1.0-beta.2] - 2026-09-12
+
 ### Added
 - **Settings Unsaved Changes Guard**: Tab navigation guard in `App` intercepting navigation away from `SettingsPanel` when unsaved changes exist, prompting a confirmation dialog with options to Keep Editing, Discard & Leave, or Save & Continue. Also adds browser `beforeunload` protection against accidental tab closure or refresh.
 - **Docking Sticky Action Bar**: Streamlined configuration save workflow in `SettingsPanel` with a sticky floating action bar (`sticky bottom-4`) that floats above the bottom of the viewport while scrolling through the settings form and naturally locks into place between the configuration form and password section. Includes real-time inline saving feedback, state discard reverting, and removed redundant static buttons.
@@ -15,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.1.0] - 2026-09-11
+## [1.1.0-beta.1] - 2026-09-11
 
 ### Added
 - **AI Fast Failover**: Resilient multi-provider failover automatically falling back across secondary models and providers when encountering rate limits (HTTP 429), timeouts, or provider downtime.
@@ -53,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native multi-architecture container images (`linux/amd64` and `linux/arm64`).
 - Unraid Community Applications template (`unraid-template.xml`) with cache-pool POSIX locking recommendations.
 
-[Unreleased]: https://github.com/BenHornerTech/logshed/compare/v1.1.0...HEAD
-[1.1.0]: https://github.com/BenHornerTech/logshed/compare/v1.0.0...v1.1.0
+[Unreleased]: https://github.com/BenHornerTech/logshed/compare/v1.1.0-beta.2...HEAD
+[1.1.0-beta.2]: https://github.com/BenHornerTech/logshed/compare/v1.1.0-beta.1...v1.1.0-beta.2
+[1.1.0-beta.1]: https://github.com/BenHornerTech/logshed/compare/v1.0.0...v1.1.0-beta.1
 [1.0.0]: https://github.com/BenHornerTech/logshed/releases/tag/v1.0.0

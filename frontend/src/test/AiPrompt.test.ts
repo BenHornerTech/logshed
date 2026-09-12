@@ -104,6 +104,10 @@ describe('aiPrompt utilities', () => {
     expect(isTextModel('text-embedding-3-small')).toBe(false);
     expect(isTextModel('text-moderation-latest')).toBe(false);
 
+    // Computer-use models
+    expect(isTextModel('gemini-2.5-computer-use-preview-10-2025')).toBe(false);
+    expect(isTextModel('claude-3-7-sonnet-computer-use')).toBe(false);
+
     // Empty or invalid input
     expect(isTextModel('')).toBe(false);
   });

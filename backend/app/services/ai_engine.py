@@ -119,17 +119,19 @@ NON_TEXT_MODEL_KEYWORDS: tuple[str, ...] = (
     "guard",
     "safety",
     "aqa",
-    # Robotics & Specialized non-chat
+    # Robotics, Computer Use & Specialized non-chat
     "robotics",
     "learnlm",
     "canary",
+    "computer-use",
+    "computer_use",
 )
 
 
 def is_text_generation_model(model_id: str, description: Optional[str] = None) -> bool:
     """
     Returns True if model_id appears to be a text generation / chat model.
-    Returns False for non-text models (audio, transcribe, image, embedding, etc.).
+    Returns False for non-text models (audio, transcribe, image, embedding, computer-use, etc.).
     """
     low_id = (model_id or "").lower()
     if not low_id:
@@ -151,6 +153,7 @@ def is_text_generation_model(model_id: str, description: Optional[str] = None) -
             "audio generation",
             "generate video",
             "video generation",
+            "computer use",
         )):
             return False
 

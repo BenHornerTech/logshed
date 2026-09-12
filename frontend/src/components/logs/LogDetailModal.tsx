@@ -95,7 +95,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
       isOpen={isOpen}
       onClose={onClose}
       title={`Log Record #${log.id} - ${log.source_alias}`}
-      width="max-w-4xl"
+      width="max-w-3xl"
     >
       <div className="space-y-4 text-xs font-sans">
         {/* Action Header */}

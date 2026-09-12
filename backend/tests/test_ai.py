@@ -1747,6 +1747,7 @@ class TestAiModelDiscovery:
         mock_models = [
             MockModel("models/gemini-3.7-flash", "Gemini 3.7 Flash"),
             MockModel("models/gemini-2.5-flash", "Gemini 2.5 Flash"),
+            MockModel("models/gemini-2.5-computer-use-preview-10-2025", "Gemini 2.5 Computer Use"),
             MockModel("models/text-embedding-004", "Text Embedding", supported_actions=["embedContent"]),
             MockModel("models/imagen-3.0-generate-002", "Imagen 3", supported_actions=["imageGeneration"]),
         ]
@@ -1760,6 +1761,7 @@ class TestAiModelDiscovery:
             model_ids = [m["id"] for m in models]
             assert "gemini-3.7-flash" in model_ids
             assert "gemini-2.5-flash" in model_ids
+            assert "gemini-2.5-computer-use-preview-10-2025" not in model_ids
             assert "text-embedding-004" not in model_ids
             assert "imagen-3.0-generate-002" not in model_ids
 
@@ -1869,6 +1871,9 @@ class TestAiModelDiscovery:
         assert ai_engine.is_text_generation_model("tts-1") is False
         assert ai_engine.is_text_generation_model("dall-e-3") is False
         assert ai_engine.is_text_generation_model("imagen-3.0-generate-002") is False
+        assert ai_engine.is_text_generation_model("gemini-2.5-computer-use-preview-10-2025") is False
+        assert ai_engine.is_text_generation_model("claude-3-7-sonnet-computer-use") is False
+        assert ai_engine.is_text_generation_model("custom-model", description="Agent for computer use tasks") is False
 
     @pytest.mark.asyncio
     async def test_fetch_available_models_no_key_returns_empty(self):

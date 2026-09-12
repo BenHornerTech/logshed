@@ -31,9 +31,9 @@ export const SlideOver: React.FC<SlideOverProps> = ({
         aria-hidden="true"
       />
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="fixed inset-y-0 right-0 flex w-full max-w-full sm:w-auto pl-0 sm:pl-10 pointer-events-none">
+        <div className="fixed inset-y-0 right-0 flex max-w-full pl-0 sm:pl-10 pointer-events-none">
           <div
-            className={`pointer-events-auto w-full ${width} max-w-full bg-dark-900 border-l border-dark-700 shadow-2xl flex flex-col overscroll-contain animate-in slide-in-from-right duration-200 overflow-x-hidden`}
+            className={`pointer-events-auto w-screen ${width} bg-dark-900 border-l border-dark-700 shadow-2xl flex flex-col overscroll-contain animate-in slide-in-from-right duration-200 overflow-x-hidden`}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
