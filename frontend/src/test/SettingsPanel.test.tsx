@@ -50,7 +50,7 @@ describe('SettingsPanel Component', () => {
       target: { value: 'Custom instructions for homelab root-cause diagnosis.' },
     });
 
-    const saveBtn = screen.getByRole('button', { name: /Save Application Settings/i });
+    const saveBtn = screen.getByRole('button', { name: /Save Changes/i });
     fireEvent.click(saveBtn);
 
     await waitFor(() => {
@@ -148,7 +148,7 @@ describe('SettingsPanel Component', () => {
     expect(screen.queryByRole('button', { name: /Reset to Default/i })).toBeNull();
   });
 
-  it('keeps Save button disabled/dimmed on initial load with masked API key, activates on edit, and shows inline feedback on save', async () => {
+  it('keeps Save button hidden on initial load with masked API key, activates on edit, and shows inline feedback on save', async () => {
     const updateSpy = vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({ status: 'ok' });
     vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({
       ai_provider: 'gemini',
@@ -163,23 +163,20 @@ describe('SettingsPanel Component', () => {
     render(<SettingsPanel />);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Save Application Settings/i })).toBeInTheDocument();
+      expect(screen.getByText(/On-Demand AI Provider Configuration/i)).toBeInTheDocument();
     });
 
-    const saveBtn = screen.getByRole('button', { name: /Save Application Settings/i });
-    // Initial state: not dirty, button is disabled and dimmed
-    expect(saveBtn).toBeDisabled();
-    expect(saveBtn.className).toContain('opacity-40');
-    expect(saveBtn.className).toContain('cursor-not-allowed');
+    // Initial state: not dirty, Save Changes button is not rendered
+    expect(screen.queryByRole('button', { name: /Save Changes/i })).toBeNull();
 
     // Edit Default Model Name via dropdown
     const modelSelect = screen.getByDisplayValue(/gemini-3.7-flash/i);
     fireEvent.change(modelSelect, { target: { value: 'gemini-2.5-flash' } });
 
-    // Active state: dirty, button is highlighted and enabled
+    // Active state: dirty, button is rendered in the sticky action bar
+    const saveBtn = screen.getByRole('button', { name: /Save Changes/i });
+    expect(saveBtn).toBeInTheDocument();
     expect(saveBtn).not.toBeDisabled();
-    expect(saveBtn.className).toContain('bg-accent-600');
-    expect(saveBtn.className).toContain('cursor-pointer');
 
     // Click Save
     fireEvent.click(saveBtn);
@@ -192,12 +189,6 @@ describe('SettingsPanel Component', () => {
       );
       // Real-time inline feedback displayed adjacent to button
       expect(screen.getByText('Settings saved successfully!')).toBeInTheDocument();
-    });
-
-    // Baseline reloaded -> button returns to disabled and dimmed state
-    await waitFor(() => {
-      expect(saveBtn).toBeDisabled();
-      expect(saveBtn.className).toContain('opacity-40');
     });
   });
 
@@ -260,7 +251,7 @@ describe('SettingsPanel Component', () => {
     fireEvent.change(select, { target: { value: 'ERROR' } });
     expect(select.value).toBe('ERROR');
 
-    const saveBtn = screen.getByRole('button', { name: /Save Application Settings/i });
+    const saveBtn = screen.getByRole('button', { name: /Save Changes/i });
     expect(saveBtn).not.toBeDisabled();
 
     fireEvent.click(saveBtn);
@@ -295,7 +286,7 @@ describe('SettingsPanel Component', () => {
       expect(screen.getByText('gemini-2.5-flash')).toBeInTheDocument();
     });
 
-    const saveButton = screen.getByRole('button', { name: /Save Application Settings/i });
+    const saveButton = screen.getByRole('button', { name: /Save Changes/i });
     expect(saveButton).not.toBeDisabled();
     fireEvent.click(saveButton);
 
@@ -367,6 +358,103 @@ describe('SettingsPanel Component', () => {
     await waitFor(() => {
       expect(screen.queryByText('1st Fallback')).toBeNull();
       expect(screen.getByText(/No fallback models configured/i)).toBeInTheDocument();
+    });
+  });
+
+  it('renders sticky floating bar when dirty, and saves settings', async () => {
+    const updateSpy = vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({ status: 'ok' });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('System Configuration')).toBeInTheDocument();
+    });
+
+    // Floating bar should not be present initially
+    expect(screen.queryByText('You have unsaved changes')).toBeNull();
+
+    // Modify a field (internal log level)
+    const select = screen.getByLabelText('Internal Log Severity Threshold') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'DEBUG' } });
+
+    // Sticky floating bar should appear
+    await waitFor(() => {
+      expect(screen.getByText('You have unsaved changes')).toBeInTheDocument();
+    });
+
+    // Floating bar contains "Save Changes"
+    const saveChangesBtn = screen.getByRole('button', { name: /Save Changes/i });
+    expect(saveChangesBtn).toBeInTheDocument();
+
+    // Click Save Changes button
+    fireEvent.click(saveChangesBtn);
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          internal_log_level: 'DEBUG',
+        })
+      );
+    });
+  });
+
+  it('resets form values back to baseline and hides dirty bar when Discard is clicked', async () => {
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('System Configuration')).toBeInTheDocument();
+    });
+
+    const select = screen.getByLabelText('Internal Log Severity Threshold') as HTMLSelectElement;
+    expect(select.value).toBe('WARNING');
+
+    // Change value
+    fireEvent.change(select, { target: { value: 'CRITICAL' } });
+    expect(select.value).toBe('CRITICAL');
+
+    // Discard button should appear in floating bar
+    const discardBtn = screen.getByRole('button', { name: /^Discard$/i });
+    expect(discardBtn).toBeInTheDocument();
+
+    // Click Discard
+    fireEvent.click(discardBtn);
+
+    // Value should revert to baseline WARNING and floating bar should be removed
+    expect(select.value).toBe('WARNING');
+    await waitFor(() => {
+      expect(screen.queryByText('You have unsaved changes')).toBeNull();
+    });
+  });
+
+  it('reports dirty state through onDirtyChange callback and triggers beforeunload guard', async () => {
+    const onDirtyChange = vi.fn();
+    render(<SettingsPanel onDirtyChange={onDirtyChange} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('System Configuration')).toBeInTheDocument();
+    });
+
+    expect(onDirtyChange).toHaveBeenCalledWith(false);
+
+    // Modify a field
+    const select = screen.getByLabelText('Internal Log Severity Threshold');
+    fireEvent.change(select, { target: { value: 'INFO' } });
+
+    await waitFor(() => {
+      expect(onDirtyChange).toHaveBeenCalledWith(true);
+    });
+
+    // Test beforeunload event
+    const event = new Event('beforeunload', { cancelable: true }) as BeforeUnloadEvent;
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+
+    // Discard changes
+    const discardButton = screen.getByRole('button', { name: /^Discard$/i });
+    fireEvent.click(discardButton);
+
+    await waitFor(() => {
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
     });
   });
 });

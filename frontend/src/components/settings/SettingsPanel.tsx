@@ -20,7 +20,15 @@ import { getAiModels } from '../../api/ai.ts';
 import { changePassword } from '../../api/auth.ts';
 import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, normalizePrompt, getOrdinalSuffix } from '../../utils/aiPrompt.ts';
 
-export const SettingsPanel: React.FC = () => {
+export interface SettingsPanelProps {
+  onDirtyChange?: (isDirty: boolean) => void;
+  saveTriggerRef?: React.MutableRefObject<(() => Promise<boolean>) | null>;
+}
+
+export const SettingsPanel: React.FC<SettingsPanelProps> = ({
+  onDirtyChange,
+  saveTriggerRef,
+}) => {
   const [settings, setSettings] = useState<SettingsResponseData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -162,9 +170,45 @@ export const SettingsPanel: React.FC = () => {
     loadAllData();
   }, []);
 
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isDirty || isSavingSettings) return;
+  // Notify parent component of dirty state changes
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
+  // Warn on page unload/refresh when unsaved changes exist
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
+  const handleResetChanges = () => {
+    if (!settings) return;
+    setAiProvider(settings.ai_provider);
+    setAiModel(settings.ai_model || DEFAULT_AI_MODEL);
+    setAiFallbackModels(settings.ai_fallback_models || '');
+    setAiApiKey(settings.ai_api_key || '');
+    setAiBaseUrl(settings.ai_base_url || '');
+    setAiSystemPrompt(settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
+    setInternalLogLevel(settings.internal_log_level || 'WARNING');
+    setIsCustomModel(false);
+    setSelectedFallbackToAdd('');
+    setCustomFallbackInput('');
+    setShowCustomFallbackInput(false);
+
+    if (aiProvider !== settings.ai_provider) {
+      loadModels(settings.ai_provider);
+    }
+  };
+
+  const executeSave = async (): Promise<boolean> => {
+    if (!isDirty || isSavingSettings) return false;
 
     try {
       setIsSavingSettings(true);
@@ -198,14 +242,35 @@ export const SettingsPanel: React.FC = () => {
 
       setSaveInlineSuccess(true);
       setTimeout(() => setSaveInlineSuccess(false), 3000);
+      return true;
     } catch (err: any) {
       const msg = err.message || 'Failed to update settings.';
       setErrorMsg(msg);
       setSaveInlineError(msg);
+      return false;
     } finally {
       setIsSavingSettings(false);
     }
   };
+
+  const handleSaveSettings = async (e?: React.FormEvent) => {
+    if (e && e.preventDefault) {
+      e.preventDefault();
+    }
+    await executeSave();
+  };
+
+  // Expose programmatic save function for navigation guards
+  useEffect(() => {
+    if (saveTriggerRef) {
+      saveTriggerRef.current = executeSave;
+    }
+    return () => {
+      if (saveTriggerRef) {
+        saveTriggerRef.current = null;
+      }
+    };
+  });
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -264,7 +329,7 @@ export const SettingsPanel: React.FC = () => {
       )}
 
       {/* Settings Form: Logging & AI */}
-      <form onSubmit={handleSaveSettings} className="space-y-6">
+      <form id="settings-form" onSubmit={handleSaveSettings} className="space-y-6">
         {/* Application Self-Logging Section */}
         <section className="bg-dark-900 border border-dark-700 rounded-xl p-3.5 sm:p-5 shadow-md space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -668,46 +733,69 @@ export const SettingsPanel: React.FC = () => {
           </div>
         </section>
 
-        {/* Submit Button for General Settings with Real-Time Inline Feedback */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 pt-2">
-          {isSavingSettings && (
-            <div className="flex items-center gap-1.5 text-xs text-slate-400 font-mono">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin text-accent-500" />
-              <span>Saving settings...</span>
-            </div>
-          )}
-
-          {saveInlineSuccess && (
-            <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-mono animate-in fade-in">
-              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Settings saved successfully!</span>
-            </div>
-          )}
-
-          {saveInlineError && (
-            <div className="flex items-center gap-1.5 text-xs text-red-400 font-mono animate-in fade-in">
-              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-              <span>{saveInlineError}</span>
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={!isDirty || isSavingSettings}
-            className={`font-medium px-5 py-2.5 sm:py-2 rounded-lg text-xs flex items-center justify-center gap-2 transition min-h-[42px] sm:min-h-0 ${
-              !isDirty || isSavingSettings
-                ? 'opacity-40 cursor-not-allowed bg-dark-800 text-slate-500 border border-dark-700'
-                : 'bg-accent-600 hover:bg-accent-500 text-white cursor-pointer shadow-md'
+        {/* Sticky Action Bar: floats while scrolling form, locks into place above password section */}
+        {(isDirty || saveInlineSuccess || saveInlineError) && (
+          <aside
+            aria-label="Unsaved changes bar"
+            className={`sticky bottom-4 z-30 bg-dark-900/95 backdrop-blur-md border rounded-xl p-3 sm:px-5 sm:py-3 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2 ${
+              saveInlineSuccess
+                ? 'border-emerald-500/40'
+                : saveInlineError
+                ? 'border-red-500/40'
+                : 'border-amber-500/40'
             }`}
           >
-            {isSavingSettings ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <Save className="w-4 h-4" />
+            <div className="flex items-center gap-2 text-xs font-medium">
+              {saveInlineSuccess ? (
+                <div className="flex items-center gap-2 text-emerald-400 font-mono">
+                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Settings saved successfully!</span>
+                </div>
+              ) : saveInlineError ? (
+                <div className="flex items-center gap-2 text-red-400 font-mono">
+                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+                  <span>{saveInlineError}</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-amber-300">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>You have unsaved changes</span>
+                </div>
+              )}
+            </div>
+
+            {isDirty && (
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                {isSavingSettings && (
+                  <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 font-mono mr-1">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-accent-500" />
+                    <span>Saving...</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={handleResetChanges}
+                  disabled={isSavingSettings}
+                  className="px-3 py-1.5 text-xs text-slate-300 hover:text-white bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded-lg transition cursor-pointer disabled:opacity-50"
+                >
+                  Discard
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingSettings}
+                  className="px-4 py-1.5 text-xs font-medium text-white bg-accent-600 hover:bg-accent-500 rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 shadow-md disabled:opacity-50"
+                >
+                  {isSavingSettings ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Save className="w-3.5 h-3.5" />
+                  )}
+                  <span>Save Changes</span>
+                </button>
+              </div>
             )}
-            <span>Save Application Settings</span>
-          </button>
-        </div>
+          </aside>
+        )}
       </form>
 
       {/* Admin Password Reset Section */}
