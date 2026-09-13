@@ -81,6 +81,31 @@ class TestMultilineAssembly:
         assert _is_continuation("Normal log line") is False
         assert _is_continuation("") is False
 
+    def test_python_exception_continuation_detection(self):
+        # Python standard and custom exception classes
+        assert _is_continuation("ConnectionResetError: [Errno 104] Connection reset by peer") is True
+        assert _is_continuation("ValueError: invalid literal for int() with base 10: 'abc'") is True
+        assert _is_continuation("ZeroDivisionError: division by zero") is True
+        assert _is_continuation("pydantic.error_wrappers.ValidationError: 1 validation error") is True
+        assert _is_continuation("asyncio.exceptions.TimeoutError: operation timed out") is True
+        assert _is_continuation("sqlite3.OperationalError: database is locked") is True
+        assert _is_continuation("KeyboardInterrupt") is True
+        assert _is_continuation("SystemExit: 1") is True
+
+        # Chained exception banners
+        assert _is_continuation("During handling of the above exception, another exception occurred:") is True
+        assert _is_continuation("The above exception was the direct cause of the following exception:") is True
+        assert _is_continuation("Exception Group Traceback (most recent call last):") is True
+
+        # Custom exception class with active traceback buffer
+        tb_buf = 'Traceback (most recent call last):\n  File "/app/svc.py", line 12, in do_work'
+        assert _is_continuation("CustomAppFailure: service degraded", buffered_text=tb_buf) is True
+
+        # Standard log levels should not be treated as exception continuations
+        assert _is_continuation("INFO: Application started", buffered_text=tb_buf) is False
+        assert _is_continuation("WARNING: High memory usage", buffered_text=tb_buf) is False
+        assert _is_continuation("ERROR: Failed to process event", buffered_text=tb_buf) is False
+
     @pytest.mark.asyncio
     async def test_single_line_flushes(self):
         asm = KeyedMultilineAssembler()
@@ -232,10 +257,11 @@ class TestDockerMultilineAssembly:
         while not q.empty():
             items.append(q.get_nowait())
 
-        assert len(items) == 2
-        assert "Traceback" in items[0]["message"]
-        assert "main.py" in items[0]["message"]
-        assert items[1]["message"].startswith("ValueError")
+        assert len(items) == 1
+        assert "Traceback (most recent call last):" in items[0]["message"]
+        assert 'File "/app/main.py"' in items[0]["message"]
+        assert "ValueError: invalid literal for int()" in items[0]["message"]
+        assert items[0]["severity"] == 3
 
     @pytest.mark.asyncio
     async def test_docker_separate_containers_isolated(self):

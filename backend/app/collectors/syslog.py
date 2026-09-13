@@ -14,7 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from app.core.migrations import get_connection
-from app.core.pipeline import KeyedMultilineAssembler, detect_severity, SEVERITY_LEVEL_MAP
+from app.core.pipeline import (
+    KeyedMultilineAssembler,
+    detect_severity,
+    SEVERITY_LEVEL_MAP,
+    _is_continuation,
+    _RE_PYTHON_EXCEPTION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -505,6 +511,29 @@ class SyslogUDPProtocol(asyncio.DatagramProtocol):
                     source_alias = hostname
             parsed["source_alias"] = source_alias
             stream_key = f"{source_ip}:{parsed['app_name']}"
+
+            if (
+                parsed.get("app_name") in ("unknown", "-", "")
+                or not parsed.get("app_name")
+                or _RE_PYTHON_EXCEPTION.match(parsed.get("app_name", ""))
+            ):
+                active_key = self.assembler.get_active_stream_key_for_source(source_ip)
+                if active_key:
+                    buf_text = self.assembler.get_buffered_text(active_key)
+                    check_text = parsed.get("message", "")
+                    raw_text = parsed.get("raw", "")
+                    if _is_continuation(check_text, buf_text) or _is_continuation(raw_text, buf_text):
+                        stream_key = active_key
+                        if not _is_continuation(check_text, buf_text) and _is_continuation(raw_text, buf_text):
+                            parsed["message"] = raw_text
+                        parent = self.assembler.get_stream_parent_entry(active_key)
+                        if parent:
+                            parsed["app_name"] = parent.get("app_name", parsed["app_name"])
+                            if "hostname" in parent:
+                                parsed["hostname"] = parent["hostname"]
+                            if "source_alias" in parent:
+                                parsed["source_alias"] = parent["source_alias"]
+
             await self.assembler.feed(stream_key, parsed)
         except Exception as e:
             logger.error(f"Error processing UDP syslog message: {e}")
@@ -650,6 +679,29 @@ class SyslogTCPProtocol(asyncio.Protocol):
                     source_alias = hostname
             parsed["source_alias"] = source_alias
             stream_key = f"{source_ip}:{parsed['app_name']}"
+
+            if (
+                parsed.get("app_name") in ("unknown", "-", "")
+                or not parsed.get("app_name")
+                or _RE_PYTHON_EXCEPTION.match(parsed.get("app_name", ""))
+            ):
+                active_key = self.assembler.get_active_stream_key_for_source(source_ip)
+                if active_key:
+                    buf_text = self.assembler.get_buffered_text(active_key)
+                    check_text = parsed.get("message", "")
+                    raw_text = parsed.get("raw", "")
+                    if _is_continuation(check_text, buf_text) or _is_continuation(raw_text, buf_text):
+                        stream_key = active_key
+                        if not _is_continuation(check_text, buf_text) and _is_continuation(raw_text, buf_text):
+                            parsed["message"] = raw_text
+                        parent = self.assembler.get_stream_parent_entry(active_key)
+                        if parent:
+                            parsed["app_name"] = parent.get("app_name", parsed["app_name"])
+                            if "hostname" in parent:
+                                parsed["hostname"] = parent["hostname"]
+                            if "source_alias" in parent:
+                                parsed["source_alias"] = parent["source_alias"]
+
             await self.assembler.feed(stream_key, parsed)
         except Exception as e:
             logger.error(f"Error processing TCP syslog message: {e}")

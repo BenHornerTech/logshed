@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Auto-Scroll Banner Sizing**: Optimized mobile floating auto-scroll resume button with a wider container and centered 2-line layout (`Auto-scroll paused (...)` on line 1, `Click to jump to top` on line 2) to reduce vertical screen footprint.
 
 ### Fixed
+- **Syslog Multiline Python Traceback Assembly**: Fixed an issue where multi-line Python tracebacks and exceptions (such as `ConnectionResetError`) arriving over UDP or TCP syslog as separate packets split into multiple log records, with headerless continuation lines being misattributed to `unknown` and host IP addresses. Continuation lines now correctly correlate to the active stream, inherit parent metadata, and assemble into a single log entry.
 - **Mobile Selection Dismiss on AI Modal Close**: Automatically clears single-log selections on mobile viewports when closing the AI analysis modal so the floating action bar does not remain stuck, while preserving multi-select selections on desktop. Added a prominent Deselect button to the floating action bar.
 - **Computer-Use Model Exclusion**: Excluded computer-use agent models (such as `gemini-2.5-computer-use-preview-10-2025`) from suggested AI model dropdowns in backend discovery, caching, and frontend model validation.
 - **Log Detail Slide-Over Width**: Fixed `SlideOver` width constraint handling by removing conflicting CSS classes and setting a consistent desktop width for `LogDetailModal` so the inspector no longer fluctuates in width based on log message length.

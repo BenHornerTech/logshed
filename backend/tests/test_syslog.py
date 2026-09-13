@@ -10,7 +10,7 @@ import pytest
 
 from app.core.config import get_syslog_port
 from app.core.migrations import get_connection, run_migrations
-from app.core.pipeline import KeyedMultilineAssembler
+from app.core.pipeline import KeyedMultilineAssembler, get_queue
 from app.collectors.syslog import (
     AliasCache,
     SyslogServer,
@@ -1006,4 +1006,161 @@ class TestAliasCache:
         gc.collect()
         # After gc, the destroyed cache is automatically pruned from WeakSet
         assert len(_active_caches) == initial_count
+
+
+# ===================================================================
+# 5. Multiline Traceback Assembly (Python Exceptions & Continuation)
+# ===================================================================
+
+class TestSyslogMultilineTracebackAssembly:
+
+    @pytest.mark.asyncio
+    async def test_udp_python_traceback_multiline_assembly(self, db_path: Path):
+        """
+        Verify that a multi-line Python traceback sent over UDP syslog as separate packets
+        (including headerless continuation lines and unindented ConnectionResetError)
+        assembles cleanly into a single log entry under the originating app and host.
+        """
+        assembler = KeyedMultilineAssembler()
+        alias_cache = AliasCache(db_path)
+        proto = SyslogUDPProtocol(assembler, alias_cache)
+
+        multiline_packets = [
+            b"<131>Jan 15 10:00:00 app-server api-worker[8842]: ERROR: Unhandled exception during payment webhook processing",
+            b"Traceback (most recent call last):",
+            b'  File "/app/services/payment.py", line 42, in process_event',
+            b"    response = await gateway.verify_signature(payload)",
+            b"ConnectionResetError: [Errno 104] Connection reset by peer from remote gateway",
+        ]
+
+        for pkt in multiline_packets:
+            await proto.process_message(pkt, "172.22.2.100")
+            await asyncio.sleep(0.01)
+
+        # Wait for assembler flush timeout (150ms)
+        await asyncio.sleep(0.25)
+
+        q = get_queue()
+        items = []
+        while not q.empty():
+            items.append(q.get_nowait())
+
+        assert len(items) == 1, f"Expected 1 assembled entry, got {len(items)}: {items}"
+        entry = items[0]
+        assert entry["app_name"] == "api-worker"
+        assert entry["source_alias"] == "app-server"
+        assert entry["source_ip"] == "172.22.2.100"
+        assert entry["severity"] == 3  # Min severity across the batch (error)
+        assert "ERROR: Unhandled exception" in entry["message"]
+        assert "Traceback (most recent call last):" in entry["message"]
+        assert 'File "/app/services/payment.py"' in entry["message"]
+        assert "ConnectionResetError: [Errno 104]" in entry["message"]
+
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_tcp_python_traceback_multiline_assembly(self, db_path: Path):
+        """
+        Verify that a multi-line Python traceback streamed over TCP with newline framing
+        assembles cleanly into a single entry with parent app_name and source_alias.
+        """
+        assembler = KeyedMultilineAssembler()
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(assembler, alias_cache)
+
+        multiline_packets = [
+            b"<131>Jan 15 10:00:00 app-server api-worker[8842]: ERROR: Unhandled exception during payment webhook processing",
+            b"Traceback (most recent call last):",
+            b'  File "/app/services/payment.py", line 42, in process_event',
+            b"    response = await gateway.verify_signature(payload)",
+            b"ConnectionResetError: [Errno 104] Connection reset by peer from remote gateway",
+        ]
+
+        for pkt in multiline_packets:
+            await proto.process_message(pkt, "172.22.2.100")
+            await asyncio.sleep(0.01)
+
+        await asyncio.sleep(0.25)
+
+        q = get_queue()
+        items = []
+        while not q.empty():
+            items.append(q.get_nowait())
+
+        assert len(items) == 1, f"Expected 1 assembled entry, got {len(items)}: {items}"
+        entry = items[0]
+        assert entry["app_name"] == "api-worker"
+        assert entry["source_alias"] == "app-server"
+        assert entry["severity"] == 3
+        assert "ConnectionResetError: [Errno 104]" in entry["message"]
+
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_udp_chained_python_exception_assembly(self, db_path: Path):
+        """
+        Verify that Python chained exceptions (with 'During handling of the above exception...')
+        assemble into a single log entry rather than fragmenting into multiple records.
+        """
+        assembler = KeyedMultilineAssembler()
+        alias_cache = AliasCache(db_path)
+        proto = SyslogUDPProtocol(assembler, alias_cache)
+
+        packets = [
+            b"<131>Jan 15 10:00:00 srv01 webapp[1200]: Request failed",
+            b"Traceback (most recent call last):",
+            b'  File "/app/db.py", line 15, in get_user',
+            b"TimeoutError: connection timed out",
+            b"During handling of the above exception, another exception occurred:",
+            b"Traceback (most recent call last):",
+            b'  File "/app/views.py", line 30, in handle_request',
+            b"RuntimeError: failed to render error page",
+        ]
+
+        for pkt in packets:
+            await proto.process_message(pkt, "10.0.0.50")
+            await asyncio.sleep(0.01)
+
+        await asyncio.sleep(0.25)
+
+        q = get_queue()
+        items = []
+        while not q.empty():
+            items.append(q.get_nowait())
+
+        assert len(items) == 1
+        entry = items[0]
+        assert entry["app_name"] == "webapp"
+        assert "TimeoutError: connection timed out" in entry["message"]
+        assert "During handling of the above exception" in entry["message"]
+        assert "RuntimeError: failed to render error page" in entry["message"]
+
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_standalone_headerless_message_does_not_attach_without_active_stream(self, db_path: Path):
+        """
+        Verify that a headerless line arriving when no active stream exists from that source IP
+        is safely ingested as an independent record with app_name 'unknown' and doesn't fail.
+        """
+        assembler = KeyedMultilineAssembler()
+        alias_cache = AliasCache(db_path)
+        proto = SyslogUDPProtocol(assembler, alias_cache)
+
+        await proto.process_message(b"Just an isolated text line from legacy script", "192.168.1.88")
+        await asyncio.sleep(0.25)
+
+        q = get_queue()
+        items = []
+        while not q.empty():
+            items.append(q.get_nowait())
+
+        assert len(items) == 1
+        entry = items[0]
+        assert entry["app_name"] == "unknown"
+        assert entry["source_alias"] == "192.168.1.88"
+        assert entry["message"] == "Just an isolated text line from legacy script"
+
+        await proto.stop()
+
 

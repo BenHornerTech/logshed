@@ -304,17 +304,27 @@ def detect_severity(raw_line: str) -> int:
     return 6
 
 
-def _is_continuation(line: str) -> bool:
+_RE_PYTHON_EXCEPTION = re.compile(
+    r"^(?:[a-zA-Z_]\w*\.)*[a-zA-Z_]\w*(?:Error|Exception|Warning|Interrupt|Exit|Fault|Notice|Iteration)(?::\s*.*)?$"
+)
+_CHAINED_EXCEPTION_PHRASES = (
+    "during handling of the above exception",
+    "the above exception was the direct cause",
+    "exception group traceback",
+)
+
+
+def _is_continuation(line: str, buffered_text: Optional[str] = None) -> bool:
     """
     Checks if a line is a continuation line for multi-line logs.
     """
     if not line:
-        return False
+        return bool(buffered_text and "traceback" in buffered_text.lower())
         
     if line[0] in (' ', '\t'):
         return True
         
-    lower_line = line.lower()
+    lower_line = line.lower().strip()
     if lower_line.startswith("caused by:"):
         return True
     if lower_line.startswith("traceback"):
@@ -323,6 +333,23 @@ def _is_continuation(line: str) -> bool:
         return True
     if line.startswith("..."):
         return True
+    if lower_line.startswith("goroutine "):
+        return True
+    if lower_line.startswith("stack backtrace:"):
+        return True
+    if any(phrase in lower_line for phrase in _CHAINED_EXCEPTION_PHRASES):
+        return True
+
+    stripped = line.strip()
+    if _RE_PYTHON_EXCEPTION.match(stripped):
+        return True
+
+    if buffered_text:
+        lower_buf = buffered_text.lower()
+        if "traceback (most recent call last):" in lower_buf or 'file "' in lower_buf:
+            m = re.match(r"^([a-zA-Z_][a-zA-Z0-9_.]*):(?:\s|$)", stripped)
+            if m and m.group(1).lower() not in SEVERITY_LEVEL_MAP:
+                return True
         
     return False
 
@@ -339,6 +366,43 @@ class KeyedMultilineAssembler:
         self._timers: dict[str, asyncio.TimerHandle] = {}
         self._flush_timeout = 0.150  # 150ms
 
+    def get_buffered_text(self, stream_key: str) -> str:
+        """Returns concatenated messages in the current buffer for stream_key."""
+        buffered = self._buffers.get(stream_key)
+        if not buffered:
+            return ""
+        return "\n".join(e.get("message", "") for e in buffered)
+
+    def get_stream_parent_entry(self, stream_key: str) -> Optional[dict]:
+        """Returns the first (parent) entry for the active stream, if present."""
+        buffered = self._buffers.get(stream_key)
+        if buffered:
+            return buffered[0]
+        return None
+
+    def get_active_stream_key_for_source(self, source_ip: str) -> Optional[str]:
+        """
+        Check if there is an active (unflushed) multiline buffer originating from source_ip.
+        Prefers active named application streams over ':unknown' streams.
+        """
+        named_candidates = [
+            k for k in self._buffers
+            if k.startswith(f"{source_ip}:") and not k.endswith(":unknown") and self._buffers[k]
+        ]
+        if named_candidates:
+            if len(named_candidates) == 1:
+                return named_candidates[0]
+            return max(
+                named_candidates,
+                key=lambda k: self._buffers[k][-1].get("received_at", "")
+            )
+
+        unknown_key = f"{source_ip}:unknown"
+        if self._buffers.get(unknown_key):
+            return unknown_key
+
+        return None
+
     async def feed(self, stream_key: str, entry: dict) -> None:
         """
         Feed a parsed log entry. Entry dict has keys:
@@ -346,7 +410,8 @@ class KeyedMultilineAssembler:
         facility, severity, message, raw
         """
         message = entry.get('message', '')
-        is_cont = _is_continuation(message)
+        buffered_text = self.get_buffered_text(stream_key)
+        is_cont = _is_continuation(message, buffered_text)
         
         # If it's NOT a continuation, but we have buffered content for this stream,
         # we should flush the existing buffer before starting a new one.
