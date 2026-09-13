@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0-beta.3] - 2026-09-13
+
 ### Added
 - **HTML5 History API URL Routing**: Direct URL path synchronization across application tabs (`/` and `/console` for live stream, `/aliases` for Host Aliases, `/storage` for Storage & Retention, `/settings` for System Configuration). Supports browser back and forward navigation via `popstate` event handling, direct reloads on any sub-route, and seamless integration with the unsaved settings guard.
 - **Contained Touch Pull-to-Refresh Gesture**: Mobile pull-to-refresh mechanism attached to the top navigation header and stream search controls without interfering with virtual list scrolling, featuring smooth pull indicators and threshold reload triggers.
@@ -72,7 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native multi-architecture container images (`linux/amd64` and `linux/arm64`).
 - Unraid Community Applications template (`unraid-template.xml`) with cache-pool POSIX locking recommendations.
 
-[Unreleased]: https://github.com/BenHornerTech/logshed/compare/v1.1.0-beta.2...HEAD
+[Unreleased]: https://github.com/BenHornerTech/logshed/compare/v1.1.0-beta.3...HEAD
+[1.1.0-beta.3]: https://github.com/BenHornerTech/logshed/compare/v1.1.0-beta.2...v1.1.0-beta.3
 [1.1.0-beta.2]: https://github.com/BenHornerTech/logshed/compare/v1.1.0-beta.1...v1.1.0-beta.2
 [1.1.0-beta.1]: https://github.com/BenHornerTech/logshed/compare/v1.0.0...v1.1.0-beta.1
 [1.0.0]: https://github.com/BenHornerTech/logshed/releases/tag/v1.0.0
