@@ -204,4 +204,65 @@ describe('RetentionSlider Component', () => {
     fireEvent.keyDown(tick7, { key: ' ' });
     expect(screen.getAllByText('7 Days').length).toBe(2);
   });
+
+  it('disables slider, presets, and save button with override badge when retentionOverridden is true', () => {
+    const onSave = vi.fn();
+    render(
+      <RetentionSlider
+        retentionDays={60}
+        maxRetentionDays={60}
+        retentionOverridden={true}
+        onSaveRetention={onSave}
+      />
+    );
+
+    // Shows override badge
+    expect(
+      screen.getByText('Locked by MAX_RETENTION_DAYS environment variable override (60 days)')
+    ).toBeInTheDocument();
+
+    // Since maxRetentionDays > 30, shows concise non-technical note
+    expect(
+      screen.getByText(
+        'Extended retention (>30 days) requires additional disk storage and may increase search times over large log volumes.'
+      )
+    ).toBeInTheDocument();
+
+    // Slider is disabled
+    const slider = screen.getByRole('slider') as HTMLInputElement;
+    expect(slider).toBeDisabled();
+
+    // Presets are disabled
+    const preset30Btn = screen.getByRole('button', { name: '30 Days' });
+    expect(preset30Btn).toBeDisabled();
+
+    // Save button is disabled
+    const saveBtn = screen.getByRole('button', { name: /Save Retention Policy/i });
+    expect(saveBtn).toBeDisabled();
+
+    // Clicking tick marker does not change days
+    const tick14 = screen.getByTitle('Set retention to 14 days');
+    fireEvent.click(tick14);
+    expect(slider.value).toBe('60');
+  });
+
+  it('omits extended retention note when overridden retention is 30 days or less', () => {
+    render(
+      <RetentionSlider
+        retentionDays={14}
+        maxRetentionDays={14}
+        retentionOverridden={true}
+        onSaveRetention={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.getByText('Locked by MAX_RETENTION_DAYS environment variable override (14 days)')
+    ).toBeInTheDocument();
+
+    expect(
+      screen.queryByText(/Extended retention/i)
+    ).toBeNull();
+  });
 });
+

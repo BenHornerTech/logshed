@@ -842,6 +842,40 @@ class TestSettingsEncryptionAndKeyManagement:
         assert res.json()["max_retention_days"] == 1
         assert res.json()["retention_days"] == 1
 
+    @pytest.mark.asyncio
+    async def test_retention_overridden_flag_and_reboot_fallback(
+        self, client: AsyncClient, auth_cookie: dict, monkeypatch: pytest.MonkeyPatch
+    ):
+        """
+        Verify retention_overridden flag is True when MAX_RETENTION_DAYS is set,
+        and cleanly clamps back down to 30 when the variable is removed upon reboot.
+        """
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+
+        # Step 1: User previously had 7 days saved in database
+        monkeypatch.delenv("MAX_RETENTION_DAYS", raising=False)
+        res_set_7 = await client.post("/api/settings", json={"retention_days": 7})
+        assert res_set_7.status_code == 200
+
+        # Step 2: Override set to 60 days (slider locked in UI, so no manual POST)
+        monkeypatch.setenv("MAX_RETENTION_DAYS", "60")
+        res_override = await client.get("/api/settings")
+        assert res_override.status_code == 200
+        data_override = res_override.json()
+        assert data_override["retention_overridden"] is True
+        assert data_override["max_retention_days"] == 60
+        assert data_override["retention_days"] == 60
+
+        # Step 3: Remove MAX_RETENTION_DAYS (simulating container restart without env var)
+        monkeypatch.delenv("MAX_RETENTION_DAYS", raising=False)
+        res_reboot = await client.get("/api/settings")
+        assert res_reboot.status_code == 200
+        data_reboot = res_reboot.json()
+        assert data_reboot["retention_overridden"] is False
+        assert data_reboot["max_retention_days"] == 30
+        # Automatically clamped from 60 down to 30, NOT reverting to the old 7 days
+        assert data_reboot["retention_days"] == 30
+
 
 
 # ===================================================================

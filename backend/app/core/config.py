@@ -104,6 +104,20 @@ def get_max_retention_days() -> int:
     return 30
 
 
+def is_max_retention_days_overridden() -> bool:
+    """
+    Returns True if MAX_RETENTION_DAYS is explicitly defined as a valid integer in the environment.
+    """
+    raw = os.environ.get("MAX_RETENTION_DAYS")
+    if raw is not None and raw.strip():
+        try:
+            int(raw.strip())
+            return True
+        except ValueError:
+            return False
+    return False
+
+
 VALID_LOG_LEVELS: dict[str, Optional[int]] = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,

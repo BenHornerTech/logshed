@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Trash2, Clock, Check, RefreshCw, AlertCircle, Info } from 'lucide-react';
+import { Trash2, Clock, Check, RefreshCw, AlertCircle, Info, Lock } from 'lucide-react';
 import { triggerManualPrune } from '../../api/system.ts';
 import { formatBytes } from './StorageCard.tsx';
 import { PruneResponse } from '../../types.ts';
@@ -7,6 +7,7 @@ import { PruneResponse } from '../../types.ts';
 interface RetentionSliderProps {
   retentionDays: number;
   maxRetentionDays?: number;
+  retentionOverridden?: boolean;
   onSaveRetention: (days: number) => Promise<void>;
   onPruneCompleted?: () => void;
 }
@@ -14,6 +15,7 @@ interface RetentionSliderProps {
 export const RetentionSlider: React.FC<RetentionSliderProps> = ({
   retentionDays,
   maxRetentionDays = 30,
+  retentionOverridden = false,
   onSaveRetention,
   onPruneCompleted,
 }) => {
@@ -91,6 +93,21 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
         </div>
       )}
 
+      {/* Override Notice & Badge */}
+      {retentionOverridden && (
+        <div className="space-y-1.5 pt-0.5">
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/20 text-[11px] font-mono text-amber-300">
+            <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span>Locked by MAX_RETENTION_DAYS environment variable override ({max} days)</span>
+          </div>
+          {max > 30 && (
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Extended retention (&gt;30 days) requires additional disk storage and may increase search times over large log volumes.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Preset Quick-Select Buttons */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[11px] text-slate-400 font-medium mr-1">Presets:</span>
@@ -98,11 +115,14 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
           <button
             key={preset}
             type="button"
-            onClick={() => setDays(preset)}
-            className={`px-2.5 py-0.5 rounded text-[11px] font-mono transition cursor-pointer ${
-              days === preset
-                ? 'bg-accent-600 text-white font-semibold shadow-xs'
-                : 'bg-dark-950 text-slate-400 hover:text-slate-200 hover:bg-dark-800 border border-dark-700'
+            disabled={retentionOverridden}
+            onClick={() => !retentionOverridden && setDays(preset)}
+            className={`px-2.5 py-0.5 rounded text-[11px] font-mono transition ${
+              retentionOverridden
+                ? 'opacity-40 cursor-not-allowed bg-dark-950 text-slate-500 border border-dark-800'
+                : days === preset
+                ? 'bg-accent-600 text-white font-semibold shadow-xs cursor-pointer'
+                : 'bg-dark-950 text-slate-400 hover:text-slate-200 hover:bg-dark-800 border border-dark-700 cursor-pointer'
             }`}
           >
             {preset} Day{preset === 1 ? '' : 's'}
@@ -117,8 +137,11 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
           min={min}
           max={max}
           value={days}
-          onChange={(e) => setDays(parseInt(e.target.value, 10))}
-          className="w-full accent-accent-500 bg-dark-950 h-2 rounded-lg cursor-pointer"
+          disabled={retentionOverridden}
+          onChange={(e) => !retentionOverridden && setDays(parseInt(e.target.value, 10))}
+          className={`w-full accent-accent-500 bg-dark-950 h-2 rounded-lg ${
+            retentionOverridden ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
+          }`}
         />
         <div className="relative h-6 text-[10px] font-mono text-slate-500 mt-1 select-none">
           {presets.map((val) => {
@@ -127,17 +150,21 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
               <div
                 key={val}
                 style={{ left: `${leftPercent}%` }}
-                onClick={() => setDays(val)}
+                onClick={() => !retentionOverridden && setDays(val)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
+                  if (!retentionOverridden && (e.key === 'Enter' || e.key === ' ')) {
                     e.preventDefault();
                     setDays(val);
                   }
                 }}
                 role="button"
-                tabIndex={0}
+                tabIndex={retentionOverridden ? -1 : 0}
                 aria-label={`Set retention to ${val} day${val === 1 ? '' : 's'}`}
-                className="absolute -translate-x-1/2 flex flex-col items-center cursor-pointer group hover:text-accent-400 transition focus:outline-hidden focus:text-accent-400"
+                className={`absolute -translate-x-1/2 flex flex-col items-center group transition focus:outline-hidden ${
+                  retentionOverridden
+                    ? 'cursor-not-allowed opacity-40'
+                    : 'cursor-pointer hover:text-accent-400 focus:text-accent-400'
+                }`}
                 title={`Set retention to ${val} day${val === 1 ? '' : 's'}`}
               >
                 <div
@@ -162,9 +189,9 @@ export const RetentionSlider: React.FC<RetentionSliderProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-dark-800">
         <button
           onClick={handleSave}
-          disabled={isSaving || days === retentionDays}
+          disabled={isSaving || days === retentionDays || retentionOverridden}
           className={`font-medium px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition ${
-            isSaving || days === retentionDays
+            isSaving || days === retentionDays || retentionOverridden
               ? 'opacity-40 cursor-not-allowed bg-dark-800 text-slate-500 border border-dark-700'
               : 'bg-accent-600 hover:bg-accent-500 text-white cursor-pointer shadow-md'
           }`}

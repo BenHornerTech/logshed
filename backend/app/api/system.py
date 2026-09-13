@@ -6,7 +6,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.api.deps import get_current_user, run_db_query
-from app.core.config import get_db_path, get_max_retention_days
+from app.core.config import get_db_path, get_max_retention_days, is_max_retention_days_overridden
 from app.core.pipeline import get_dropped_count, get_ingest_rate, get_queue
 
 from app.models import HealthResponse, PruneResponse, StorageMetricItem, StorageOverviewResponse
@@ -59,6 +59,8 @@ async def trigger_prune(user: dict = Depends(get_current_user)) -> PruneResponse
     WAL truncation, and takes a fresh storage metrics snapshot.
     """
     def _get_retention_days(conn):
+        if is_max_retention_days_overridden():
+            return get_max_retention_days()
         cursor = conn.cursor()
         cursor.execute("SELECT value FROM system_settings WHERE key = 'retention_days'")
         row = cursor.fetchone()

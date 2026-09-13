@@ -9,7 +9,13 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, run_db_query
-from app.core.config import DEFAULT_AI_MODEL, get_max_retention_days, get_internal_log_level, get_internal_log_level_name
+from app.core.config import (
+    DEFAULT_AI_MODEL,
+    get_max_retention_days,
+    is_max_retention_days_overridden,
+    get_internal_log_level,
+    get_internal_log_level_name,
+)
 from app.core.security import decrypt_value, encrypt_value, mask_secret
 
 from app.models import MessageResponse, SettingsResponse, SettingsUpdateRequest
@@ -56,7 +62,42 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
         retention_days = 14
 
     max_days = get_max_retention_days()
-    retention_days = max(1, min(retention_days, max_days))
+    retention_overridden = is_max_retention_days_overridden()
+    if retention_overridden:
+        retention_days = max_days
+        if stored.get("retention_days") != str(max_days):
+            def _persist_override(conn):
+                now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO system_settings (key, value, is_encrypted, updated_at)
+                    VALUES ('retention_days', ?, 0, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                    """,
+                    (str(max_days), now),
+                )
+                conn.commit()
+
+            await run_db_query(_persist_override)
+    else:
+        clamped_days = max(1, min(retention_days, max_days))
+        if retention_days > max_days:
+            def _persist_clamped(conn):
+                now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO system_settings (key, value, is_encrypted, updated_at)
+                    VALUES ('retention_days', ?, 0, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                    """,
+                    (str(clamped_days), now),
+                )
+                conn.commit()
+
+            await run_db_query(_persist_clamped)
+        retention_days = clamped_days
 
     env_level = get_internal_log_level()
     env_level_name = get_internal_log_level_name(env_level)
@@ -76,6 +117,7 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
         ai_system_prompt=stored.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT,
         retention_days=retention_days,
         max_retention_days=max_days,
+        retention_overridden=retention_overridden,
         has_ai_api_key=bool(ai_api_key_val),
         internal_log_level=internal_log_level,
     )

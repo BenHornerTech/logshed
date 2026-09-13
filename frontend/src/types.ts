@@ -32,6 +32,7 @@ export interface SystemSettings {
   ai_system_prompt?: string;
   retention_days: number;
   max_retention_days?: number;
+  retention_overridden?: boolean;
   internal_log_level?: string;
 }
 

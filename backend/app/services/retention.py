@@ -8,7 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from app.core.config import get_max_retention_days
+from app.core.config import get_max_retention_days, is_max_retention_days_overridden
 from app.core.migrations import get_connection
 from app.services.storage_metrics import record_metrics, prune_old_metrics
 
@@ -152,6 +152,8 @@ class PruneWorker:
 
     def _get_retention_days(self) -> int:
         """Synchronous query for configured retention_days."""
+        if is_max_retention_days_overridden():
+            return get_max_retention_days()
         conn = None
         try:
             conn = get_connection(self._db_path)

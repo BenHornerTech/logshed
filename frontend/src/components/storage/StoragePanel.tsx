@@ -26,6 +26,7 @@ export const StoragePanel: React.FC = () => {
   const [storageMetrics, setStorageMetrics] = useState<StorageMetricsResponse | null>(null);
   const [retentionDays, setRetentionDays] = useState<number>(14);
   const [maxRetentionDays, setMaxRetentionDays] = useState<number | undefined>(undefined);
+  const [retentionOverridden, setRetentionOverridden] = useState<boolean>(false);
   const [auditLogs, setAuditLogs] = useState<AiAuditEntry[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -52,6 +53,7 @@ export const StoragePanel: React.FC = () => {
 
       setRetentionDays(settRes.retention_days);
       setMaxRetentionDays(settRes.max_retention_days);
+      setRetentionOverridden(Boolean(settRes.retention_overridden));
       setStorageMetrics(storRes);
       setAuditLogs(auditRes.items);
     } catch (err: any) {
@@ -153,6 +155,7 @@ export const StoragePanel: React.FC = () => {
           <RetentionSlider
             retentionDays={retentionDays}
             maxRetentionDays={maxRetentionDays}
+            retentionOverridden={retentionOverridden}
             onSaveRetention={handleSaveRetention}
             onPruneCompleted={loadAllData}
           />

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { AlertCircle, RefreshCw, Save } from 'lucide-react';
 import { useAuth } from './context/AuthContext.tsx';
 import { Navbar } from './components/common/Navbar.tsx';
@@ -15,9 +15,31 @@ import { LogShedLogo } from './components/common/LogShedLogo.tsx';
 import { useMediaQuery } from './utils/hooks.ts';
 import { usePullToRefresh } from './utils/usePullToRefresh.ts';
 
+export const pathToTab = (pathname: string): AppTab => {
+  const clean = pathname.replace(/\/+$/, '').toLowerCase();
+  if (clean === '/aliases') return 'aliases';
+  if (clean === '/storage') return 'storage';
+  if (clean === '/settings') return 'settings';
+  return 'stream';
+};
+
+export const tabToPath = (tab: AppTab): string => {
+  switch (tab) {
+    case 'aliases':
+      return '/aliases';
+    case 'storage':
+      return '/storage';
+    case 'settings':
+      return '/settings';
+    case 'stream':
+    default:
+      return '/';
+  }
+};
+
 export const App: React.FC = () => {
   const { isAuthenticated, setupRequired, isLoading } = useAuth();
-  const [activeTab, setActiveTab] = useState<AppTab>('stream');
+  const [activeTab, setActiveTab] = useState<AppTab>(() => pathToTab(window.location.pathname));
   const [aiSelectedLogs, setAiSelectedLogs] = useState<LogEntry[]>([]);
   const [addAliasIp, setAddAliasIp] = useState<string | null>(null);
   const [clearSelectionSignal, setClearSelectionSignal] = useState<number>(0);
@@ -42,6 +64,22 @@ export const App: React.FC = () => {
   const [pendingTab, setPendingTab] = useState<AppTab | null>(null);
   const [isSavingModal, setIsSavingModal] = useState<boolean>(false);
   const saveSettingsTriggerRef = useRef<(() => Promise<boolean>) | null>(null);
+
+  // Synchronize browser history and popstate navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      const nextTab = pathToTab(window.location.pathname);
+      if (activeTab === 'settings' && isSettingsDirty && nextTab !== 'settings') {
+        window.history.pushState(null, '', tabToPath(activeTab));
+        setPendingTab(nextTab);
+        return;
+      }
+      setActiveTab(nextTab);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeTab, isSettingsDirty]);
 
   if (isLoading) {
     return (
@@ -75,6 +113,10 @@ export const App: React.FC = () => {
       return;
     }
     setActiveTab(nextTab);
+    const targetPath = tabToPath(nextTab);
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState(null, '', targetPath);
+    }
   };
 
   return (
@@ -160,7 +202,13 @@ export const App: React.FC = () => {
       {/* Unsaved Changes Confirmation Modal */}
       <Modal
         isOpen={pendingTab !== null}
-        onClose={() => setPendingTab(null)}
+        onClose={() => {
+          setPendingTab(null);
+          const currentPath = tabToPath(activeTab);
+          if (window.location.pathname !== currentPath) {
+            window.history.pushState(null, '', currentPath);
+          }
+        }}
         title="Unsaved Changes"
         maxWidth="max-w-md"
       >
@@ -177,7 +225,13 @@ export const App: React.FC = () => {
           <div className="flex flex-col sm:flex-row items-center justify-end gap-2 pt-3 border-t border-dark-700">
             <button
               type="button"
-              onClick={() => setPendingTab(null)}
+              onClick={() => {
+                setPendingTab(null);
+                const currentPath = tabToPath(activeTab);
+                if (window.location.pathname !== currentPath) {
+                  window.history.pushState(null, '', currentPath);
+                }
+              }}
               className="w-full sm:w-auto px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-dark-800 hover:bg-dark-750 border border-dark-700 transition cursor-pointer"
             >
               Keep Editing
@@ -190,6 +244,10 @@ export const App: React.FC = () => {
                 setIsSettingsDirty(false);
                 if (target) {
                   setActiveTab(target);
+                  const targetPath = tabToPath(target);
+                  if (window.location.pathname !== targetPath) {
+                    window.history.pushState(null, '', targetPath);
+                  }
                 }
               }}
               className="w-full sm:w-auto px-3 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:text-red-300 bg-red-950/40 hover:bg-red-900/40 border border-red-800/60 transition cursor-pointer"
@@ -211,6 +269,10 @@ export const App: React.FC = () => {
                     setIsSettingsDirty(false);
                     if (target) {
                       setActiveTab(target);
+                      const targetPath = tabToPath(target);
+                      if (window.location.pathname !== targetPath) {
+                        window.history.pushState(null, '', targetPath);
+                      }
                     }
                   }
                 } finally {

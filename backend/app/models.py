@@ -98,12 +98,15 @@ class SettingsResponse(BaseModel):
     ai_system_prompt: str = ""
     retention_days: int = 14
     max_retention_days: int = Field(default_factory=get_max_retention_days)
+    retention_overridden: bool = False
     has_ai_api_key: bool = False
     internal_log_level: str = "WARNING"
 
     @model_validator(mode="after")
     def clamp_retention_days(self) -> "SettingsResponse":
-        if self.retention_days > self.max_retention_days:
+        if self.retention_overridden:
+            self.retention_days = self.max_retention_days
+        elif self.retention_days > self.max_retention_days:
             self.retention_days = self.max_retention_days
         elif self.retention_days < 1:
             self.retention_days = 1
