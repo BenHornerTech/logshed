@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **HTML5 History API URL Routing**: Direct URL path synchronization across application tabs (`/` and `/console` for live stream, `/aliases` for Host Aliases, `/storage` for Storage & Retention, `/settings` for System Configuration). Supports browser back and forward navigation via `popstate` event handling, direct reloads on any sub-route, and seamless integration with the unsaved settings guard.
+- **Contained Touch Pull-to-Refresh Gesture**: Mobile pull-to-refresh mechanism attached to the top navigation header and stream search controls without interfering with virtual list scrolling, featuring smooth pull indicators and threshold reload triggers.
+
+### Changed
+- **Retention Override Handling & Graceful Clamping**: When `MAX_RETENTION_DAYS` is configured in the environment, the retention slider and preset buttons are locked and display an override badge. Added a concise non-technical advisory note when retention exceeds 30 days. When the environment variable is removed on container reboot, retention automatically clamps cleanly down to 30 days and persists to the database.
+- **Mobile Log Card Glanceability**: Reorganized mobile 3-line log card structure to display `app_name (host_name)` at the top with host name styled matching timestamp color, and placed the local timestamp on the bottom left alongside the AI action button.
+- **Auto-Scroll Banner Sizing**: Optimized mobile floating auto-scroll resume button with a wider container and centered 2-line layout (`Auto-scroll paused (...)` on line 1, `Click to jump to top` on line 2) to reduce vertical screen footprint.
+
 ### Fixed
+- **Mobile Selection Dismiss on AI Modal Close**: Automatically clears single-log selections on mobile viewports when closing the AI analysis modal so the floating action bar does not remain stuck, while preserving multi-select selections on desktop. Added a prominent Deselect button to the floating action bar.
 - **Computer-Use Model Exclusion**: Excluded computer-use agent models (such as `gemini-2.5-computer-use-preview-10-2025`) from suggested AI model dropdowns in backend discovery, caching, and frontend model validation.
 - **Log Detail Slide-Over Width**: Fixed `SlideOver` width constraint handling by removing conflicting CSS classes and setting a consistent desktop width for `LogDetailModal` so the inspector no longer fluctuates in width based on log message length.
 
