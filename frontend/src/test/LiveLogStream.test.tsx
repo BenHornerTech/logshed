@@ -448,9 +448,10 @@ describe('LiveLogStream Component', () => {
       es.emit('log', newEntry);
     });
 
-    // Floating banner should appear with "Auto-scroll paused (1 new log at top) - Click to jump to top"
+    // Floating banner should appear with "Auto-scroll paused (1 new log at top)" and "Click to jump to top"
     await waitFor(() => {
-      expect(screen.getByText(/Auto-scroll paused \(1 new log at top\) - Click to jump to top/i)).toBeInTheDocument();
+      expect(screen.getByText(/Auto-scroll paused \(1 new log at top\)/i)).toBeInTheDocument();
+      expect(screen.getByText(/Click to jump to top/i)).toBeInTheDocument();
     });
 
     // Click floating banner to jump to top and resume
@@ -1022,6 +1023,51 @@ describe('LiveLogStream Component', () => {
     expect(screen.getByText('Container started cleanly')).toBeInTheDocument();
     expect(screen.getByText('Default deny rule matched WAN block')).toBeInTheDocument();
   });
+
+  it('resets selectedLogIds when clearSelectionSignal is incremented', async () => {
+    const { rerender } = render(<LiveLogStream onDiagnoseAi={vi.fn()} clearSelectionSignal={0} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    // Select all logs
+    const selectAllBtn = screen.getByRole('button', { name: /^select all$/i });
+    fireEvent.click(selectAllBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/selected/i)).toBeInTheDocument();
+    });
+
+    // Re-render with incremented clearSelectionSignal
+    rerender(<LiveLogStream onDiagnoseAi={vi.fn()} clearSelectionSignal={1} />);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/selected/i)).not.toBeInTheDocument();
+    });
+  });
+
+  it('renders mobile card with app_name (host_name) on top line and timestamp at bottom', async () => {
+    // Mock matchMedia to simulate mobile viewport
+    window.matchMedia = vi.fn().mockImplementation((query) => ({
+      matches: query.includes('767px'),
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+
+    render(<LiveLogStream onDiagnoseAi={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Nginx upstream connection timeout')).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByText('(homelab-host)').length).toBeGreaterThan(0);
+  });
 });
 
 describe('matchesSearchQuery Helper Function', () => {
@@ -1074,4 +1120,6 @@ describe('matchesSearchQuery Helper Function', () => {
     expect(matchesSearchQuery(baseLog, 'message:timeout')).toBe(true);
   });
 });
+
+
 

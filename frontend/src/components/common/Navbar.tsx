@@ -5,18 +5,21 @@ import { useAuth } from '../../context/AuthContext.tsx';
 import { fetchHealth } from '../../api/system.ts';
 import { HealthResponse, AppTab } from '../../types.ts';
 import { useMediaQuery } from '../../utils/hooks.ts';
+import { PullTouchHandlers } from '../../utils/usePullToRefresh.ts';
 
 interface NavbarProps {
   activeTab: AppTab;
   onTabChange: (tab: AppTab) => void;
   onSelectTab?: (tab: string) => void;
   isStreaming?: boolean;
+  pullTouchHandlers?: PullTouchHandlers;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   onTabChange,
   onSelectTab,
+  pullTouchHandlers,
 }) => {
   const { logout } = useAuth();
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -47,7 +50,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <>
       {/* Top Fixed Header */}
-      <header className="bg-dark-950 border-b border-dark-700 px-4 py-2 flex items-center justify-between select-none shrink-0 z-30">
+      <header
+        {...(isMobile && pullTouchHandlers ? pullTouchHandlers : {})}
+        className="bg-dark-950 border-b border-dark-700 px-4 py-2 flex items-center justify-between select-none shrink-0 z-30 touch-none"
+      >
         {/* Brand & Status Indicator */}
         <div className="flex items-center space-x-4">
           <div

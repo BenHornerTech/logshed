@@ -1,6 +1,7 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useClipboard, useEscapeKey } from '../utils/hooks.ts';
+import { usePullToRefresh } from '../utils/usePullToRefresh.ts';
 import * as clipboardModule from '../utils/clipboard.ts';
 
 describe('Custom Hooks (useEscapeKey & useClipboard)', () => {
@@ -119,4 +120,88 @@ describe('Custom Hooks (useEscapeKey & useClipboard)', () => {
       });
     });
   });
+
+  describe('usePullToRefresh', () => {
+    it('initializes with default state', () => {
+      const onRefresh = vi.fn();
+      const { result } = renderHook(() => usePullToRefresh({ onRefresh }));
+
+      expect(result.current.pullDistance).toBe(0);
+      expect(result.current.isPulling).toBe(false);
+      expect(result.current.hasReachedThreshold).toBe(false);
+      expect(result.current.isRefreshing).toBe(false);
+    });
+
+    it('tracks downward touch drag and calculates pull distance', () => {
+      const onRefresh = vi.fn();
+      const { result } = renderHook(() => usePullToRefresh({ onRefresh, threshold: 50 }));
+
+      act(() => {
+        result.current.touchHandlers.onTouchStart({
+          touches: [{ clientY: 100 }],
+        } as any);
+      });
+
+      act(() => {
+        result.current.touchHandlers.onTouchMove({
+          touches: [{ clientY: 180 }],
+        } as any);
+      });
+
+      expect(result.current.isPulling).toBe(true);
+      expect(result.current.pullDistance).toBeGreaterThan(0);
+    });
+
+    it('triggers onRefresh when released past threshold', async () => {
+      const onRefresh = vi.fn().mockResolvedValue(undefined);
+      const { result } = renderHook(() => usePullToRefresh({ onRefresh, threshold: 40 }));
+
+      act(() => {
+        result.current.touchHandlers.onTouchStart({
+          touches: [{ clientY: 100 }],
+        } as any);
+      });
+
+      act(() => {
+        result.current.touchHandlers.onTouchMove({
+          touches: [{ clientY: 250 }],
+        } as any);
+      });
+
+      expect(result.current.hasReachedThreshold).toBe(true);
+
+      await act(async () => {
+        await result.current.touchHandlers.onTouchEnd();
+      });
+
+      expect(onRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not trigger onRefresh when released before threshold', async () => {
+      const onRefresh = vi.fn();
+      const { result } = renderHook(() => usePullToRefresh({ onRefresh, threshold: 60 }));
+
+      act(() => {
+        result.current.touchHandlers.onTouchStart({
+          touches: [{ clientY: 100 }],
+        } as any);
+      });
+
+      act(() => {
+        result.current.touchHandlers.onTouchMove({
+          touches: [{ clientY: 120 }], // only 20px
+        } as any);
+      });
+
+      expect(result.current.hasReachedThreshold).toBe(false);
+
+      await act(async () => {
+        await result.current.touchHandlers.onTouchEnd();
+      });
+
+      expect(onRefresh).not.toHaveBeenCalled();
+      expect(result.current.pullDistance).toBe(0);
+    });
+  });
 });
+

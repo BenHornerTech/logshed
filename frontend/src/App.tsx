@@ -12,12 +12,30 @@ import { SettingsPanel } from './components/settings/SettingsPanel.tsx';
 import { AiAnalysisModal } from './components/ai/AiAnalysisModal.tsx';
 import { LogEntry, AppTab } from './types.ts';
 import { LogShedLogo } from './components/common/LogShedLogo.tsx';
+import { useMediaQuery } from './utils/hooks.ts';
+import { usePullToRefresh } from './utils/usePullToRefresh.ts';
 
 export const App: React.FC = () => {
   const { isAuthenticated, setupRequired, isLoading } = useAuth();
   const [activeTab, setActiveTab] = useState<AppTab>('stream');
   const [aiSelectedLogs, setAiSelectedLogs] = useState<LogEntry[]>([]);
   const [addAliasIp, setAddAliasIp] = useState<string | null>(null);
+  const [clearSelectionSignal, setClearSelectionSignal] = useState<number>(0);
+  const isMobile = useMediaQuery('(max-width: 767px)');
+
+  const {
+    pullDistance,
+    isPulling,
+    hasReachedThreshold,
+    isRefreshing,
+    touchHandlers: pullTouchHandlers,
+  } = usePullToRefresh({
+    onRefresh: () => {
+      window.location.reload();
+    },
+    threshold: 55,
+    disabled: !isMobile,
+  });
 
   // Settings unsaved changes guard
   const [isSettingsDirty, setIsSettingsDirty] = useState<boolean>(false);
@@ -61,11 +79,38 @@ export const App: React.FC = () => {
 
   return (
     <div className="h-dvh max-h-dvh w-full max-w-full bg-dark-950 text-slate-200 flex flex-col overflow-hidden select-text">
+      {/* Mobile Pull-to-Refresh Indicator */}
+      {isMobile && (isPulling || isRefreshing) && (
+        <div
+          style={{ transform: `translateY(${Math.min(pullDistance, 45)}px)` }}
+          className="fixed top-0 inset-x-0 flex items-center justify-center pointer-events-none z-50 transition-transform duration-75"
+        >
+          <div className="bg-dark-900/95 border border-dark-600 rounded-full px-3.5 py-1 text-xs flex items-center gap-1.5 shadow-xl text-slate-200 backdrop-blur-sm">
+            <RefreshCw
+              className={`w-3.5 h-3.5 text-accent-400 ${
+                isRefreshing || hasReachedThreshold ? 'animate-spin' : ''
+              }`}
+              style={{
+                transform: isRefreshing ? undefined : `rotate(${pullDistance * 5}deg)`,
+              }}
+            />
+            <span className="font-mono text-[11px]">
+              {isRefreshing
+                ? 'Refreshing...'
+                : hasReachedThreshold
+                ? 'Release to refresh'
+                : 'Pull down to refresh'}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Top Fixed Navbar & Mobile Bottom Navigation */}
       <Navbar
         activeTab={activeTab}
         onTabChange={handleTabChange}
         isStreaming={activeTab === 'stream'}
+        pullTouchHandlers={pullTouchHandlers}
       />
 
       {/* Main Content Area */}
@@ -78,6 +123,8 @@ export const App: React.FC = () => {
           <LiveLogStream
             onDiagnoseAi={handleOpenAiModal}
             onAddAlias={handleAddAliasFromLog}
+            clearSelectionSignal={clearSelectionSignal}
+            pullTouchHandlers={pullTouchHandlers}
           />
         )}
 
@@ -101,7 +148,12 @@ export const App: React.FC = () => {
       {/* Global AI Root-Cause Analysis Modal */}
       <AiAnalysisModal
         isOpen={aiSelectedLogs.length > 0}
-        onClose={() => setAiSelectedLogs([])}
+        onClose={() => {
+          setAiSelectedLogs([]);
+          if (isMobile) {
+            setClearSelectionSignal((prev) => prev + 1);
+          }
+        }}
         selectedLogs={aiSelectedLogs}
       />
 
