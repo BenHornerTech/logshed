@@ -3,6 +3,7 @@ Authentication API endpoints for LogShed.
 Provides setup lockout, Argon2id verification, rate-limited login, and session cookies.
 """
 
+import asyncio
 import datetime
 import ipaddress
 import os
@@ -210,7 +211,7 @@ async def login(req: LoginRequest, request: Request, response: Response) -> Mess
 
     stored_hash = await run_db_query(_get_admin)
     target_hash = stored_hash if stored_hash else _DUMMY_PASSWORD_HASH
-    is_valid = verify_password(target_hash, req.password) and bool(stored_hash)
+    is_valid = await asyncio.to_thread(verify_password, target_hash, req.password) and bool(stored_hash)
 
     if not is_valid:
         login_rate_limiter.record_failure(client_ip)

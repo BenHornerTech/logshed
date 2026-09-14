@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **RFC 5424 Parser Infinite Loop**: Fixed an infinite loop in `parse_syslog_message` when structured data begins with an unclosed bracket `[`, ensuring unclosed structured data breaks out safely and is treated as message payload.
+- **Missing Imports in Background Model Refresh**: Added missing top-level `datetime` and `json` imports in `main.py` used by `_model_refresh_worker`.
+- **AI Error Handler Redaction**: Redacted raw `ValueError` exception strings in `diagnose_logs` before returning `HTTPException` detail to prevent potential token leakage.
+- **Event Loop Blocking on Password Verification**: Offloaded Argon2id `verify_password` in `login()` to a worker thread via `asyncio.to_thread` to prevent event loop blocking during authentication.
+- **Host Alias Whitespace Mismatches**: Stripped leading and trailing whitespace from IP addresses and aliases on save to avoid lookup and matching mismatches.
+
+### Changed
+- **Internal Log Queue Ingestion**: Removed premature secret redaction from `InternalLogHandler.emit` so raw internal application logs are persisted unredacted to SQLite per SPEC §3 (with redaction performed on-demand for AI prompts).
+- **Master Key Path Logging**: Lowered master encryption key file path logging from INFO to DEBUG in `security.py`.
+- **Dead Code and Deprecated Function Cleanup**: Removed unused `get_docker_host` import from `main.py`, obsolete regexes `_ANSI_ESCAPE_RE` and `_CONTROL_CHARS_RE` from `docker_collector.py`, deprecated alias `SYSTEM_PROMPT` from `ai_engine.py`, and obsolete synchronous helper `resolve_alias` from `syslog.py`.
+
 ## [1.1.0-beta.3] - 2026-09-13
 
 ### Added

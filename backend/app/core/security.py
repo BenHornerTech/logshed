@@ -113,7 +113,7 @@ def get_or_create_master_key(custom_key_path: Optional[Path] = None) -> bytes:
         fd = os.open(str(key_path), flags, mode)
         with os.fdopen(fd, "wb") as f:
             f.write(new_key)
-        logger.info(f"Generated new encryption master key at {key_path}")
+        logger.debug(f"Generated new encryption master key at {key_path}")
     except Exception as e:
         logger.warning(f"Could not persist secret key to {key_path}: {e}")
 

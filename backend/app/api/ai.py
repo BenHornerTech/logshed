@@ -541,7 +541,7 @@ async def diagnose_logs(
             logger.warning(f"AI analysis request failed: {clean_err}", exc_info=True)
         else:
             logger.warning(f"AI analysis request failed: {clean_err}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=clean_err)
     except (asyncio.TimeoutError, TimeoutError) as te:
         clean_err = str(te) if str(te) else "Request timed out after deadline"
         if is_debug_or_dev():

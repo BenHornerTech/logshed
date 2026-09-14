@@ -916,6 +916,29 @@ class TestHostAliases:
         assert del_404.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_host_alias_whitespace_trimming(self, client: AsyncClient, auth_cookie: dict):
+        """Host alias creation/update trims leading and trailing whitespace on IP and alias."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+
+        res = await client.post(
+            "/api/aliases",
+            json={"ip": "  192.168.1.55  ", "alias": "  nas-backup  ", "notes": "Trim test"},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["ip"] == "192.168.1.55"
+        assert data["alias"] == "nas-backup"
+
+        list_res = await client.get("/api/aliases")
+        assert list_res.status_code == 200
+        aliases = {a["ip"]: a["alias"] for a in list_res.json()}
+        assert "192.168.1.55" in aliases
+        assert aliases["192.168.1.55"] == "nas-backup"
+
+        del_res = await client.delete("/api/aliases/192.168.1.55")
+        assert del_res.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_host_alias_retroactively_updates_existing_logs(
         self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
     ):

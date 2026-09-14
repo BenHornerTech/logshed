@@ -17,7 +17,6 @@ from app.collectors.syslog import (
     SyslogTCPProtocol,
     SyslogUDPProtocol,
     parse_syslog_message,
-    resolve_alias,
 )
 
 
@@ -399,6 +398,14 @@ class TestSyslogParsing:
         assert result["hostname"] == "srv01"
         assert result["app_name"] == "nginx"
         assert result["severity"] == 3  # Promoted to Error
+
+    def test_syslog_unclosed_structured_data_does_not_hang(self):
+        """RFC 5424 message with unclosed structured data bracket parses without infinite loop."""
+        raw = b"<1>1 2026-09-14T00:00:00Z host app 1 - [malformed_sd"
+        result = parse_syslog_message(raw, "10.0.0.1")
+        assert result["hostname"] == "host"
+        assert result["app_name"] == "app"
+        assert result["message"] == "[malformed_sd"
 
 
 # ===================================================================
@@ -947,7 +954,9 @@ class TestAliasCache:
             )
             conn.commit()
 
-        resolved = resolve_alias("192.168.1.99", db_path)
+        cache = AliasCache(db_path)
+        cache.load_aliases()
+        resolved = cache.resolve("192.168.1.99")
         assert resolved == "truenas-core"
 
     @pytest.mark.asyncio

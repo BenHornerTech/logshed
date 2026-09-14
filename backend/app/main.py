@@ -4,6 +4,8 @@ Configures lifespan events, CORS middleware, background ingestion workers, and A
 """
 
 import asyncio
+import datetime
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional, Union
@@ -19,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import ai, aliases, auth, logs, settings, system
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
-from app.core.config import get_cors_origins, get_db_path, get_docker_host, get_syslog_port, get_internal_log_level
+from app.core.config import get_cors_origins, get_db_path, get_syslog_port, get_internal_log_level
 from app.core.migrations import run_migrations
 from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer, InternalLogHandler
 from app.core.security import get_or_create_master_key

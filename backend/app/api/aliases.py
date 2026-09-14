@@ -41,6 +41,8 @@ async def create_or_update_alias(
 ) -> HostAliasResponse:
     """Create or update an IP-to-hostname alias mapping, updating existing logs retroactively."""
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    clean_ip = req.ip.strip()
+    clean_alias = req.alias.strip()
 
     def _upsert(conn):
         cursor = conn.cursor()
@@ -52,7 +54,7 @@ async def create_or_update_alias(
                 alias = excluded.alias,
                 notes = excluded.notes
             """,
-            (req.ip, req.alias, req.notes, now),
+            (clean_ip, clean_alias, req.notes, now),
         )
         conn.commit()
 
@@ -66,14 +68,14 @@ async def create_or_update_alias(
             )
         """
         while True:
-            cursor.execute(update_query, (req.alias, req.ip, req.ip, req.alias))
+            cursor.execute(update_query, (clean_alias, clean_ip, clean_ip, clean_alias))
             count = cursor.rowcount
             conn.commit()
             if count < 500:
                 break
             time.sleep(0.01)
 
-        cursor.execute("SELECT ip, alias, notes, created_at FROM host_aliases WHERE ip = ?", (req.ip,))
+        cursor.execute("SELECT ip, alias, notes, created_at FROM host_aliases WHERE ip = ?", (clean_ip,))
         row = cursor.fetchone()
         return HostAliasResponse(
             ip=row["ip"],

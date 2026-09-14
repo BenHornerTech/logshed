@@ -35,8 +35,6 @@ A detailed explanation of why the event or failure occurred based on the log evi
 ## Actionable Remediation
 Step-by-step commands, configuration fixes, or debugging steps to resolve the issue."""
 
-SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
-
 
 class AiServiceUnavailableError(RuntimeError):
     """Raised when an AI provider returns 503 / Service Unavailable / Model Overloaded."""

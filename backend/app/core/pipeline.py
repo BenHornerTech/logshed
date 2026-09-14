@@ -111,9 +111,6 @@ class InternalLogHandler(logging.Handler):
             if record.exc_info:
                 msg += "\n" + "".join(traceback.format_exception(*record.exc_info))
 
-            from app.core.redactor import redact
-            msg = redact(msg)
-
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
             app_subname = record.name.split(".")[-1] if "." in record.name else record.name
             log_entry = {

@@ -707,7 +707,7 @@ class TestAiPreviewAndGating:
         assert res.status_code == 200
         data = res.json()
         full_prompt = data["redacted_prompt"]
-        expected_tokens = max(1, int(len(full_prompt) // 3.5 + len(ai_engine.SYSTEM_PROMPT) // 3.5 + 50))
+        expected_tokens = max(1, int(len(full_prompt) // 3.5 + len(ai_engine.DEFAULT_SYSTEM_PROMPT) // 3.5 + 50))
         assert data["estimated_tokens"] == expected_tokens
         assert data["estimated_tokens"] >= 250
 

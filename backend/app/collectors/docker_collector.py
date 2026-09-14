@@ -199,9 +199,6 @@ def _parse_docker_log_line(raw_bytes: bytes) -> str:
     return raw_bytes.decode("utf-8", errors="replace").rstrip("\n\r")
 
 
-_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\].*?(?:\x07|\x1b\\)|[@-Z\\-_])")
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-
 
 _clean_text = clean_log_text
 _SEVERITY_LEVEL_MAP = SEVERITY_LEVEL_MAP

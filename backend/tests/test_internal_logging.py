@@ -346,8 +346,8 @@ class TestInternalLogHandler:
 
         assert q.qsize() == 20
 
-    def test_internal_log_redacts_sensitive_data(self):
-        """InternalLogHandler scrubs secrets such as API keys and passwords before queueing."""
+    def test_internal_log_preserves_raw_message(self):
+        """InternalLogHandler retains raw messages without redundant redaction (redaction occurs on-demand for AI prompts)."""
         q = get_queue()
         while not q.empty():
             q.get_nowait()
@@ -365,9 +365,8 @@ class TestInternalLogHandler:
         handler.emit(rec)
         assert q.qsize() == 1
         entry = q.get_nowait()
-        assert "SuperSecretPassword123" not in entry["message"]
-        assert "AIzaSyD-1234567890abcdef" not in entry["message"]
-        assert "[REDACTED]" in entry["message"]
+        assert "SuperSecretPassword123" in entry["message"]
+        assert "AIzaSyD-1234567890abcdef" in entry["message"]
 
 
     @pytest.mark.asyncio

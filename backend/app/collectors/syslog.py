@@ -160,19 +160,27 @@ def parse_syslog_message(
                 while i < len(remainder) and remainder[i] == "[":
                     # Find matching closing bracket (not escaped)
                     j = i + 1
+                    found_close = False
                     while j < len(remainder):
                         if remainder[j] == "]":
                             sd_end = j + 1
+                            found_close = True
                             break
                         if remainder[j] == "\\" and j + 1 < len(remainder):
                             j += 1  # skip escaped char
                         j += 1
+                    if not found_close:
+                        break
                     i = sd_end
                     # skip optional space between SD elements
                     if i < len(remainder) and remainder[i] == " " and i + 1 < len(remainder) and remainder[i + 1] == "[":
                         i += 1
-                sd = remainder[:sd_end]
-                msg = remainder[sd_end:].lstrip(" ")
+                if sd_end == 0:
+                    sd = ""
+                    msg = remainder
+                else:
+                    sd = remainder[:sd_end]
+                    msg = remainder[sd_end:].lstrip(" ")
             else:
                 # Malformed SD - treat entire remainder as message
                 sd = ""
@@ -417,26 +425,6 @@ class AliasCache:
                 break
             except Exception as e:
                 logger.error(f"Error refreshing alias cache: {e}")
-
-
-def resolve_alias(source_ip: str, db_path: str | Path) -> str:
-    """
-    Legacy synchronous alias lookup for CLI and backward compatibility.
-    For high-throughput syslog ingestion, use AliasCache.resolve() instead.
-    """
-    try:
-        conn = get_connection(db_path)
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT alias FROM host_aliases WHERE ip = ?", (source_ip,))
-            row = cursor.fetchone()
-            if row:
-                return row[0]
-        finally:
-            conn.close()
-    except Exception:
-        pass
-    return source_ip
 
 
 NUM_PARSER_WORKERS = 4
