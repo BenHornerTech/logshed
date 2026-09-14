@@ -45,6 +45,8 @@ _CONTAINER_INITIAL_BACKOFF = 1.0
 _CONTAINER_MAX_BACKOFF = 15.0
 _CONTAINER_BACKOFF_FACTOR = 2.0
 
+MAX_TTY_BUFFER = 65536  # 64 KB limit to prevent unbounded memory growth in TTY mode
+
 
 def _parse_docker_host() -> tuple[str, Optional[str]]:
     """
@@ -464,6 +466,17 @@ async def _tail_container_logs(
                                 entry = _process_line(line)
                                 if entry:
                                     await assembler.feed(stream_key, entry)
+
+                            while len(buffer) > MAX_TTY_BUFFER:
+                                logger.warning(
+                                    f"Docker TTY buffer exceeded {MAX_TTY_BUFFER} bytes without newline for container {container_name}. Truncating chunk."
+                                )
+                                chunk_bytes = buffer[:MAX_TTY_BUFFER]
+                                buffer = buffer[MAX_TTY_BUFFER:]
+                                line = chunk_bytes.decode("utf-8", errors="replace").rstrip("\r")
+                                entry = _process_line(line)
+                                if entry:
+                                    await assembler.feed(stream_key, entry)
                         else:
                             # Multiplexed mode: demux frames with automatic header resynchronization
                             frames, buffer = _demux_stream(buffer)
@@ -479,6 +492,17 @@ async def _tail_container_logs(
 
                     # Flush any trailing TTY bytes on clean stream completion
                     if is_tty and buffer:
+                        while len(buffer) > MAX_TTY_BUFFER:
+                            logger.warning(
+                                f"Docker TTY trailing buffer exceeded {MAX_TTY_BUFFER} bytes for container {container_name}. Truncating chunk."
+                            )
+                            chunk_bytes = buffer[:MAX_TTY_BUFFER]
+                            buffer = buffer[MAX_TTY_BUFFER:]
+                            line = chunk_bytes.decode("utf-8", errors="replace").rstrip("\r")
+                            if line:
+                                entry = _process_line(line)
+                                if entry:
+                                    await assembler.feed(stream_key, entry)
                         line = buffer.decode("utf-8", errors="replace").rstrip("\r")
                         buffer = b""
                         if line:

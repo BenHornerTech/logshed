@@ -430,6 +430,55 @@ class AliasCache:
 NUM_PARSER_WORKERS = 4
 
 
+async def dispatch_syslog_message(
+    data: bytes,
+    source_ip: str,
+    alias_cache: AliasCache,
+    assembler: KeyedMultilineAssembler,
+) -> None:
+    """
+    Shared dispatch logic for UDP and TCP syslog messages:
+    parsing, alias lookup, continuation/multiline stream key resolution,
+    and assembler feeding.
+    """
+    try:
+        parsed = parse_syslog_message(data, source_ip)
+        # Zero-cost in-memory lookup - no DB I/O
+        source_alias = alias_cache.resolve(source_ip)
+        if source_alias == source_ip:
+            hostname = parsed.get("hostname")
+            if hostname and hostname not in ("-", "unknown"):
+                source_alias = hostname
+        parsed["source_alias"] = source_alias
+        stream_key = f"{source_ip}:{parsed['app_name']}"
+
+        if (
+            parsed.get("app_name") in ("unknown", "-", "")
+            or not parsed.get("app_name")
+            or _RE_PYTHON_EXCEPTION.match(parsed.get("app_name", ""))
+        ):
+            active_key = assembler.get_active_stream_key_for_source(source_ip)
+            if active_key:
+                buf_text = assembler.get_buffered_text(active_key)
+                check_text = parsed.get("message", "")
+                raw_text = parsed.get("raw", "")
+                if _is_continuation(check_text, buf_text) or _is_continuation(raw_text, buf_text):
+                    stream_key = active_key
+                    if not _is_continuation(check_text, buf_text) and _is_continuation(raw_text, buf_text):
+                        parsed["message"] = raw_text
+                    parent = assembler.get_stream_parent_entry(active_key)
+                    if parent:
+                        parsed["app_name"] = parent.get("app_name", parsed["app_name"])
+                        if "hostname" in parent:
+                            parsed["hostname"] = parent["hostname"]
+                        if "source_alias" in parent:
+                            parsed["source_alias"] = parent["source_alias"]
+
+        await assembler.feed(stream_key, parsed)
+    except Exception as e:
+        logger.error(f"Error processing syslog message: {e}")
+
+
 class SyslogUDPProtocol(asyncio.DatagramProtocol):
     def __init__(
         self,
@@ -489,42 +538,7 @@ class SyslogUDPProtocol(asyncio.DatagramProtocol):
             logger.warning("Syslog UDP queue full (5000 items). Packet dropped.")
         
     async def process_message(self, data: bytes, source_ip: str):
-        try:
-            parsed = parse_syslog_message(data, source_ip)
-            # Zero-cost in-memory lookup - no DB I/O
-            source_alias = self.alias_cache.resolve(source_ip)
-            if source_alias == source_ip:
-                hostname = parsed.get("hostname")
-                if hostname and hostname not in ("-", "unknown"):
-                    source_alias = hostname
-            parsed["source_alias"] = source_alias
-            stream_key = f"{source_ip}:{parsed['app_name']}"
-
-            if (
-                parsed.get("app_name") in ("unknown", "-", "")
-                or not parsed.get("app_name")
-                or _RE_PYTHON_EXCEPTION.match(parsed.get("app_name", ""))
-            ):
-                active_key = self.assembler.get_active_stream_key_for_source(source_ip)
-                if active_key:
-                    buf_text = self.assembler.get_buffered_text(active_key)
-                    check_text = parsed.get("message", "")
-                    raw_text = parsed.get("raw", "")
-                    if _is_continuation(check_text, buf_text) or _is_continuation(raw_text, buf_text):
-                        stream_key = active_key
-                        if not _is_continuation(check_text, buf_text) and _is_continuation(raw_text, buf_text):
-                            parsed["message"] = raw_text
-                        parent = self.assembler.get_stream_parent_entry(active_key)
-                        if parent:
-                            parsed["app_name"] = parent.get("app_name", parsed["app_name"])
-                            if "hostname" in parent:
-                                parsed["hostname"] = parent["hostname"]
-                            if "source_alias" in parent:
-                                parsed["source_alias"] = parent["source_alias"]
-
-            await self.assembler.feed(stream_key, parsed)
-        except Exception as e:
-            logger.error(f"Error processing UDP syslog message: {e}")
+        await dispatch_syslog_message(data, source_ip, self.alias_cache, self.assembler)
 
     async def stop(self) -> None:
         for task in self._workers:
@@ -535,6 +549,8 @@ class SyslogUDPProtocol(asyncio.DatagramProtocol):
 
 
 MAX_TCP_BUFFER = 65536  # 64 KB limit to prevent unbounded memory growth / OOM DoS
+MAX_TCP_CONNECTIONS = 50
+TCP_INACTIVITY_TIMEOUT = 60.0
 
 
 class SyslogTCPProtocol(asyncio.Protocol):
@@ -545,6 +561,8 @@ class SyslogTCPProtocol(asyncio.Protocol):
         max_queue_size: int = 5000,
         num_workers: int = NUM_PARSER_WORKERS,
         on_close=None,
+        inactivity_timeout: float = TCP_INACTIVITY_TIMEOUT,
+        reject_on_connect: bool = False,
     ):
         self.assembler = assembler
         self.alias_cache = alias_cache
@@ -555,11 +573,35 @@ class SyslogTCPProtocol(asyncio.Protocol):
         self.num_workers = num_workers
         self._workers: list[asyncio.Task] = []
         self.on_close = on_close
+        self.inactivity_timeout = inactivity_timeout
+        self.reject_on_connect = reject_on_connect
+        self._inactivity_handle: Optional[asyncio.TimerHandle] = None
 
     def _ensure_workers(self) -> None:
         if not self._workers:
             for _ in range(self.num_workers):
                 self._workers.append(asyncio.create_task(self._worker_loop()))
+
+    def _reset_inactivity_timer(self) -> None:
+        if self._inactivity_handle:
+            self._inactivity_handle.cancel()
+            self._inactivity_handle = None
+        if self.inactivity_timeout and self.inactivity_timeout > 0:
+            try:
+                loop = asyncio.get_running_loop()
+                self._inactivity_handle = loop.call_later(
+                    self.inactivity_timeout,
+                    self._handle_inactivity_timeout,
+                )
+            except RuntimeError:
+                pass
+
+    def _handle_inactivity_timeout(self) -> None:
+        logger.warning(
+            f"Syslog TCP connection from {self.peername} timed out after {self.inactivity_timeout}s of inactivity. Closing."
+        )
+        if self.transport and not self.transport.is_closing():
+            self.transport.close()
 
     async def _worker_loop(self) -> None:
         while True:
@@ -587,10 +629,18 @@ class SyslogTCPProtocol(asyncio.Protocol):
     def connection_made(self, transport):
         self.transport = transport
         self.peername = transport.get_extra_info('peername')
+        if self.reject_on_connect:
+            logger.warning(
+                f"Syslog TCP connection limit reached. Rejecting connection from {self.peername}."
+            )
+            transport.close()
+            return
         self._ensure_workers()
+        self._reset_inactivity_timer()
         logger.debug(f"Syslog TCP connection from {self.peername}")
 
     def data_received(self, data: bytes):
+        self._reset_inactivity_timer()
         self.buffer += data
         while self.buffer:
             # Strip leading carriage returns or newlines between frames
@@ -657,44 +707,12 @@ class SyslogTCPProtocol(asyncio.Protocol):
                 self.transport.close()
                 
     async def process_message(self, data: bytes, source_ip: str):
-        try:
-            parsed = parse_syslog_message(data, source_ip)
-            # Zero-cost in-memory lookup - no DB I/O
-            source_alias = self.alias_cache.resolve(source_ip)
-            if source_alias == source_ip:
-                hostname = parsed.get("hostname")
-                if hostname and hostname not in ("-", "unknown"):
-                    source_alias = hostname
-            parsed["source_alias"] = source_alias
-            stream_key = f"{source_ip}:{parsed['app_name']}"
-
-            if (
-                parsed.get("app_name") in ("unknown", "-", "")
-                or not parsed.get("app_name")
-                or _RE_PYTHON_EXCEPTION.match(parsed.get("app_name", ""))
-            ):
-                active_key = self.assembler.get_active_stream_key_for_source(source_ip)
-                if active_key:
-                    buf_text = self.assembler.get_buffered_text(active_key)
-                    check_text = parsed.get("message", "")
-                    raw_text = parsed.get("raw", "")
-                    if _is_continuation(check_text, buf_text) or _is_continuation(raw_text, buf_text):
-                        stream_key = active_key
-                        if not _is_continuation(check_text, buf_text) and _is_continuation(raw_text, buf_text):
-                            parsed["message"] = raw_text
-                        parent = self.assembler.get_stream_parent_entry(active_key)
-                        if parent:
-                            parsed["app_name"] = parent.get("app_name", parsed["app_name"])
-                            if "hostname" in parent:
-                                parsed["hostname"] = parent["hostname"]
-                            if "source_alias" in parent:
-                                parsed["source_alias"] = parent["source_alias"]
-
-            await self.assembler.feed(stream_key, parsed)
-        except Exception as e:
-            logger.error(f"Error processing TCP syslog message: {e}")
+        await dispatch_syslog_message(data, source_ip, self.alias_cache, self.assembler)
 
     def connection_lost(self, exc):
+        if self._inactivity_handle:
+            self._inactivity_handle.cancel()
+            self._inactivity_handle = None
         logger.debug(f"Syslog TCP connection lost from {self.peername}")
         for task in self._workers:
             task.cancel()
@@ -703,6 +721,9 @@ class SyslogTCPProtocol(asyncio.Protocol):
             self.on_close(self)
 
     async def stop(self) -> None:
+        if self._inactivity_handle:
+            self._inactivity_handle.cancel()
+            self._inactivity_handle = None
         for task in self._workers:
             task.cancel()
         if self._workers:
@@ -710,17 +731,37 @@ class SyslogTCPProtocol(asyncio.Protocol):
             self._workers.clear()
 
 
+# Alias for backward compatibility / explicit naming
+SyslogTCPServerProtocol = SyslogTCPProtocol
+
+
 class SyslogServer:
-    def __init__(self, assembler: KeyedMultilineAssembler, db_path: str | Path, host: str = '0.0.0.0', port: int = 1514):
+    MAX_TCP_CONNECTIONS = MAX_TCP_CONNECTIONS
+
+    def __init__(
+        self,
+        assembler: KeyedMultilineAssembler,
+        db_path: str | Path,
+        host: str = '0.0.0.0',
+        port: int = 1514,
+        max_tcp_connections: int = MAX_TCP_CONNECTIONS,
+        tcp_inactivity_timeout: float = TCP_INACTIVITY_TIMEOUT,
+    ):
         self.assembler = assembler
         self.db_path = db_path
         self.host = host
         self.port = port
+        self.max_tcp_connections = max_tcp_connections
+        self.tcp_inactivity_timeout = tcp_inactivity_timeout
         self.udp_transport = None
         self.udp_protocol: SyslogUDPProtocol | None = None
         self.tcp_server = None
         self.tcp_protocols: set[SyslogTCPProtocol] = set()
         self.alias_cache = AliasCache(db_path, preload=False)
+
+    @property
+    def active_tcp_connections(self) -> int:
+        return len(self.tcp_protocols)
 
     async def start(self) -> None:
         """Create and start alias cache refresh, then both UDP and TCP transports."""
@@ -745,7 +786,23 @@ class SyslogServer:
             self.tcp_protocols.discard(proto)
 
         def _create_tcp_protocol():
-            proto = SyslogTCPProtocol(self.assembler, self.alias_cache, on_close=_remove_tcp_protocol)
+            if len(self.tcp_protocols) >= self.max_tcp_connections:
+                logger.warning(
+                    f"Syslog TCP connection limit reached ({self.max_tcp_connections}). Rejecting new connection."
+                )
+                return SyslogTCPProtocol(
+                    self.assembler,
+                    self.alias_cache,
+                    on_close=_remove_tcp_protocol,
+                    reject_on_connect=True,
+                )
+
+            proto = SyslogTCPProtocol(
+                self.assembler,
+                self.alias_cache,
+                on_close=_remove_tcp_protocol,
+                inactivity_timeout=self.tcp_inactivity_timeout,
+            )
             self.tcp_protocols.add(proto)
             return proto
 

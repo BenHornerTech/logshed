@@ -15,7 +15,11 @@ from app.collectors.syslog import (
     AliasCache,
     SyslogServer,
     SyslogTCPProtocol,
+    SyslogTCPServerProtocol,
     SyslogUDPProtocol,
+    MAX_TCP_CONNECTIONS,
+    TCP_INACTIVITY_TIMEOUT,
+    dispatch_syslog_message,
     parse_syslog_message,
 )
 
@@ -999,6 +1003,7 @@ class TestAliasCache:
         import gc
         from app.collectors.syslog import _active_caches
 
+        gc.collect()
         initial_count = len(_active_caches)
         cache = AliasCache(db_path)
         assert len(_active_caches) == initial_count + 1
@@ -1171,5 +1176,175 @@ class TestSyslogMultilineTracebackAssembly:
         assert entry["message"] == "Just an isolated text line from legacy script"
 
         await proto.stop()
+
+
+class TestSyslogTCPConnectionLimitsAndTimeout:
+    """Unit tests for TCP connection limits, inactivity timeouts, and shared dispatch logic."""
+
+    def test_constants_and_aliases(self):
+        assert MAX_TCP_CONNECTIONS == 50
+        assert TCP_INACTIVITY_TIMEOUT == 60.0
+        assert SyslogTCPServerProtocol is SyslogTCPProtocol
+
+    @pytest.mark.asyncio
+    async def test_tcp_connection_limit_rejection(self, db_path: Path):
+        """When active TCP connections reach max_tcp_connections, new connections are rejected."""
+        from unittest.mock import MagicMock
+        assembler = KeyedMultilineAssembler()
+
+        server = SyslogServer(
+            assembler,
+            db_path,
+            max_tcp_connections=2,
+        )
+
+        def _remove_tcp_protocol(proto: SyslogTCPProtocol):
+            server.tcp_protocols.discard(proto)
+
+        def _create_protocol():
+            if len(server.tcp_protocols) >= server.max_tcp_connections:
+                return SyslogTCPProtocol(
+                    server.assembler,
+                    server.alias_cache,
+                    on_close=_remove_tcp_protocol,
+                    reject_on_connect=True,
+                )
+            proto = SyslogTCPProtocol(
+                server.assembler,
+                server.alias_cache,
+                on_close=_remove_tcp_protocol,
+                inactivity_timeout=server.tcp_inactivity_timeout,
+            )
+            server.tcp_protocols.add(proto)
+            return proto
+
+        assert server.active_tcp_connections == 0
+
+        # Protocol 1 connects
+        t1 = MagicMock()
+        t1.get_extra_info.return_value = ("10.0.0.1", 1001)
+        p1 = _create_protocol()
+        p1.connection_made(t1)
+        assert server.active_tcp_connections == 1
+        assert not t1.close.called
+
+        # Protocol 2 connects
+        t2 = MagicMock()
+        t2.get_extra_info.return_value = ("10.0.0.2", 1002)
+        p2 = _create_protocol()
+        p2.connection_made(t2)
+        assert server.active_tcp_connections == 2
+        assert not t2.close.called
+
+        # Protocol 3 connects (exceeds limit: must be rejected on connect)
+        t3 = MagicMock()
+        t3.get_extra_info.return_value = ("10.0.0.3", 1003)
+        p3 = _create_protocol()
+        assert p3.reject_on_connect is True
+        p3.connection_made(t3)
+        assert t3.close.called
+        assert server.active_tcp_connections == 2
+
+        # Protocol 1 closes
+        p1.connection_lost(None)
+        assert server.active_tcp_connections == 1
+
+        # Protocol 4 connects (now accepted because slot opened)
+        t4 = MagicMock()
+        t4.get_extra_info.return_value = ("10.0.0.4", 1004)
+        p4 = _create_protocol()
+        assert p4.reject_on_connect is False
+        p4.connection_made(t4)
+        assert not t4.close.called
+        assert server.active_tcp_connections == 2
+
+        await p1.stop()
+        await p2.stop()
+        await p3.stop()
+        await p4.stop()
+
+    @pytest.mark.asyncio
+    async def test_tcp_inactivity_timeout(self, db_path: Path):
+        """SyslogTCPProtocol closes transport if no data is received within inactivity_timeout."""
+        from unittest.mock import MagicMock
+        assembler = KeyedMultilineAssembler()
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(
+            assembler,
+            alias_cache,
+            inactivity_timeout=0.1,
+        )
+
+        transport = MagicMock()
+        transport.get_extra_info.return_value = ("127.0.0.1", 12345)
+        transport.is_closing.return_value = False
+
+        proto.connection_made(transport)
+        assert not transport.close.called
+
+        # Wait for timeout to expire
+        await asyncio.sleep(0.15)
+        assert transport.close.called
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_tcp_inactivity_timer_reset_on_data(self, db_path: Path):
+        """Inactivity timer is reset whenever data is received."""
+        from unittest.mock import MagicMock
+        class MockAssembler:
+            async def feed(self, key, entry):
+                pass
+            def get_active_stream_key_for_source(self, ip):
+                return None
+
+        assembler = MockAssembler()
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(
+            assembler,
+            alias_cache,
+            inactivity_timeout=0.15,
+        )
+
+        transport = MagicMock()
+        transport.get_extra_info.return_value = ("127.0.0.1", 12345)
+        transport.is_closing.return_value = False
+
+        proto.connection_made(transport)
+
+        # Send data at 0.08s
+        await asyncio.sleep(0.08)
+        proto.data_received(b"<14>Jan 15 10:00:00 app-srv worker: heartbeat\n")
+        assert not transport.close.called
+
+        # After another 0.08s (total 0.16s, which would have expired without reset), still active
+        await asyncio.sleep(0.08)
+        assert not transport.close.called
+
+        # Wait until remaining time expires without further data
+        await asyncio.sleep(0.12)
+        assert transport.close.called
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_syslog_message_shared(self, db_path: Path):
+        """dispatch_syslog_message parses, resolves alias, and feeds assembler correctly."""
+        assembler = KeyedMultilineAssembler()
+        alias_cache = AliasCache(db_path)
+
+        q = get_queue()
+        while not q.empty():
+            q.get_nowait()
+
+        data = b"<14>Jan 15 10:00:00 host01 my-daemon[42]: process started successfully"
+        await dispatch_syslog_message(data, "10.0.0.99", alias_cache, assembler)
+        await asyncio.sleep(0.25)
+
+        assert not q.empty()
+        item = q.get_nowait()
+        assert item["app_name"] == "my-daemon"
+        assert item["source_alias"] == "host01"
+        assert item["message"] == "process started successfully"
+
+
 
 

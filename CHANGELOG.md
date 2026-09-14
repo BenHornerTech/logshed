@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Multiline Assembler Buffer Boundaries**: Enforced memory and capacity limits on `KeyedMultilineAssembler` with a cap of 500 lines or 256 KB per stream, a 5.0-second hard lifetime timeout preventing continuous continuation lines from postponing flushes indefinitely, and oldest-stream eviction when active streams reach 2000.
+- **Syslog TCP Connection Limits & Inactivity Timeout**: Bound concurrent Syslog TCP connections to a maximum of 50 in `SyslogServer` with rejection and warning on excess connections, and added a 60-second inactivity timeout closing idle TCP client transports.
+- **Docker TTY Buffer Cap**: Capped Docker TTY stream buffer to 64 KB (`MAX_TTY_BUFFER = 65536`), truncating chunks with a warning when container output lacks newlines to prevent unbounded memory consumption.
 - **RFC 5424 Parser Infinite Loop**: Fixed an infinite loop in `parse_syslog_message` when structured data begins with an unclosed bracket `[`, ensuring unclosed structured data breaks out safely and is treated as message payload.
 - **Missing Imports in Background Model Refresh**: Added missing top-level `datetime` and `json` imports in `main.py` used by `_model_refresh_worker`.
 - **AI Error Handler Redaction**: Redacted raw `ValueError` exception strings in `diagnose_logs` before returning `HTTPException` detail to prevent potential token leakage.
@@ -15,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Host Alias Whitespace Mismatches**: Stripped leading and trailing whitespace from IP addresses and aliases on save to avoid lookup and matching mismatches.
 
 ### Changed
+- **Persistent SQLite Connection in QueueConsumer**: Replaced per-batch connection opening and PRAGMA execution in `QueueConsumer` with a persistent SQLite connection reused across batches with explicit commit/rollback and clean shutdown closing, and streamlined timestamp normalization to eliminate redundant local timezone lookups.
+- **Deduplicated Syslog UDP and TCP Dispatch**: Extracted shared `dispatch_syslog_message` helper function in `syslog.py`, deduplicating packet parsing, host alias lookup, multiline continuation routing, and assembler feeding across protocols.
 - **Internal Log Queue Ingestion**: Removed premature secret redaction from `InternalLogHandler.emit` so raw internal application logs are persisted unredacted to SQLite per SPEC §3 (with redaction performed on-demand for AI prompts).
 - **Master Key Path Logging**: Lowered master encryption key file path logging from INFO to DEBUG in `security.py`.
 - **Dead Code and Deprecated Function Cleanup**: Removed unused `get_docker_host` import from `main.py`, obsolete regexes `_ANSI_ESCAPE_RE` and `_CONTROL_CHARS_RE` from `docker_collector.py`, deprecated alias `SYSTEM_PROMPT` from `ai_engine.py`, and obsolete synchronous helper `resolve_alias` from `syslog.py`.

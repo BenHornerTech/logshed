@@ -7,6 +7,7 @@ import asyncio
 import datetime
 import logging
 import re
+import sqlite3
 import threading
 import time
 import traceback
@@ -350,18 +351,43 @@ def _is_continuation(line: str, buffered_text: Optional[str] = None) -> bool:
         
     return False
 
+MAX_STREAM_LINES = 500
+MAX_STREAM_BYTES = 256 * 1024
+MAX_TOTAL_STREAMS = 2000
+MAX_STREAM_LIFETIME = 5.0  # 5.0 seconds hard timeout
+
+
 class KeyedMultilineAssembler:
     """
     Buffers continuation lines keyed by stream_key, flushing assembled
     multi-line entries into the shared queue.
     """
-    
-    def __init__(self):
+    MAX_STREAM_LINES = MAX_STREAM_LINES
+    MAX_STREAM_BYTES = MAX_STREAM_BYTES
+    MAX_TOTAL_STREAMS = MAX_TOTAL_STREAMS
+    MAX_STREAM_LIFETIME = MAX_STREAM_LIFETIME
+
+    def __init__(
+        self,
+        flush_timeout: float = 0.150,
+        max_stream_lines: int = MAX_STREAM_LINES,
+        max_stream_bytes: int = MAX_STREAM_BYTES,
+        max_total_streams: int = MAX_TOTAL_STREAMS,
+        max_stream_lifetime: float = MAX_STREAM_LIFETIME,
+    ):
         # Maps stream_key to a list of entry dicts buffered so far
-        self._buffers: dict[str, list[dict]] = defaultdict(list)
+        self._buffers: dict[str, list[dict]] = {}
         # Maps stream_key to its flush timer handle
         self._timers: dict[str, asyncio.TimerHandle] = {}
-        self._flush_timeout = 0.150  # 150ms
+        # Maps stream_key to buffer creation monotonic timestamp
+        self._stream_start_times: dict[str, float] = {}
+        # Maps stream_key to cumulative byte size
+        self._stream_bytes: dict[str, int] = {}
+        self._flush_timeout = flush_timeout
+        self.max_stream_lines = max_stream_lines
+        self.max_stream_bytes = max_stream_bytes
+        self.max_total_streams = max_total_streams
+        self.max_stream_lifetime = max_stream_lifetime
 
     def get_buffered_text(self, stream_key: str) -> str:
         """Returns concatenated messages in the current buffer for stream_key."""
@@ -409,23 +435,68 @@ class KeyedMultilineAssembler:
         message = entry.get('message', '')
         buffered_text = self.get_buffered_text(stream_key)
         is_cont = _is_continuation(message, buffered_text)
-        
+
         # If it's NOT a continuation, but we have buffered content for this stream,
         # we should flush the existing buffer before starting a new one.
-        if not is_cont and self._buffers[stream_key]:
+        if not is_cont and self._buffers.get(stream_key):
             self._flush_stream_internal(stream_key)
-        
+
+        now = time.monotonic()
+
+        # If stream buffer exists, check maximum lifetime
+        if stream_key in self._buffers:
+            start_time = self._stream_start_times.get(stream_key, now)
+            if now - start_time >= self.max_stream_lifetime:
+                self._flush_stream_internal(stream_key)
+
+        # If stream buffer is not active, enforce stream capacity and initialize
+        if stream_key not in self._buffers:
+            while len(self._buffers) >= self.max_total_streams:
+                if self._stream_start_times:
+                    oldest_key = min(self._stream_start_times, key=self._stream_start_times.get)
+                elif self._buffers:
+                    oldest_key = next(iter(self._buffers))
+                else:
+                    break
+                self._flush_stream_internal(oldest_key)
+            self._buffers[stream_key] = []
+            self._stream_start_times[stream_key] = now
+            self._stream_bytes[stream_key] = 0
+
+        # Calculate entry bytes
+        msg_bytes = len(message.encode("utf-8"))
+        raw_str = entry.get("raw") or ""
+        raw_bytes = len(raw_str.encode("utf-8"))
+        entry_bytes = max(msg_bytes, raw_bytes)
+
         # Add to buffer
         self._buffers[stream_key].append(entry)
-        
+        self._stream_bytes[stream_key] = self._stream_bytes.get(stream_key, 0) + entry_bytes
+
+        # Check line count and byte length limits
+        if (
+            len(self._buffers[stream_key]) >= self.max_stream_lines
+            or self._stream_bytes[stream_key] >= self.max_stream_bytes
+        ):
+            self._flush_stream_internal(stream_key)
+            return
+
         # Reset timer
         if stream_key in self._timers:
             self._timers[stream_key].cancel()
-            
+
+        elapsed = now - self._stream_start_times.get(stream_key, now)
+        remaining_lifetime = self.max_stream_lifetime - elapsed
+        timeout = min(self._flush_timeout, max(0.0, remaining_lifetime))
+
+        if timeout <= 0.0:
+            self._flush_stream_internal(stream_key)
+            return
+
         loop = asyncio.get_running_loop()
         self._timers[stream_key] = loop.call_later(
-            self._flush_timeout, 
-            self._flush_stream_internal, 
+            timeout,
+            self._flush_stream_internal,
             stream_key
         )
 
@@ -437,11 +508,14 @@ class KeyedMultilineAssembler:
         if stream_key in self._timers:
             self._timers[stream_key].cancel()
             del self._timers[stream_key]
-            
+
+        self._stream_start_times.pop(stream_key, None)
+        self._stream_bytes.pop(stream_key, None)
+
         buffered = self._buffers.pop(stream_key, None)
         if not buffered:
             return
-            
+
         # Merge buffered entries
         first_entry = buffered[0]
         if len(buffered) == 1:
@@ -451,7 +525,7 @@ class KeyedMultilineAssembler:
             merged_raw = "\n".join(e.get('raw', '') for e in buffered)
             # Minimum severity is the most severe
             min_severity = min((e.get('severity', 7) for e in buffered))
-            
+
             merged_entry = first_entry.copy()
             merged_entry['message'] = merged_message
             merged_entry['raw'] = merged_raw
@@ -485,6 +559,30 @@ class QueueConsumer:
         self._stop_event = asyncio.Event()
         self._drain_done = asyncio.Event()
         self._drain_lock = asyncio.Lock()
+        self._conn: Optional[sqlite3.Connection] = None
+        self._conn_lock = threading.Lock()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """Returns or opens a persistent connection configured with WAL and performance PRAGMAs."""
+        with self._conn_lock:
+            if self._conn is None:
+                conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+                conn.execute("PRAGMA busy_timeout=5000;")
+                conn.execute("PRAGMA foreign_keys=ON;")
+                self._conn = conn
+            return self._conn
+
+    def _close_conn(self) -> None:
+        """Cleanly close the persistent SQLite connection."""
+        with self._conn_lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
     async def run(self) -> None:
         """Main loop: drain queue with debounce-based batching (up to 5000 records or debounce window)."""
@@ -493,6 +591,9 @@ class QueueConsumer:
         self._stop_event.clear()
         self._drain_done.clear()
         queue = get_queue()
+
+        # Open persistent connection on consumer start
+        await asyncio.to_thread(self._get_connection)
 
         try:
             while self._running and not self._stopping:
@@ -675,6 +776,8 @@ class QueueConsumer:
         if not queue.empty():
             async with self._drain_lock:
                 await self._drain_queue(queue)
+
+        await asyncio.to_thread(self._close_conn)
         logger.info("QueueConsumer stopped: all pending logs drained and committed.")
 
     def _insert_batch(self, batch: list[dict]) -> None:
@@ -688,8 +791,11 @@ class QueueConsumer:
                 :app_name, :facility, :severity, :message, :raw
             )
         '''
-        
-        conn = get_connection(self._db_path)
+
+        conn = self._get_connection()
+        utc = datetime.timezone.utc
+        local_tz = None
+
         try:
             cursor = conn.cursor()
             for entry in batch:
@@ -709,19 +815,22 @@ class QueueConsumer:
                         ):
                             pass
                         else:
-                            dt_ts = datetime.datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
+                            clean_ts = ts_val[:-1] + "+00:00" if isinstance(ts_val, str) and ts_val.endswith("Z") else str(ts_val)
+                            dt_ts = datetime.datetime.fromisoformat(clean_ts)
                             if dt_ts.tzinfo is None:
-                                local_tz = datetime.datetime.now().astimezone().tzinfo
-                                dt_ts = dt_ts.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
+                                if local_tz is None:
+                                    local_tz = datetime.datetime.now().astimezone().tzinfo or utc
+                                dt_ts = dt_ts.replace(tzinfo=local_tz).astimezone(utc)
                             else:
-                                dt_ts = dt_ts.astimezone(datetime.timezone.utc)
+                                dt_ts = dt_ts.astimezone(utc)
 
                             if rec_val:
-                                dt_rec = datetime.datetime.fromisoformat(rec_val.replace("Z", "+00:00"))
+                                clean_rec = rec_val[:-1] + "+00:00" if isinstance(rec_val, str) and rec_val.endswith("Z") else str(rec_val)
+                                dt_rec = datetime.datetime.fromisoformat(clean_rec)
                                 if dt_rec.tzinfo is None:
-                                    dt_rec = dt_rec.replace(tzinfo=datetime.timezone.utc)
+                                    dt_rec = dt_rec.replace(tzinfo=utc)
                                 else:
-                                    dt_rec = dt_rec.astimezone(datetime.timezone.utc)
+                                    dt_rec = dt_rec.astimezone(utc)
 
                                 if (dt_ts - dt_rec).total_seconds() > 60:
                                     dt_ts = dt_rec
@@ -734,7 +843,8 @@ class QueueConsumer:
                 entry["id"] = cursor.lastrowid
             conn.commit()
         except Exception as e:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                self._close_conn()
             raise e
-        finally:
-            conn.close()

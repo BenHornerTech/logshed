@@ -17,6 +17,10 @@ from app.core.pipeline import (
     KeyedMultilineAssembler,
     QueueConsumer,
     IngestionRateTracker,
+    MAX_STREAM_LINES,
+    MAX_STREAM_BYTES,
+    MAX_TOTAL_STREAMS,
+    MAX_STREAM_LIFETIME,
     _is_continuation,
     get_dropped_count,
     get_ingest_rate,
@@ -884,5 +888,130 @@ class TestQueueConsumer:
             await sse_manager.broadcast_batch([])
         finally:
             await sse_manager.unsubscribe(sse_q)
+
+
+class TestKeyedMultilineAssemblerLimits:
+    """Unit tests for multiline assembler bounds, eviction, and timeout guards."""
+
+    def test_constants_defined(self):
+        assert MAX_STREAM_LINES == 500
+        assert MAX_STREAM_BYTES == 256 * 1024
+        assert MAX_TOTAL_STREAMS == 2000
+        assert MAX_STREAM_LIFETIME == 5.0
+
+    @pytest.mark.asyncio
+    async def test_stream_line_count_limit_triggers_immediate_flush(self):
+        """When a stream reaches max_stream_lines, it flushes immediately without timer."""
+        asm = KeyedMultilineAssembler(flush_timeout=10.0, max_stream_lines=5)
+        q = get_queue()
+
+        # Feed 4 continuation lines
+        await asm.feed("s1:app", _make_entry(message="Traceback (most recent call last):"))
+        for i in range(3):
+            await asm.feed("s1:app", _make_entry(message=f"  line {i}"))
+        assert q.empty()
+
+        # 5th line hits the threshold and immediately flushes
+        await asm.feed("s1:app", _make_entry(message="  line 3"))
+        assert not q.empty()
+        item = q.get_nowait()
+        assert "Traceback (most recent call last):" in item["message"]
+        assert "line 3" in item["message"]
+
+        # 6th line starts a fresh buffer
+        await asm.feed("s1:app", _make_entry(message="  line 4"))
+        assert q.empty()
+
+    @pytest.mark.asyncio
+    async def test_stream_byte_limit_triggers_immediate_flush(self):
+        """When a stream accumulates max_stream_bytes, it flushes immediately without timer."""
+        asm = KeyedMultilineAssembler(flush_timeout=10.0, max_stream_bytes=1000)
+        q = get_queue()
+
+        # First line of 600 bytes
+        await asm.feed("s1:app", _make_entry(message="Traceback:\n" + (" " * 580)))
+        assert q.empty()
+
+        # Continuation line of 500 bytes pushes it to 1100 bytes (> 1000 threshold)
+        await asm.feed("s1:app", _make_entry(message="  " + ("x" * 498)))
+        assert not q.empty()
+        item = q.get_nowait()
+        assert len(item["message"].encode("utf-8")) >= 1000
+
+    @pytest.mark.asyncio
+    async def test_max_total_streams_evicts_oldest_stream(self):
+        """When active streams count reaches max_total_streams, the oldest stream is evicted and flushed."""
+        asm = KeyedMultilineAssembler(flush_timeout=10.0, max_total_streams=3)
+        q = get_queue()
+
+        await asm.feed("stream1:app", _make_entry(message="stream 1 line 1"))
+        await asyncio.sleep(0.01)
+        await asm.feed("stream2:app", _make_entry(message="stream 2 line 1"))
+        await asyncio.sleep(0.01)
+        await asm.feed("stream3:app", _make_entry(message="stream 3 line 1"))
+        assert q.empty()
+
+        # 4th stream exceeds capacity of 3; stream 1 is the oldest and should be evicted
+        await asm.feed("stream4:app", _make_entry(message="stream 4 line 1"))
+        assert not q.empty()
+        evicted = q.get_nowait()
+        assert evicted["message"] == "stream 1 line 1"
+
+    @pytest.mark.asyncio
+    async def test_hard_lifetime_forces_flush_despite_continuous_feed(self):
+        """Continuous continuation lines within debounce cannot postpone flush past max_stream_lifetime."""
+        asm = KeyedMultilineAssembler(flush_timeout=0.2, max_stream_lifetime=0.15)
+        q = get_queue()
+
+        # Start stream
+        await asm.feed("s1:app", _make_entry(message="Traceback (most recent call last):"))
+        assert q.empty()
+
+        # Feed continuation after 0.08s (before flush_timeout of 0.2s)
+        await asyncio.sleep(0.08)
+        await asm.feed("s1:app", _make_entry(message="  line 1"))
+        assert q.empty()
+
+        # Feed continuation after total 0.16s (exceeding max_stream_lifetime of 0.15s)
+        await asyncio.sleep(0.08)
+        await asm.feed("s1:app", _make_entry(message="  line 2"))
+
+        # Stream must have been flushed due to max_stream_lifetime expiration
+        assert not q.empty()
+        item = q.get_nowait()
+        assert "Traceback (most recent call last):" in item["message"]
+
+
+class TestQueueConsumerPersistentConnection:
+    """Unit tests for persistent SQLite connection reuse in QueueConsumer."""
+
+    @pytest.mark.asyncio
+    async def test_persistent_connection_reused_across_batches(self, db_path: Path):
+        """Connection is created once and reused across multiple batch flushes, then closed on stop."""
+        consumer = QueueConsumer(db_path, debounce_seconds=0.02)
+        q = get_queue()
+        consumer_task = asyncio.create_task(consumer.run())
+
+        # Enqueue batch 1
+        q.put_nowait(_make_entry(message="batch 1 msg"))
+        await asyncio.sleep(0.1)
+
+        conn1 = consumer._conn
+        assert conn1 is not None
+
+        # Enqueue batch 2
+        q.put_nowait(_make_entry(message="batch 2 msg"))
+        await asyncio.sleep(0.1)
+
+        conn2 = consumer._conn
+        # Must be the exact same persistent connection object
+        assert conn1 is conn2
+
+        await consumer.stop()
+        await consumer_task
+
+        # After stop(), persistent connection must be closed and cleared
+        assert consumer._conn is None
+
 
 

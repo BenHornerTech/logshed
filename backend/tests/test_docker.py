@@ -16,6 +16,7 @@ from app.core.migrations import get_connection, run_migrations
 from app.collectors.syslog import AliasCache, reload_active_alias_caches
 from app.core.pipeline import KeyedMultilineAssembler
 from app.collectors.docker_collector import (
+    MAX_TTY_BUFFER,
     DockerTailer,
     _build_client,
     _demux_stream,
@@ -1635,6 +1636,65 @@ class TestDockerDemuxFrameResync:
         assert len(entries) == 1
         assert entries[0]["message"] == "Final unbuffered status"
         assert entries[0]["timestamp"] == ts
+
+    def test_max_tty_buffer_constant(self):
+        assert MAX_TTY_BUFFER == 65536
+
+    @pytest.mark.asyncio
+    async def test_tty_buffer_cap_splits_without_newline(self, caplog):
+        """When TTY buffer exceeds MAX_TTY_BUFFER without newline, it splits the first 64KB and logs warning."""
+        assembler = KeyedMultilineAssembler()
+        entries = []
+
+        async def capture_feed(key, entry):
+            entries.append(entry)
+
+        assembler.feed = capture_feed
+        cancel_event = asyncio.Event()
+
+        # Create 70,000 bytes with no newline
+        raw_payload = b"X" * 70000
+
+        class MockLargeTtyResp:
+            def raise_for_status(self):
+                pass
+            async def aiter_bytes(self):
+                yield raw_payload
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+
+        class MockLargeClient:
+            async def get(self, url, **kwargs):
+                class InspectResp:
+                    status_code = 200
+                    def json(self):
+                        return {"Config": {"Tty": True}}
+                return InspectResp()
+            def stream(self, method, url, **kwargs):
+                return MockLargeTtyResp()
+
+        with caplog.at_level(logging.WARNING):
+            task = asyncio.create_task(
+                _tail_container_logs(
+                    MockLargeClient(),
+                    "cid_tty_large",
+                    "app_tty_large",
+                    assembler,
+                    cancel_event,
+                    heartbeat_interval=0,
+                )
+            )
+            await asyncio.sleep(0.08)
+            cancel_event.set()
+            await task
+
+        # Should split into two entries: 65536 bytes chunk, then remainder of 4464 bytes
+        assert len(entries) == 2
+        assert len(entries[0]["message"]) == 65536
+        assert len(entries[1]["message"]) == 70000 - 65536
+        assert any("exceeded 65536 bytes without newline" in record.message for record in caplog.records)
 
     def test_build_client_connection_pool_limits(self):
         """_build_client configures higher pool limits to avoid starvation across containers."""
