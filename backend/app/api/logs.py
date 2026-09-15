@@ -3,6 +3,7 @@ Log querying, streaming (SSE), and context API endpoints for LogShed.
 """
 
 import asyncio
+import datetime
 import json
 import logging
 from typing import Any, AsyncGenerator, Optional
@@ -154,6 +155,24 @@ async def list_logs(
     Supports native SQLite FTS5 query syntax (e.g. column filters, AND/OR/NOT, wildcards)
     and automatic prefix matching for search-as-you-type.
     """
+    if from_:
+        try:
+            datetime.datetime.fromisoformat(from_)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid datetime format. Expected ISO-8601 string.",
+            )
+
+    if to:
+        try:
+            datetime.datetime.fromisoformat(to)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid datetime format. Expected ISO-8601 string.",
+            )
+
     def _query_db(conn):
         where_clauses: list[str] = []
         params: dict[str, Any] = {"limit": limit, "offset": offset}

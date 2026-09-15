@@ -10,6 +10,7 @@ with a new Argon2id password hash.
 
 import argparse
 import datetime
+import getpass
 import sys
 
 from argon2 import PasswordHasher
@@ -165,8 +166,9 @@ def main() -> None:
     )
     reset_parser.add_argument(
         "--password",
-        required=True,
-        help="New admin password",
+        required=False,
+        default=None,
+        help="New admin password (prompted if omitted)",
     )
     reset_parser.add_argument(
         "--db-path",
@@ -200,7 +202,13 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "reset-admin":
-        reset_admin(args.password, args.db_path)
+        password = args.password
+        if not password:
+            password = getpass.getpass("Enter new admin password: ")
+            if not password:
+                print("Error: Password cannot be empty.", file=sys.stderr)
+                sys.exit(1)
+        reset_admin(password, args.db_path)
     elif args.command == "seed-logs":
         seed_logs(args.count, args.days, args.db_path)
     else:

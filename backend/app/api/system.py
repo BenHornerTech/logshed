@@ -3,9 +3,9 @@ System health, storage metrics, and retention maintenance API endpoints for LogS
 """
 
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from app.api.deps import get_current_user, run_db_query
+from app.api.deps import get_current_user, get_optional_user, run_db_query
 from app.core.config import get_db_path, get_max_retention_days, is_max_retention_days_overridden
 from app.core.pipeline import get_dropped_count, get_ingest_rate, get_queue
 
@@ -16,12 +16,14 @@ from app.services.storage_metrics import sample_storage_metrics
 router = APIRouter(tags=["System & Maintenance"])
 
 
-@router.get("/health", response_model=HealthResponse)
-async def health_check(response: Response) -> HealthResponse:
+@router.get("/health", response_model=HealthResponse, response_model_exclude_none=True)
+async def health_check(request: Request, response: Response) -> HealthResponse:
     """
     Container healthcheck endpoint.
     Verifies SQLite connectivity, in-memory queue depth, dropped log counter, and ingest rate.
     Returns HTTP 503 when the database check fails so Docker container healthcheck detects unhealthy state.
+    Unauthenticated callers receive minimal {"status": "ok"} or {"status": "degraded"}.
+    Authenticated callers receive detailed queue and ingest metrics.
     """
     def _ping_db(conn):
         cursor = conn.cursor()
@@ -34,14 +36,18 @@ async def health_check(response: Response) -> HealthResponse:
     except Exception:
         db_status = "error"
 
+    overall_status = "ok" if db_status == "ok" else "degraded"
+    if db_status != "ok":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+    user = await get_optional_user(request)
+    if not user:
+        return HealthResponse(status=overall_status)
+
     queue = get_queue()
     queue_depth = queue.qsize()
     dropped_count = get_dropped_count()
     ingest_rate = get_ingest_rate()
-
-    overall_status = "ok" if db_status == "ok" else "degraded"
-    if db_status != "ok":
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return HealthResponse(
         status=overall_status,

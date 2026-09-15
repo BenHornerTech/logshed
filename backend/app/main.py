@@ -348,6 +348,19 @@ def create_app() -> FastAPI:
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
 
+    # CSRF protection middleware for mutating endpoints
+    @app.middleware("http")
+    async def csrf_protection(request: Request, call_next):
+        if request.url.path.startswith("/api/") and request.method.upper() in ("POST", "PUT", "DELETE", "PATCH"):
+            # Health checks and log stream (GET) are exempted
+            if not request.url.path.startswith("/api/health") and request.url.path != "/api/logs/stream":
+                if not request.headers.get("x-requested-with"):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "Forbidden: missing required X-Requested-With header."},
+                    )
+        return await call_next(request)
+
     # CORS Middleware allowing credentials for Vite frontend development
     app.add_middleware(
         CORSMiddleware,

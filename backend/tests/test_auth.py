@@ -17,6 +17,7 @@ from app.core.security import (
     create_session_token,
     get_or_create_master_key,
     reset_crypto_cache,
+    verify_session_token,
 )
 from app.main import create_app
 
@@ -47,7 +48,11 @@ def reset_auth_env(tmp_path: Path, monkeypatch):
 async def client():
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ) as ac:
         yield ac
 
 
@@ -129,7 +134,11 @@ class TestAuthentication:
         app = create_app()
         # Untrusted origin connecting directly
         untrusted_transport = ASGITransport(app=app, client=("198.51.100.5", 50000))
-        async with AsyncClient(transport=untrusted_transport, base_url="http://test") as untrusted_client:
+        async with AsyncClient(
+            transport=untrusted_transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as untrusted_client:
             await untrusted_client.post("/api/auth/setup", json={"password": "real_password"})
 
             # Attacker cycles different X-Forwarded-For headers to try to bypass rate limiting
@@ -160,8 +169,8 @@ class TestAuthentication:
         untrusted_transport = ASGITransport(app=app, client=("198.51.100.5", 50000))
         victim_transport = ASGITransport(app=app, client=("203.0.113.50", 50000))
 
-        async with AsyncClient(transport=untrusted_transport, base_url="http://test") as attacker_client, \
-                   AsyncClient(transport=victim_transport, base_url="http://test") as victim_client:
+        async with AsyncClient(transport=untrusted_transport, base_url="http://test", headers={"X-Requested-With": "XMLHttpRequest"}) as attacker_client, \
+                   AsyncClient(transport=victim_transport, base_url="http://test", headers={"X-Requested-With": "XMLHttpRequest"}) as victim_client:
             await attacker_client.post("/api/auth/setup", json={"password": "secure_admin_pass"})
 
             # Attacker sends failed attempts claiming to be the victim in X-Forwarded-For
@@ -198,7 +207,11 @@ class TestAuthentication:
         app = create_app()
         # Direct connection comes from trusted proxy 10.0.0.1
         proxy_transport = ASGITransport(app=app, client=("10.0.0.1", 50000))
-        async with AsyncClient(transport=proxy_transport, base_url="http://test") as proxy_client:
+        async with AsyncClient(
+            transport=proxy_transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as proxy_client:
             await proxy_client.post("/api/auth/setup", json={"password": "proxy_password"})
 
             # XFF chain: [spoofed_ip, untrusted_client_ip, trusted_proxy_ip]
@@ -242,7 +255,11 @@ class TestAuthentication:
         app = create_app()
         # Direct connection comes from Docker gateway 172.17.0.1
         proxy_transport = ASGITransport(app=app, client=("172.17.0.1", 50000))
-        async with AsyncClient(transport=proxy_transport, base_url="http://test") as proxy_client:
+        async with AsyncClient(
+            transport=proxy_transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as proxy_client:
             await proxy_client.post("/api/auth/setup", json={"password": "gateway_password"})
 
             # Client 203.0.113.88 sends 5 failed attempts through 172.17.0.1
@@ -286,7 +303,11 @@ class TestAuthentication:
 
         # Fresh client without cookie
         transport = ASGITransport(app=create_app())
-        async with AsyncClient(transport=transport, base_url="http://test") as clean_client:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as clean_client:
             res3 = await clean_client.get("/api/auth/status")
             assert res3.json() == {"setup_required": False, "authenticated": False}
 
@@ -326,7 +347,11 @@ class TestAuthentication:
         # Proxy with x-forwarded-proto: https -> secure=True
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as https_client:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as https_client:
             res_https = await https_client.post(
                 "/api/auth/login",
                 json={"password": "secure_pwd_123"},
@@ -339,7 +364,11 @@ class TestAuthentication:
 
         # COOKIE_SECURE environment variable override
         monkeypatch.setenv("COOKIE_SECURE", "true")
-        async with AsyncClient(transport=transport, base_url="http://test") as env_client:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as env_client:
             res_env = await env_client.post("/api/auth/login", json={"password": "secure_pwd_123"})
             assert res_env.status_code == 200
             set_cookie_env = res_env.headers.get("set-cookie", "").lower()
@@ -403,7 +432,11 @@ class TestAdminPasswordChange:
 
         # Try logging in with old password (must fail)
         transport = ASGITransport(app=create_app())
-        async with AsyncClient(transport=transport, base_url="http://test") as unauth_client:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as unauth_client:
             old_login = await unauth_client.post(
                 "/api/auth/login",
                 json={"password": "SuperSecretAdminPassword123!"},
@@ -445,14 +478,27 @@ class TestAdminPasswordChange:
 
         # 3. Request using session token issued prior to password change must be rejected
         transport = ASGITransport(app=create_app())
-        async with AsyncClient(transport=transport, base_url="http://test") as old_client:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as old_client:
             old_client.cookies.set(SESSION_COOKIE_NAME, initial_token)
             res_after = await old_client.get("/api/settings")
             assert res_after.status_code == 401
             assert "Session expired due to password change" in res_after.json()["detail"]
 
+            # Verify /api/auth/status returns authenticated=false after password change
+            res_status = await old_client.get("/api/auth/status")
+            assert res_status.status_code == 200
+            assert res_status.json()["authenticated"] is False
+
         # 4. Request using a newly created session (logged in after password update) must succeed
-        async with AsyncClient(transport=transport, base_url="http://test") as new_client:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as new_client:
             login_res = await new_client.post(
                 "/api/auth/login",
                 json={"password": "UpdatedPassword456!"},
@@ -567,4 +613,79 @@ class TestCLIPasswordReset:
             json={"current_password": "valid_initial_pwd", "new_password": too_long},
         )
         assert res_change.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_csrf_header_protection(self):
+        """Mutating API requests without X-Requested-With return 403 Forbidden."""
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as no_header_client:
+            # POST without header must fail with 403
+            res_post = await no_header_client.post("/api/auth/login", json={"password": "any"})
+            assert res_post.status_code == 403
+            assert "X-Requested-With" in res_post.json()["detail"]
+
+            # GET requests without header must succeed
+            res_get = await no_header_client.get("/api/auth/status")
+            assert res_get.status_code == 200
+
+            # Healthcheck (GET) without header must succeed
+            res_health = await no_header_client.get("/api/health")
+            assert res_health.status_code == 200
+
+        # POST with X-Requested-With header passes CSRF check
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as header_client:
+            res_post = await header_client.post("/api/auth/login", json={"password": "wrong"})
+            # Reaches route handler and returns 401 instead of 403
+            assert res_post.status_code == 401
+
+    def test_token_issuer_claim_validation(self):
+        """Tokens without iss='logshed' or with invalid iss are rejected."""
+        import json
+        import time
+        from app.core.security import get_fernet
+
+        now = int(time.time())
+        fernet = get_fernet()
+
+        # Token with valid iss
+        valid_payload = {"user_id": 1, "iat": now, "exp": now + 3600, "iss": "logshed"}
+        valid_token = fernet.encrypt(json.dumps(valid_payload).encode()).decode()
+        assert verify_session_token(valid_token) is not None
+
+        # Token with missing iss
+        missing_iss_payload = {"user_id": 1, "iat": now, "exp": now + 3600}
+        missing_iss_token = fernet.encrypt(json.dumps(missing_iss_payload).encode()).decode()
+        assert verify_session_token(missing_iss_token) is None
+
+        # Token with wrong iss
+        wrong_iss_payload = {"user_id": 1, "iat": now, "exp": now + 3600, "iss": "other_app"}
+        wrong_iss_token = fernet.encrypt(json.dumps(wrong_iss_payload).encode()).decode()
+        assert verify_session_token(wrong_iss_token) is None
+
+    def test_cli_reset_admin_prompts_when_password_omitted(self, tmp_path: Path, monkeypatch):
+        """CLI reset-admin prompts for password using getpass when --password is omitted."""
+        import app.cli as cli_mod
+        db_path = tmp_path / "cli_prompt.db"
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["app.cli", "reset-admin", "--db-path", str(db_path)],
+        )
+        monkeypatch.setattr("getpass.getpass", lambda prompt="": "PromptedSecretPassword123")
+
+        cli_mod.main()
+
+        conn = get_connection(str(db_path))
+        row = conn.execute("SELECT password_hash FROM admin_auth WHERE id=1").fetchone()
+        conn.close()
+
+        assert row is not None
+        ph = PasswordHasher()
+        assert ph.verify(row[0], "PromptedSecretPassword123")
+
 

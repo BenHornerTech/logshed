@@ -53,7 +53,11 @@ def reset_logs_env(tmp_path: Path, monkeypatch):
 async def client():
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ) as ac:
         yield ac
 
 
@@ -823,5 +827,28 @@ class TestLogStreamAndFacets:
         assert "coredns" in data["apps"]
         assert "coredns" in data["host_to_apps"]["10.0.0.99"]
         assert "10.0.0.99" in data["app_to_hosts"]["coredns"]
+
+    @pytest.mark.asyncio
+    async def test_logs_datetime_parameters_validation(self, client: AsyncClient, auth_cookie: dict):
+        """Validates ISO-8601 formatting for from and to query params on /api/logs."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+
+        # Valid ISO datetime
+        res_valid = await client.get(
+            "/api/logs",
+            params={"from": "2026-09-08T00:00:00Z", "to": "2026-09-09T00:00:00+00:00"},
+        )
+        assert res_valid.status_code == 200
+
+        # Malformed 'from' parameter
+        res_bad_from = await client.get("/api/logs", params={"from": "invalid-datetime"})
+        assert res_bad_from.status_code == 422
+        assert "Invalid datetime format" in res_bad_from.json()["detail"]
+
+        # Malformed 'to' parameter
+        res_bad_to = await client.get("/api/logs", params={"to": "yesterday"})
+        assert res_bad_to.status_code == 422
+        assert "Invalid datetime format" in res_bad_to.json()["detail"]
+
 
 

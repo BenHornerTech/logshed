@@ -101,7 +101,12 @@ def auth_cookie() -> dict[str, str]:
 async def auth_client(auth_cookie):
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test", cookies=auth_cookie) as ac:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies=auth_cookie,
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ) as ac:
         yield ac
 
 

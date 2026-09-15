@@ -3,6 +3,7 @@ Pydantic v2 schemas and models for LogShed API.
 """
 
 from datetime import datetime
+import ipaddress
 from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -182,6 +183,18 @@ class HostAliasCreate(BaseModel):
     alias: str = Field(..., min_length=1, description="Human-readable host name")
     notes: Optional[str] = None
 
+    @field_validator("ip")
+    @classmethod
+    def validate_ip(cls, v: str) -> str:
+        clean = v.strip()
+        if clean.lower() == "docker":
+            return clean.lower()
+        try:
+            ipaddress.ip_address(clean)
+        except ValueError:
+            raise ValueError("Invalid IP address format. Expected valid IPv4 or IPv6 address.")
+        return clean
+
 
 class HostAliasResponse(BaseModel):
     """Host alias mapping details."""
@@ -198,10 +211,10 @@ class HostAliasResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Container and ingestion health status."""
     status: str
-    db: str
-    queue_depth: int
-    dropped_logs: int
-    ingest_rate: float = 0.0
+    db: Optional[str] = None
+    queue_depth: Optional[int] = None
+    dropped_logs: Optional[int] = None
+    ingest_rate: Optional[float] = None
 
 
 class StorageMetricItem(BaseModel):

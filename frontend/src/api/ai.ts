@@ -30,6 +30,7 @@ export async function diagnoseLogs(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
         },
         credentials: 'include',
         body: JSON.stringify(payload),

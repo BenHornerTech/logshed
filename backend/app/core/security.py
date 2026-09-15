@@ -181,6 +181,7 @@ def create_session_token(
         "user_id": user_id,
         "iat": now,
         "exp": now + duration_seconds,
+        "iss": "logshed",
     }
     json_bytes = json.dumps(payload).encode("utf-8")
     fernet = get_fernet(key)
@@ -198,14 +199,19 @@ def verify_session_token(token: str, key: Optional[bytes] = None) -> Optional[di
     try:
         decrypted_bytes = fernet.decrypt(token.encode("utf-8"))
         payload = json.loads(decrypted_bytes.decode("utf-8"))
-        
+
+        # Verify issuer claim
+        if payload.get("iss") != "logshed":
+            logger.warning("Session token has invalid issuer.")
+            return None
+
         # Check expiration
         exp = payload.get("exp", 0)
         if time.time() > exp:
             logger.warning("Session token has expired.")
             return None
-            
+
         return payload
-    except (InvalidToken, json.JSONDecodeError, UnicodeDecodeError, Exception) as e:
+    except (InvalidToken, json.JSONDecodeError, UnicodeDecodeError, KeyError) as e:
         logger.debug(f"Invalid session token: {e}")
         return None

@@ -458,7 +458,11 @@ class TestSettingsApiInternalLogLevel:
 
         app = create_app()
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        ) as ac:
             token = create_session_token("admin")
             ac.cookies.set(SESSION_COOKIE_NAME, token)
             yield ac

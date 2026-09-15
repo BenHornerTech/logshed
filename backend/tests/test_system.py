@@ -66,7 +66,11 @@ def reset_system_env(tmp_path: Path, monkeypatch):
 async def client():
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ) as ac:
         yield ac
 
 
@@ -643,20 +647,30 @@ class TestRetentionAndPruneWorker:
 class TestSystemHealthcheck:
 
     @pytest.mark.asyncio
-    async def test_health_check(self, client: AsyncClient):
+    async def test_health_check(self, client: AsyncClient, auth_cookie: dict):
+        # Unauthenticated request returns minimal {"status": "ok"}
         res = await client.get("/api/health")
         assert res.status_code == 200
         data = res.json()
-        assert data["status"] == "ok"
-        assert data["db"] == "ok"
-        assert isinstance(data["queue_depth"], int)
-        assert isinstance(data["dropped_logs"], int)
-        assert "ingest_rate" in data
-        assert isinstance(data["ingest_rate"], (int, float))
-        assert data["ingest_rate"] >= 0.0
+        assert data == {"status": "ok"}
+
+        # Authenticated request returns detailed queue and ingest metrics
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        res_auth = await client.get("/api/health")
+        assert res_auth.status_code == 200
+        data_auth = res_auth.json()
+        assert data_auth["status"] == "ok"
+        assert data_auth["db"] == "ok"
+        assert isinstance(data_auth["queue_depth"], int)
+        assert isinstance(data_auth["dropped_logs"], int)
+        assert "ingest_rate" in data_auth
+        assert isinstance(data_auth["ingest_rate"], (int, float))
+        assert data_auth["ingest_rate"] >= 0.0
 
     @pytest.mark.asyncio
-    async def test_health_check_database_failure_returns_503(self, client: AsyncClient, monkeypatch):
+    async def test_health_check_database_failure_returns_503(
+        self, client: AsyncClient, auth_cookie: dict, monkeypatch
+    ):
         from app.api import system as system_mod
 
         async def failing_db_query(func):
@@ -664,11 +678,19 @@ class TestSystemHealthcheck:
 
         monkeypatch.setattr(system_mod, "run_db_query", failing_db_query)
 
+        # Unauthenticated request returns minimal {"status": "degraded"}
         res = await client.get("/api/health")
         assert res.status_code == 503
         data = res.json()
-        assert data["status"] == "degraded"
-        assert data["db"] == "error"
+        assert data == {"status": "degraded"}
+
+        # Authenticated request returns detailed metrics with db error
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        res_auth = await client.get("/api/health")
+        assert res_auth.status_code == 503
+        data_auth = res_auth.json()
+        assert data_auth["status"] == "degraded"
+        assert data_auth["db"] == "error"
 
 
 # ===================================================================
@@ -1218,5 +1240,45 @@ class TestHostAliases:
         tailer_restarted = DockerTailer(assembler, db_path=db_file)
         assert tailer_restarted.alias_cache.resolve("docker") == "docker-unraid"
         await tailer_restarted.stop()
+
+    @pytest.mark.asyncio
+    async def test_host_alias_ip_validation(self, client: AsyncClient, auth_cookie: dict):
+        """HostAliasCreate validates IP address format and rejects malformed values with 422."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+
+        # Valid IPv4
+        res_ipv4 = await client.post(
+            "/api/aliases",
+            json={"ip": "192.168.10.50", "alias": "valid-ipv4"},
+        )
+        assert res_ipv4.status_code == 200
+        assert res_ipv4.json()["ip"] == "192.168.10.50"
+
+        # Valid IPv6
+        res_ipv6 = await client.post(
+            "/api/aliases",
+            json={"ip": "2001:db8::1", "alias": "valid-ipv6"},
+        )
+        assert res_ipv6.status_code == 200
+        assert res_ipv6.json()["ip"] == "2001:db8::1"
+
+        # Valid Docker key
+        res_docker = await client.post(
+            "/api/aliases",
+            json={"ip": "docker", "alias": "docker-host"},
+        )
+        assert res_docker.status_code == 200
+        assert res_docker.json()["ip"] == "docker"
+
+        # Invalid formats must return 422
+        invalid_ips = ["not-an-ip", "999.999.999.999", "1.2.3.4.5", "http://bad"]
+        for bad_ip in invalid_ips:
+            res_bad = await client.post(
+                "/api/aliases",
+                json={"ip": bad_ip, "alias": "should-fail"},
+            )
+            assert res_bad.status_code == 422
+            assert "Invalid IP address format" in res_bad.json()["detail"]
+
 
 
