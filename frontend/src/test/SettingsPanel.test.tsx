@@ -3,7 +3,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SettingsPanel } from '../components/settings/SettingsPanel.tsx';
 import * as settingsApi from '../api/settings.ts';
 import * as aiApi from '../api/ai.ts';
+import * as authApi from '../api/auth.ts';
 import { DEFAULT_SYSTEM_PROMPT } from '../utils/aiPrompt.ts';
+
+const mockLogout = vi.fn();
+vi.mock('../context/AuthContext.tsx', () => ({
+  useAuth: () => ({
+    logout: mockLogout,
+    isAuthenticated: true,
+    setupRequired: false,
+    isLoading: false,
+  }),
+}));
 
 describe('SettingsPanel Component', () => {
   beforeEach(() => {
@@ -221,7 +232,7 @@ describe('SettingsPanel Component', () => {
     render(<SettingsPanel />);
 
     await waitFor(() => {
-      expect(screen.getByText('On-Demand AI Provider Configuration (Keys encrypted at rest)')).toBeInTheDocument();
+      expect(screen.getByText('On-Demand AI Provider Configuration')).toBeInTheDocument();
     });
 
     // Badge
@@ -456,5 +467,71 @@ describe('SettingsPanel Component', () => {
     await waitFor(() => {
       expect(onDirtyChange).toHaveBeenLastCalledWith(false);
     });
+  });
+
+  it('validates password fields and shows error when passwords do not match', async () => {
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Change Admin Password')).toBeInTheDocument();
+    });
+
+    const currentPwdInput = screen.getByLabelText(/Current Password/i);
+    const newPwdInput = screen.getByLabelText(/^New Password/i);
+    const confirmPwdInput = screen.getByLabelText(/Confirm New Password/i);
+    const submitBtn = screen.getByRole('button', { name: /Update Password/i });
+
+    fireEvent.change(currentPwdInput, { target: { value: 'oldpassword123' } });
+    fireEvent.change(newPwdInput, { target: { value: 'newpassword123' } });
+    fireEvent.change(confirmPwdInput, { target: { value: 'mismatchpassword123' } });
+
+    expect(submitBtn).toBeDisabled();
+
+    const form = currentPwdInput.closest('form')!;
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(screen.getByText('New passwords do not match.')).toBeInTheDocument();
+    });
+  });
+
+  it('handles successful admin password change with login notice and logout redirect', async () => {
+    const changePwdSpy = vi.spyOn(authApi, 'changePassword').mockResolvedValue({ status: 'ok' });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Change Admin Password')).toBeInTheDocument();
+    });
+
+    const currentPwdInput = screen.getByLabelText(/Current Password/i);
+    const newPwdInput = screen.getByLabelText(/^New Password/i);
+    const confirmPwdInput = screen.getByLabelText(/Confirm New Password/i);
+    const submitBtn = screen.getByRole('button', { name: /Update Password/i });
+
+    fireEvent.change(currentPwdInput, { target: { value: 'oldpassword123' } });
+    fireEvent.change(newPwdInput, { target: { value: 'newpassword123' } });
+    fireEvent.change(confirmPwdInput, { target: { value: 'newpassword123' } });
+
+    expect(submitBtn).not.toBeDisabled();
+    fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(changePwdSpy).toHaveBeenCalledWith('oldpassword123', 'newpassword123');
+    });
+
+    expect(sessionStorage.getItem('login_notice')).toBe(
+      'Admin password changed successfully. Please sign in with your new password.'
+    );
+    expect(
+      screen.getByText('Admin password changed successfully. Redirecting to sign in...')
+    ).toBeInTheDocument();
+
+    await waitFor(
+      () => {
+        expect(mockLogout).toHaveBeenCalled();
+      },
+      { timeout: 2000 }
+    );
   });
 });

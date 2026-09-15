@@ -269,6 +269,8 @@ async def auth_status(request: Request) -> AuthStatusResponse:
 @router.post("/password", response_model=MessageResponse)
 async def change_password(
     req: PasswordChangeRequest,
+    request: Request,
+    response: Response,
     user: dict = Depends(get_current_user),
 ) -> MessageResponse:
     """Change the admin password for an authenticated session."""
@@ -294,4 +296,13 @@ async def change_password(
             detail="Current password is incorrect.",
         )
     invalidate_admin_auth_cache()
+
+    # Clear session cookie so client does not retain a revoked token
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=_is_secure_cookie(request),
+    )
     return MessageResponse(status="ok")

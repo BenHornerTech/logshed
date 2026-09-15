@@ -18,6 +18,7 @@ import { AiModelInfo } from '../../types.ts';
 import { fetchSettings, updateSettings, SettingsResponseData } from '../../api/settings.ts';
 import { getAiModels } from '../../api/ai.ts';
 import { changePassword } from '../../api/auth.ts';
+import { useAuth } from '../../context/AuthContext.tsx';
 import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, normalizePrompt, getOrdinalSuffix } from '../../utils/aiPrompt.ts';
 
 export interface SettingsPanelProps {
@@ -29,6 +30,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   onDirtyChange,
   saveTriggerRef,
 }) => {
+  const { logout } = useAuth();
   const [settings, setSettings] = useState<SettingsResponseData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -61,13 +63,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   // Track dirty state against loaded baseline settings
   const isDirty = Boolean(
     settings &&
-      (aiProvider !== settings.ai_provider ||
-        aiModel !== (settings.ai_model || DEFAULT_AI_MODEL) ||
-        aiFallbackModels !== (settings.ai_fallback_models || '') ||
-        aiApiKey !== (settings.ai_api_key || '') ||
-        aiBaseUrl !== (settings.ai_base_url || '') ||
-        normalizePrompt(aiSystemPrompt) !== normalizePrompt(settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT) ||
-        internalLogLevel !== (settings.internal_log_level || 'WARNING'))
+    (aiProvider !== settings.ai_provider ||
+      aiModel !== (settings.ai_model || DEFAULT_AI_MODEL) ||
+      aiFallbackModels !== (settings.ai_fallback_models || '') ||
+      aiApiKey !== (settings.ai_api_key || '') ||
+      aiBaseUrl !== (settings.ai_base_url || '') ||
+      normalizePrompt(aiSystemPrompt) !== normalizePrompt(settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT) ||
+      internalLogLevel !== (settings.internal_log_level || 'WARNING'))
   );
 
   // Track if AI system instructions differ from system default
@@ -287,11 +289,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       setIsChangingPwd(true);
       setPwdMsg(null);
       await changePassword(currentPwd, newPwd);
-      setPwdMsg({ text: 'Admin password changed successfully.', isError: false });
+      sessionStorage.setItem('login_notice', 'Admin password changed successfully. Please sign in with your new password.');
+      setPwdMsg({ text: 'Admin password changed successfully. Redirecting to sign in...', isError: false });
       setCurrentPwd('');
       setNewPwd('');
       setConfirmPwd('');
-      setTimeout(() => setPwdMsg(null), 3500);
+      setTimeout(() => {
+        logout();
+      }, 1000);
     } catch (err: any) {
       setPwdMsg({ text: err.message || 'Failed to update password.', isError: true });
     } finally {
@@ -380,7 +385,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             <div>
               <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
                 <Brain className="w-4 h-4 text-accent-500" />
-                <span>On-Demand AI Provider Configuration (Keys encrypted at rest)</span>
+                <span>On-Demand AI Provider Configuration</span>
               </h3>
               <p className="text-[11px] text-slate-400 mt-1">
                 Fernet encryption secures API keys against exposure in database exports, disk clones, and backups.
@@ -737,13 +742,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         {(isDirty || saveInlineSuccess || saveInlineError) && (
           <aside
             aria-label="Unsaved changes bar"
-            className={`sticky bottom-4 z-30 bg-dark-900/95 backdrop-blur-md border rounded-xl p-3 sm:px-5 sm:py-3 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2 ${
-              saveInlineSuccess
+            className={`sticky bottom-4 z-30 bg-dark-900/95 backdrop-blur-md border rounded-xl p-3 sm:px-5 sm:py-3 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2 ${saveInlineSuccess
                 ? 'border-emerald-500/40'
                 : saveInlineError
-                ? 'border-red-500/40'
-                : 'border-amber-500/40'
-            }`}
+                  ? 'border-red-500/40'
+                  : 'border-amber-500/40'
+              }`}
           >
             <div className="flex items-center gap-2 text-xs font-medium">
               {saveInlineSuccess ? (
@@ -807,11 +811,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
         {pwdMsg && (
           <div
-            className={`p-3 rounded-lg border text-xs flex items-start gap-2 ${
-              pwdMsg.isError
+            className={`p-3 rounded-lg border text-xs flex items-start gap-2 ${pwdMsg.isError
                 ? 'bg-red-950/60 border-red-800 text-red-300'
                 : 'bg-emerald-950/60 border-emerald-800 text-emerald-300'
-            }`}
+              }`}
           >
             {pwdMsg.isError ? (
               <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
@@ -824,10 +827,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
         <form onSubmit={handleChangePassword} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
           <div>
-            <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
+            <label htmlFor="current-password" className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
               Current Password
             </label>
             <input
+              id="current-password"
               type="password"
               value={currentPwd}
               onChange={(e) => setCurrentPwd(e.target.value)}
@@ -837,10 +841,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </div>
 
           <div>
-            <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
+            <label htmlFor="new-password" className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
               New Password (min 8 chars)
             </label>
             <input
+              id="new-password"
               type="password"
               value={newPwd}
               onChange={(e) => setNewPwd(e.target.value)}
@@ -851,10 +856,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </div>
 
           <div>
-            <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
+            <label htmlFor="confirm-password" className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
               Confirm New Password
             </label>
             <input
+              id="confirm-password"
               type="password"
               value={confirmPwd}
               onChange={(e) => setConfirmPwd(e.target.value)}

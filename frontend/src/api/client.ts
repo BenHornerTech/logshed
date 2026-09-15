@@ -55,6 +55,19 @@ export async function apiFetch<T>(endpoint: string, options: RequestInit = {}): 
     } catch {
       // Fallback to default message
     }
+
+    if (
+      response.status === 401 &&
+      !endpoint.includes('/api/auth/login') &&
+      !endpoint.includes('/api/auth/setup')
+    ) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('logshed:unauthorized', { detail: { message: errorMsg } })
+        );
+      }
+    }
+
     throw new ApiError(response.status, errorMsg, errorData);
   }
 

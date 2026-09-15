@@ -1,13 +1,24 @@
-import React, { useState } from 'react';
-import { Lock, AlertCircle } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Lock, AlertCircle, CheckCircle } from 'lucide-react';
 import { LogShedLogo } from '../common/LogShedLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 
 export const LoginForm: React.FC = () => {
-  const { login } = useAuth();
+  const { login, error: authError } = useAuth();
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
+  const [noticeMsg, setNoticeMsg] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const notice = sessionStorage.getItem('login_notice');
+      if (notice) {
+        sessionStorage.removeItem('login_notice');
+        return notice;
+      }
+    }
+    return null;
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,9 +27,14 @@ export const LoginForm: React.FC = () => {
     try {
       setIsLoading(true);
       setErrorMsg(null);
+      setNoticeMsg(null);
       await login(password);
     } catch (err: any) {
       setErrorMsg(err.message || 'Login failed. Please check your password.');
+      setTimeout(() => {
+        passwordInputRef.current?.focus();
+        passwordInputRef.current?.select();
+      }, 0);
     } finally {
       setIsLoading(false);
     }
@@ -36,10 +52,17 @@ export const LoginForm: React.FC = () => {
           <p className="text-xs text-slate-400 mt-1">Single-Process Log Aggregator & Ops Console</p>
         </div>
 
-        {errorMsg && (
+        {noticeMsg && (
+          <div className="mb-4 p-3 bg-emerald-950/60 border border-emerald-800 rounded-lg flex items-start space-x-2 text-xs text-emerald-300">
+            <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            <span>{noticeMsg}</span>
+          </div>
+        )}
+
+        {(errorMsg || (!noticeMsg && authError)) && (
           <div className="mb-4 p-3 bg-red-950/60 border border-red-800 rounded-lg flex items-start space-x-2 text-xs text-red-300">
             <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-            <span>{errorMsg}</span>
+            <span>{errorMsg || authError}</span>
           </div>
         )}
 
@@ -50,6 +73,7 @@ export const LoginForm: React.FC = () => {
             </label>
             <div className="relative">
               <input
+                ref={passwordInputRef}
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}

@@ -39,6 +39,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     refreshAuth();
   }, [refreshAuth]);
 
+  useEffect(() => {
+    const handleUnauthorized = (e: Event) => {
+      const customEvent = e as CustomEvent<{ message?: string }>;
+      setIsAuthenticated(false);
+      if (customEvent.detail?.message) {
+        setError(customEvent.detail.message);
+      }
+    };
+    window.addEventListener('logshed:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('logshed:unauthorized', handleUnauthorized);
+  }, []);
+
   const login = async (password: string) => {
     setError(null);
     try {
