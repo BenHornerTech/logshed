@@ -1,5 +1,5 @@
 import { apiFetch } from './client.ts';
-import { HealthResponse, PruneResponse, StorageMetricsResponse } from '../types.ts';
+import { HealthResponse, PruneResponse, StorageMetricsResponse, VersionInfo } from '../types.ts';
 
 export async function fetchHealth(): Promise<HealthResponse> {
   return apiFetch<HealthResponse>('/api/health');
@@ -14,3 +14,9 @@ export async function triggerManualPrune(): Promise<PruneResponse> {
     method: 'POST',
   });
 }
+
+export async function fetchVersion(refresh: boolean = false): Promise<VersionInfo> {
+  const query = refresh ? '?refresh=true' : '';
+  return apiFetch<VersionInfo>(`/api/system/version${query}`);
+}
+

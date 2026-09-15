@@ -4,6 +4,7 @@ import { SettingsPanel } from '../components/settings/SettingsPanel.tsx';
 import * as settingsApi from '../api/settings.ts';
 import * as aiApi from '../api/ai.ts';
 import * as authApi from '../api/auth.ts';
+import * as systemApi from '../api/system.ts';
 import { DEFAULT_SYSTEM_PROMPT } from '../utils/aiPrompt.ts';
 
 const mockLogout = vi.fn();
@@ -19,6 +20,12 @@ vi.mock('../context/AuthContext.tsx', () => ({
 describe('SettingsPanel Component', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(systemApi, 'fetchVersion').mockResolvedValue({
+      current_version: '1.1.0-beta.3',
+      latest_version: '1.0.0',
+      update_available: false,
+      checked_at: 1700000000.0,
+    });
     vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({
       ai_provider: 'gemini',
       ai_model: 'gemini-3.7-flash',
@@ -534,4 +541,96 @@ describe('SettingsPanel Component', () => {
       { timeout: 2000 }
     );
   });
+
+  it('renders About LogShed section with installed version and up to date status', async () => {
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('About LogShed')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('v1.1.0-beta.3')).toBeInTheDocument();
+    expect(screen.getByText('LogShed is up to date')).toBeInTheDocument();
+    expect(screen.getByText(/MIT License - Copyright \(c\) 2026 LogShed Contributors/)).toBeInTheDocument();
+
+    const repoLink = screen.getByRole('link', { name: /GitHub Repository/i });
+    expect(repoLink).toHaveAttribute('href', 'https://github.com/BenHornerTech/logshed');
+    expect(repoLink).toHaveAttribute('target', '_blank');
+
+    const changelogLink = screen.getByRole('link', { name: /Changelog/i });
+    expect(changelogLink).toHaveAttribute('href', 'https://github.com/BenHornerTech/logshed/blob/main/CHANGELOG.md');
+    expect(changelogLink).toHaveAttribute('target', '_blank');
+  });
+
+  it('renders App update available notice in About section when newer GHCR version exists', async () => {
+    vi.spyOn(systemApi, 'fetchVersion').mockResolvedValue({
+      current_version: '1.1.0-beta.3',
+      latest_version: '1.2.0',
+      update_available: true,
+      check_enabled: true,
+      checked_at: 1700000000.0,
+    });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('About LogShed')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/App update available:/i)).toBeInTheDocument();
+    expect(screen.getByText('v1.2.0')).toBeInTheDocument();
+
+    const releaseNotesLink = screen.getByRole('link', { name: /Release Notes/i });
+    expect(releaseNotesLink).toHaveAttribute('href', 'https://github.com/BenHornerTech/logshed/releases');
+  });
+
+  it('renders Update checks are disabled in About section when check_enabled is false', async () => {
+    vi.spyOn(systemApi, 'fetchVersion').mockResolvedValue({
+      current_version: '1.1.0-beta.3',
+      latest_version: '1.2.0',
+      update_available: true,
+      check_enabled: false,
+      checked_at: 1700000000.0,
+    });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('About LogShed')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('Update checks are disabled')).toBeInTheDocument();
+    expect(screen.queryByText(/App update available:/i)).not.toBeInTheDocument();
+  });
+
+  it('allows toggling check_for_updates setting and saving it', async () => {
+    const updateSpy = vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({ status: 'ok' });
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Check for new versions')).toBeInTheDocument();
+    });
+
+    const checkbox = screen.getByLabelText('Check for new versions') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+
+    // Toggle off
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+
+    // Save changes
+    const saveBtn = screen.getByRole('button', { name: /Save Changes/i });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          check_for_updates: false,
+        })
+      );
+    });
+  });
 });
+
+

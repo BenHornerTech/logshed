@@ -52,3 +52,48 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  create-release:
+    name: Publish GitHub Release
+    needs: build-and-push
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          python3 - << 'EOF'
+          import os
+          import re
+          from pathlib import Path
+
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          version = tag.lstrip("v")
+          changelog = Path("CHANGELOG.md")
+          notes = ""
+
+          if changelog.exists():
+              content = changelog.read_text(encoding="utf-8")
+              pattern = rf"(?m)^##\s*\[?{re.escape(version)}\]?(?:[ \t]+-[^\n]*)?\n(.*?)(?=\n##\s*\[|\n---\s*(?:\n##)?|\Z)"
+              match = re.search(pattern, content, re.DOTALL)
+              if match:
+                  notes = match.group(1).strip()
+                  notes = re.sub(r"\n---\s*$", "", notes).strip()
+
+          if not notes:
+              notes = f"Release {tag}"
+
+          Path("release_notes.md").write_text(notes + "\n", encoding="utf-8")
+          EOF
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: LogShed ${{ github.ref_name }}
+          body_path: release_notes.md
+          prerelease: false
+          make_latest: true

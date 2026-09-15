@@ -162,4 +162,67 @@ describe('Navbar Component', () => {
     fireEvent.click(consoleBtn);
     expect(onTabChange).toHaveBeenCalledWith('stream');
   });
+
+  it('displays subtle App update available notice next to Logout when newer version exists', async () => {
+    vi.spyOn(systemApi, 'fetchHealth').mockResolvedValue({
+      status: 'ok',
+      db: 'ok',
+      queue_depth: 0,
+      dropped_logs: 0,
+      ingest_rate: 0.0,
+    });
+    vi.spyOn(systemApi, 'fetchVersion').mockResolvedValue({
+      current_version: '1.1.0-beta.3',
+      latest_version: '1.2.0',
+      update_available: true,
+      check_enabled: true,
+      checked_at: 1700000000.0,
+    });
+
+    render(
+      <Navbar
+        activeTab="stream"
+        onTabChange={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('App update available')).toBeInTheDocument();
+    });
+
+    const updateLink = screen.getByRole('link', { name: /App update available/i });
+    expect(updateLink).toHaveAttribute('href', 'https://github.com/BenHornerTech/logshed/releases');
+    expect(updateLink).toHaveAttribute('target', '_blank');
+  });
+
+  it('does not display App update available notice when check_enabled is false', async () => {
+    vi.spyOn(systemApi, 'fetchHealth').mockResolvedValue({
+      status: 'ok',
+      db: 'ok',
+      queue_depth: 0,
+      dropped_logs: 0,
+      ingest_rate: 0.0,
+    });
+    vi.spyOn(systemApi, 'fetchVersion').mockResolvedValue({
+      current_version: '1.1.0-beta.3',
+      latest_version: '1.2.0',
+      update_available: true,
+      check_enabled: false,
+      checked_at: 1700000000.0,
+    });
+
+    render(
+      <Navbar
+        activeTab="stream"
+        onTabChange={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(systemApi.fetchHealth).toHaveBeenCalled();
+    });
+
+    expect(screen.queryByText('App update available')).not.toBeInTheDocument();
+  });
 });
+

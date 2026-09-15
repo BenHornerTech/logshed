@@ -34,6 +34,7 @@ from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer, InternalLo
 from app.core.security import get_or_create_master_key
 from app.services.retention import PruneWorker
 from app.services.storage_metrics import StorageMetricsWorker
+from app.version import APP_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +297,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="LogShed",
         description="Unified syslog and Docker container log aggregator with on-demand AI analysis.",
-        version="1.0.0",
+        version=APP_VERSION,
         lifespan=lifespan,
     )
 

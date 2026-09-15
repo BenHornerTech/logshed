@@ -102,6 +102,7 @@ class SettingsResponse(BaseModel):
     retention_overridden: bool = False
     has_ai_api_key: bool = False
     internal_log_level: str = "WARNING"
+    check_for_updates: bool = True
 
     @model_validator(mode="after")
     def clamp_retention_days(self) -> "SettingsResponse":
@@ -131,6 +132,10 @@ class SettingsUpdateRequest(BaseModel):
     internal_log_level: Optional[str] = Field(
         None,
         description="Internal application log capture level (DEBUG, INFO, WARNING, ERROR, CRITICAL, DISABLED).",
+    )
+    check_for_updates: Optional[bool] = Field(
+        None,
+        description="Whether to check GHCR periodically for new stable releases.",
     )
 
     @field_validator("ai_base_url")
@@ -241,6 +246,15 @@ class PruneResponse(BaseModel):
     deleted_logs: int
     deleted_metrics: int
     metrics: StorageMetricItem
+
+
+class VersionResponse(BaseModel):
+    """Application version and GHCR update availability."""
+    current_version: str
+    latest_version: Optional[str] = None
+    update_available: bool = False
+    check_enabled: bool = True
+    checked_at: Optional[float] = None
 
 
 

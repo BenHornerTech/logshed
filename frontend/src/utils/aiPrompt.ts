@@ -47,7 +47,18 @@ export function parseFullEnvelope(
   const userIdx = fullText.indexOf(USER_ANALYSIS_PROMPT_HEADER);
 
   if (sysIdx !== -1 && userIdx !== -1 && userIdx > sysIdx) {
-    const sys = fullText.slice(sysIdx + SYSTEM_INSTRUCTIONS_HEADER.length, userIdx).trim();
+    const prefix = fullText.slice(0, sysIdx).trim();
+    const sysBody = fullText.slice(sysIdx + SYSTEM_INSTRUCTIONS_HEADER.length, userIdx).trim();
+    const sys = prefix ? (sysBody ? `${prefix}\n${sysBody}` : prefix) : sysBody;
+    const user = fullText.slice(userIdx + USER_ANALYSIS_PROMPT_HEADER.length).trim();
+    return {
+      systemPrompt: sys || fallbackSystemPrompt,
+      userPrompt: user,
+    };
+  }
+
+  if (userIdx !== -1) {
+    const sys = fullText.slice(0, userIdx).trim();
     const user = fullText.slice(userIdx + USER_ANALYSIS_PROMPT_HEADER.length).trim();
     return {
       systemPrompt: sys || fallbackSystemPrompt,

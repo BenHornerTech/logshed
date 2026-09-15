@@ -708,6 +708,40 @@ describe('AiAnalysisModal Component (Items #10, #23, #26, #27, #28)', () => {
     expect(screen.getByText('Configure')).toBeInTheDocument();
     expect(settingsContainer).toHaveClass('hidden');
   });
+
+  it('preserves prompt text when typing or deleting characters on the first line in Full LLM Prompt mode', async () => {
+    render(
+      <AiAnalysisModal
+        isOpen={true}
+        onClose={vi.fn()}
+        selectedLogs={sampleLogs}
+      />
+    );
+
+    await screen.findByPlaceholderText('Redacted prompt...');
+
+    // Switch to Full LLM Prompt
+    fireEvent.click(screen.getByRole('button', { name: 'Full LLM Prompt' }));
+
+    const fullPromptTextarea = screen.getByPlaceholderText('Full LLM prompt envelope...') as HTMLTextAreaElement;
+    expect(fullPromptTextarea.value).toContain('=== SYSTEM INSTRUCTIONS ===');
+
+    // Simulate prepending text on line 1 before the header
+    const prependedText = `[CRITICAL NOTICE]\n${fullPromptTextarea.value}`;
+    fireEvent.change(fullPromptTextarea, {
+      target: { value: prependedText },
+    });
+
+    expect(fullPromptTextarea.value.startsWith('[CRITICAL NOTICE]')).toBe(true);
+
+    // Simulate deleting characters on line 1
+    const editedLine1 = fullPromptTextarea.value.slice(10);
+    fireEvent.change(fullPromptTextarea, {
+      target: { value: editedLine1 },
+    });
+
+    expect(fullPromptTextarea.value).toBe(editedLine1);
+  });
 });
 
 

@@ -9,9 +9,10 @@ from app.api.deps import get_current_user, get_optional_user, run_db_query
 from app.core.config import get_db_path, get_max_retention_days, is_max_retention_days_overridden
 from app.core.pipeline import get_dropped_count, get_ingest_rate, get_queue
 
-from app.models import HealthResponse, PruneResponse, StorageMetricItem, StorageOverviewResponse
+from app.models import HealthResponse, PruneResponse, StorageMetricItem, StorageOverviewResponse, VersionResponse
 from app.services.retention import execute_prune_async, get_effective_retention_days
 from app.services.storage_metrics import sample_storage_metrics
+from app.services.version_service import check_for_updates
 
 router = APIRouter(tags=["System & Maintenance"])
 
@@ -126,3 +127,16 @@ async def get_storage_overview(user: dict = Depends(get_current_user)) -> Storag
         total_logs_count=current["total_logs_count"],
         history=history,
     )
+
+
+@router.get("/system/version", response_model=VersionResponse)
+async def get_version_info(
+    refresh: bool = False,
+    user: dict = Depends(get_optional_user),
+) -> VersionResponse:
+    """
+    Returns current application version and checks GHCR for stable updates.
+    """
+    info = await check_for_updates(force_refresh=refresh)
+    return VersionResponse(**info)
+

@@ -955,47 +955,51 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
         />
 
         {/* Stream Controls & Filter Pills Bar */}
-        <div className="bg-dark-900 px-3 py-1.5 border-b border-dark-700 flex flex-wrap items-center justify-between gap-2 text-xs select-none">
-        {/* Left: Quick Filter Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-full">
-          <span className="text-slate-400 font-medium text-[11px] shrink-0">Quick Filters:</span>
-          {availableSourcesForSelectedApps.slice(0, 6).map((src) => {
-            const isSelected = activeSources.includes(src);
-            return (
-              <button
-                key={src}
-                onClick={() => toggleQuickSource(src)}
-                className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer shrink-0 ${
-                  isSelected
-                    ? 'bg-accent-950 text-accent-300 border-accent-700 font-semibold'
-                    : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
-                }`}
-              >
-                {src}
-              </button>
-            );
-          })}
-          {availableAppsForSelectedHosts.slice(0, 6).map((app) => {
-            const isSelected = activeApps.includes(app);
-            return (
-              <button
-                key={app}
-                onClick={() => toggleQuickApp(app)}
-                className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer shrink-0 ${
-                  isSelected
-                    ? 'bg-indigo-950 text-indigo-300 border-indigo-700 font-semibold'
-                    : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
-                }`}
-              >
-                {app}
-              </button>
-            );
-          })}
-        </div>
+        <div className="bg-dark-900 px-3 py-1.5 border-b border-dark-700 flex flex-nowrap items-center justify-between gap-2 text-xs select-none relative overflow-hidden">
+          {/* Left: Quick Filter Pills */}
+          <div className="relative flex-1 min-w-0 flex items-center overflow-hidden">
+            <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden max-w-full">
+              <span className="text-slate-400 font-medium text-[11px] shrink-0">Quick Filters:</span>
+              {availableSourcesForSelectedApps.slice(0, 6).map((src) => {
+                const isSelected = activeSources.includes(src);
+                return (
+                  <button
+                    key={src}
+                    onClick={() => toggleQuickSource(src)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer shrink-0 ${
+                      isSelected
+                        ? 'bg-accent-950 text-accent-300 border-accent-700 font-semibold'
+                        : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
+                    }`}
+                  >
+                    {src}
+                  </button>
+                );
+              })}
+              {availableAppsForSelectedHosts.slice(0, 6).map((app) => {
+                const isSelected = activeApps.includes(app);
+                return (
+                  <button
+                    key={app}
+                    onClick={() => toggleQuickApp(app)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-mono border transition cursor-pointer shrink-0 ${
+                      isSelected
+                        ? 'bg-indigo-950 text-indigo-300 border-indigo-700 font-semibold'
+                        : 'bg-dark-800 text-slate-300 border-dark-700 hover:border-slate-600'
+                    }`}
+                  >
+                    {app}
+                  </button>
+                );
+              })}
+            </div>
+            {/* Fade overlay on the right edge of quick filters */}
+            <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-r from-transparent to-dark-900 z-10" />
+          </div>
 
-        {/* Right: Stream State Controls */}
-        <div className="flex items-center gap-2.5 shrink-0 ml-auto sm:ml-0">
-          <div className="hidden sm:flex items-center gap-1.5 border-r border-dark-700 pr-3 mr-1">
+          {/* Right: Stream State Controls */}
+          <div className="flex items-center gap-2.5 shrink-0 ml-auto bg-dark-900 relative z-20 pl-1">
+            <div className="hidden sm:flex items-center gap-1.5 border-r border-dark-700 pr-3 mr-1">
             <button
               onClick={selectAllLogs}
               disabled={logs.length === 0}

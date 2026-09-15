@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Server, Settings, LogOut, Radio, Database } from 'lucide-react';
+import { Server, Settings, LogOut, Radio, Database, ArrowUpCircle } from 'lucide-react';
 import { LogShedLogo } from './LogShedLogo.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
-import { fetchHealth } from '../../api/system.ts';
-import { HealthResponse, AppTab } from '../../types.ts';
+import { fetchHealth, fetchVersion } from '../../api/system.ts';
+import { HealthResponse, AppTab, VersionInfo } from '../../types.ts';
 import { useMediaQuery } from '../../utils/hooks.ts';
 import { PullTouchHandlers } from '../../utils/usePullToRefresh.ts';
 
@@ -23,6 +23,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const { logout } = useAuth();
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const isMobile = useMediaQuery('(max-width: 767px)');
 
   const loadHealth = async () => {
@@ -37,6 +38,17 @@ export const Navbar: React.FC<NavbarProps> = ({
   useEffect(() => {
     loadHealth();
     const interval = setInterval(loadHealth, 10000);
+
+    const loadVersion = async () => {
+      try {
+        const v = await fetchVersion();
+        setVersionInfo(v);
+      } catch {
+        // Version check fails silently
+      }
+    };
+    loadVersion();
+
     return () => clearInterval(interval);
   }, []);
 
@@ -152,6 +164,18 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Right Controls */}
         <div className="flex items-center space-x-2">
+          {versionInfo?.update_available && versionInfo?.check_enabled !== false && (
+            <a
+              href="https://github.com/BenHornerTech/logshed/releases"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center space-x-1 px-2 py-0.5 text-xs font-medium text-amber-400 bg-amber-950/40 hover:bg-amber-900/50 border border-amber-800/60 rounded transition cursor-pointer"
+              title={`App update available: v${versionInfo.latest_version}`}
+            >
+              <ArrowUpCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>App update available</span>
+            </a>
+          )}
           <button
             onClick={logout}
             title="Sign Out"

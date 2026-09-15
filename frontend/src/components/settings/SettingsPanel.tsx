@@ -13,9 +13,13 @@ import {
   ArrowDown,
   Plus,
   X,
+  Info,
+  ExternalLink,
+  ArrowUpCircle,
 } from 'lucide-react';
-import { AiModelInfo } from '../../types.ts';
+import { AiModelInfo, VersionInfo } from '../../types.ts';
 import { fetchSettings, updateSettings, SettingsResponseData } from '../../api/settings.ts';
+import { fetchVersion } from '../../api/system.ts';
 import { getAiModels } from '../../api/ai.ts';
 import { changePassword } from '../../api/auth.ts';
 import { useAuth } from '../../context/AuthContext.tsx';
@@ -43,6 +47,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [aiBaseUrl, setAiBaseUrl] = useState<string>('');
   const [aiSystemPrompt, setAiSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
   const [internalLogLevel, setInternalLogLevel] = useState<string>('WARNING');
+  const [checkForUpdates, setCheckForUpdates] = useState<boolean>(true);
 
   // Model discovery states
   const [availableModels, setAvailableModels] = useState<AiModelInfo[]>([]);
@@ -69,7 +74,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       aiApiKey !== (settings.ai_api_key || '') ||
       aiBaseUrl !== (settings.ai_base_url || '') ||
       normalizePrompt(aiSystemPrompt) !== normalizePrompt(settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT) ||
-      internalLogLevel !== (settings.internal_log_level || 'WARNING'))
+      internalLogLevel !== (settings.internal_log_level || 'WARNING') ||
+      checkForUpdates !== (settings.check_for_updates ?? true))
   );
 
   // Track if AI system instructions differ from system default
@@ -81,6 +87,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [confirmPwd, setConfirmPwd] = useState<string>('');
   const [isChangingPwd, setIsChangingPwd] = useState<boolean>(false);
   const [pwdMsg, setPwdMsg] = useState<{ text: string; isError: boolean } | null>(null);
+
+  // Application version & update state
+  const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
 
   const loadModels = async (provider: string, forceRefresh: boolean = false) => {
     try {
@@ -158,6 +167,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       setAiBaseUrl(settRes.ai_base_url || '');
       setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
       setInternalLogLevel(settRes.internal_log_level || 'WARNING');
+      setCheckForUpdates(settRes.check_for_updates ?? true);
 
       // Load models for provider
       loadModels(settRes.ai_provider);
@@ -168,8 +178,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     }
   };
 
+  const loadVersionData = async (refresh: boolean = false) => {
+    try {
+      const v = await fetchVersion(refresh);
+      setVersionInfo(v);
+    } catch {
+      // Graceful fallback
+    }
+  };
+
   useEffect(() => {
     loadAllData();
+    loadVersionData();
   }, []);
 
   // Notify parent component of dirty state changes
@@ -199,6 +219,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     setAiBaseUrl(settings.ai_base_url || '');
     setAiSystemPrompt(settings.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
     setInternalLogLevel(settings.internal_log_level || 'WARNING');
+    setCheckForUpdates(settings.check_for_updates ?? true);
     setIsCustomModel(false);
     setSelectedFallbackToAdd('');
     setCustomFallbackInput('');
@@ -226,6 +247,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         ai_base_url: aiBaseUrl || null,
         ai_system_prompt: aiSystemPrompt,
         internal_log_level: internalLogLevel,
+        check_for_updates: checkForUpdates,
       });
 
       // Reload updated settings as baseline
@@ -238,9 +260,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       setAiBaseUrl(settRes.ai_base_url || '');
       setAiSystemPrompt(settRes.ai_system_prompt || DEFAULT_SYSTEM_PROMPT);
       setInternalLogLevel(settRes.internal_log_level || 'WARNING');
+      setCheckForUpdates(settRes.check_for_updates ?? true);
 
       // Refresh model list with newly saved configuration
       loadModels(settRes.ai_provider);
+
+      // Refresh version info to reflect updated check_for_updates setting
+      loadVersionData(true);
 
       setSaveInlineSuccess(true);
       setTimeout(() => setSaveInlineSuccess(false), 3000);
@@ -738,6 +764,37 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </div>
         </section>
 
+        {/* Version Updates Section */}
+        <section className="bg-dark-900 border border-dark-700 rounded-xl p-3.5 sm:p-5 shadow-md space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                <ArrowUpCircle className="w-4 h-4 text-accent-500" />
+                <span>Version Updates</span>
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Periodically check GitHub Container Registry for new stable releases and display notification badges
+              </p>
+            </div>
+          </div>
+
+          <div className="pt-1">
+            <label className="flex items-center gap-2.5 text-xs text-slate-200 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                aria-label="Check for new versions"
+                checked={checkForUpdates}
+                onChange={(e) => setCheckForUpdates(e.target.checked)}
+                className="rounded bg-dark-950 border-dark-700 text-accent-600 focus:ring-0 focus:ring-offset-0 w-4 h-4 cursor-pointer"
+              />
+              <span className="font-medium">Check for new versions</span>
+            </label>
+            <p className="text-[11px] text-slate-400 mt-1 pl-6.5">
+              When disabled, LogShed will not query external registries or display update notifications.
+            </p>
+          </div>
+        </section>
+
         {/* Sticky Action Bar: floats while scrolling form, locks into place above password section */}
         {(isDirty || saveInlineSuccess || saveInlineError) && (
           <aside
@@ -881,6 +938,80 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             </button>
           </div>
         </form>
+      </section>
+
+      {/* About LogShed Section */}
+      <section className="bg-dark-900 border border-dark-700 rounded-xl p-3.5 sm:p-5 shadow-md space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+            <Info className="w-4 h-4 text-accent-500" />
+            <span>About LogShed</span>
+          </h3>
+          {versionInfo && (
+            <span className="font-mono text-xs px-2 py-0.5 rounded bg-dark-950 border border-dark-700 text-slate-300">
+              v{versionInfo.current_version}
+            </span>
+          )}
+        </div>
+
+        {/* Version & Update Status */}
+        {versionInfo && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            {versionInfo.update_available && versionInfo.check_enabled !== false && checkForUpdates ? (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-300">
+                <ArrowUpCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>
+                  App update available: <strong className="font-semibold font-mono">v{versionInfo.latest_version}</strong>
+                </span>
+                <a
+                  href="https://github.com/BenHornerTech/logshed/releases"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-1 inline-flex items-center gap-1 text-amber-400 hover:text-amber-200 underline text-[11px]"
+                >
+                  <span>Release Notes</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            ) : versionInfo.check_enabled === false || !checkForUpdates ? (
+              <div className="flex items-center gap-1.5 text-slate-400 text-xs">
+                <span>Update checks are disabled</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 text-slate-400 text-xs">
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                <span>LogShed is up to date</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* License & Copyright */}
+        <p className="text-xs text-slate-400">
+          MIT License - Copyright (c) 2026 LogShed Contributors
+        </p>
+
+        {/* Links */}
+        <div className="flex flex-wrap items-center gap-4 text-xs pt-1 border-t border-dark-800">
+          <a
+            href="https://github.com/BenHornerTech/logshed"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-accent-400 hover:text-accent-300 hover:underline transition"
+          >
+            <span>GitHub Repository</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
+          <a
+            href="https://github.com/BenHornerTech/logshed/blob/main/CHANGELOG.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-accent-400 hover:text-accent-300 hover:underline transition"
+          >
+            <span>Changelog</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
+        </div>
       </section>
     </div>
   );

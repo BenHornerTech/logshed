@@ -90,6 +90,11 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
     else:
         internal_log_level = env_level_name
 
+    check_for_updates_raw = stored.get("check_for_updates")
+    check_for_updates = True
+    if check_for_updates_raw is not None:
+        check_for_updates = check_for_updates_raw.strip().lower() not in ("0", "false", "no", "off")
+
     return SettingsResponse(
         ai_provider=stored.get("ai_provider") or "gemini",
         ai_model=stored.get("ai_model") or DEFAULT_AI_MODEL,
@@ -102,6 +107,7 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
         retention_overridden=retention_overridden,
         has_ai_api_key=bool(ai_api_key_val),
         internal_log_level=internal_log_level,
+        check_for_updates=check_for_updates,
     )
 
 
@@ -151,6 +157,9 @@ async def update_settings(
         if req.internal_log_level is not None:
             updates.append(("internal_log_level", req.internal_log_level, 0))
 
+        if req.check_for_updates is not None:
+            updates.append(("check_for_updates", "1" if req.check_for_updates else "0", 0))
+
         # Handle sensitive fields
         for sensitive_key in ("ai_api_key",):
             val = getattr(req, sensitive_key)
@@ -186,6 +195,13 @@ async def update_settings(
         try:
             from app.main import configure_internal_log_handler
             configure_internal_log_handler(req.internal_log_level)
+        except Exception:
+            pass
+
+    if req.check_for_updates is not None:
+        try:
+            from app.services.version_service import clear_version_cache
+            clear_version_cache()
         except Exception:
             pass
 

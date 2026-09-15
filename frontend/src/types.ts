@@ -34,6 +34,7 @@ export interface SystemSettings {
   max_retention_days?: number;
   retention_overridden?: boolean;
   internal_log_level?: string;
+  check_for_updates?: boolean;
 }
 
 export type AppTab = 'stream' | 'aliases' | 'storage' | 'settings';
@@ -184,4 +185,13 @@ export interface AiModelsResponse {
   is_live: boolean;
   error?: string | null;
 }
+
+export interface VersionInfo {
+  current_version: string;
+  latest_version?: string | null;
+  update_available: boolean;
+  check_enabled?: boolean;
+  checked_at?: number | null;
+}
+
 

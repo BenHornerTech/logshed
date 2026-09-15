@@ -42,6 +42,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
 
   const [promptText, setPromptText] = useState<string>('');
   const [systemPrompt, setSystemPrompt] = useState<string>(DEFAULT_SYSTEM_PROMPT);
+  const [fullPromptText, setFullPromptText] = useState<string>('');
   const [promptViewMode, setPromptViewMode] = useState<'analysis' | 'full'>('analysis');
 
   const [userContext, setUserContext] = useState<string>('');
@@ -93,6 +94,11 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
     return buildCombinedPrompt(preview.redacted_prompt, userContext);
   }, [preview, userContext]);
 
+  const defaultFullPrompt = useMemo(() => {
+    if (!preview) return '';
+    return buildFullEnvelope(preview.system_prompt || DEFAULT_SYSTEM_PROMPT, defaultPrompt);
+  }, [preview, defaultPrompt]);
+
   const hasEditedPrompt = Boolean(
     preview && normalizePrompt(promptText) !== normalizePrompt(defaultPrompt)
   );
@@ -101,7 +107,10 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       normalizePrompt(systemPrompt) !==
         normalizePrompt(preview.system_prompt || DEFAULT_SYSTEM_PROMPT)
   );
-  const isModified = hasEditedPrompt || hasEditedSystem;
+  const hasEditedFull = Boolean(
+    preview && normalizePrompt(fullPromptText) !== normalizePrompt(defaultFullPrompt)
+  );
+  const isModified = promptViewMode === 'full' ? hasEditedFull : (hasEditedPrompt || hasEditedSystem);
 
   useEffect(() => {
     if (isOpen && selectedLogs.length > 0) {
@@ -114,6 +123,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       setUserContext('');
       setPromptText('');
       setSystemPrompt(DEFAULT_SYSTEM_PROMPT);
+      setFullPromptText('');
       setPromptViewMode('analysis');
       setFallbackModels('');
       setStreamProgress({ stage: 'init', failovers: [] });
@@ -150,7 +160,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       promptTextareaRef.current.style.height = 'auto';
       promptTextareaRef.current.style.height = `${Math.max(160, promptTextareaRef.current.scrollHeight)}px`;
     }
-  }, [promptText, systemPrompt, promptViewMode, preview]);
+  }, [promptText, fullPromptText, systemPrompt, promptViewMode, preview]);
 
   const loadPreview = async () => {
     const validLogIds = selectedLogs
@@ -184,7 +194,9 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
       setFallbackModels(initialFallbacks);
       const initialSys = res.system_prompt || DEFAULT_SYSTEM_PROMPT;
       setSystemPrompt(initialSys);
-      setPromptText(buildCombinedPrompt(res.redacted_prompt, userContext));
+      const initialUser = buildCombinedPrompt(res.redacted_prompt, userContext);
+      setPromptText(initialUser);
+      setFullPromptText(buildFullEnvelope(initialSys, initialUser));
       loadModels(res.provider);
     } catch (err: any) {
       setPreviewError(err.message || 'Failed to generate redacted AI preview.');
@@ -253,17 +265,19 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const handleUserContextChange = (newContext: string) => {
     const prevDefault = buildCombinedPrompt(preview?.redacted_prompt || '', userContext);
     setUserContext(newContext);
+    const newDefault = buildCombinedPrompt(preview?.redacted_prompt || '', newContext);
     // If promptText currently matches previous default, keep it in sync with newContext
     if (preview && normalizePrompt(promptText) === normalizePrompt(prevDefault)) {
-      setPromptText(buildCombinedPrompt(preview.redacted_prompt, newContext));
+      setPromptText(newDefault);
+      if (normalizePrompt(fullPromptText) === normalizePrompt(buildFullEnvelope(systemPrompt, prevDefault))) {
+        setFullPromptText(buildFullEnvelope(systemPrompt, newDefault));
+      }
     }
   };
 
   const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     if (promptViewMode === 'full') {
-      const parsed = parseFullEnvelope(e.target.value, systemPrompt);
-      setSystemPrompt(parsed.systemPrompt);
-      setPromptText(parsed.userPrompt);
+      setFullPromptText(e.target.value);
     } else {
       setPromptText(e.target.value);
     }
@@ -272,7 +286,9 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const handleResetPrompt = () => {
     if (preview) {
       setPromptText(defaultPrompt);
-      setSystemPrompt(preview.system_prompt || DEFAULT_SYSTEM_PROMPT);
+      const defaultSys = preview.system_prompt || DEFAULT_SYSTEM_PROMPT;
+      setSystemPrompt(defaultSys);
+      setFullPromptText(buildFullEnvelope(defaultSys, defaultPrompt));
     }
   };
 
@@ -308,11 +324,34 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
         failovers: [],
       });
 
+      let promptOverride: string | undefined = undefined;
+      let systemPromptOverride: string | undefined = undefined;
+
+      if (promptViewMode === 'full') {
+        if (hasEditedFull) {
+          const parsed = parseFullEnvelope(fullPromptText, systemPrompt);
+          const defaultSys = preview?.system_prompt || DEFAULT_SYSTEM_PROMPT;
+          if (normalizePrompt(parsed.userPrompt) !== normalizePrompt(defaultPrompt)) {
+            promptOverride = parsed.userPrompt.trim();
+          }
+          if (normalizePrompt(parsed.systemPrompt) !== normalizePrompt(defaultSys)) {
+            systemPromptOverride = parsed.systemPrompt.trim();
+          }
+        }
+      } else {
+        if (hasEditedPrompt) {
+          promptOverride = promptText.trim();
+        }
+        if (hasEditedSystem) {
+          systemPromptOverride = systemPrompt.trim();
+        }
+      }
+
       const res = await diagnoseLogs({
         log_ids: validLogIds,
         user_context: userContext.trim() || undefined,
-        prompt_override: hasEditedPrompt ? promptText.trim() : undefined,
-        system_prompt_override: hasEditedSystem ? systemPrompt.trim() : undefined,
+        prompt_override: promptOverride,
+        system_prompt_override: systemPromptOverride,
         provider,
         model,
         fallback_models: parsedFallbacks.length > 0 ? parsedFallbacks : undefined,
@@ -371,7 +410,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const handleCopyPrompt = async () => {
     const textToCopy =
       promptViewMode === 'full'
-        ? buildFullEnvelope(systemPrompt, promptText)
+        ? fullPromptText
         : promptText;
     if (textToCopy) {
       await copyPrompt(textToCopy);
@@ -455,7 +494,14 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                   <div className="flex items-center bg-dark-950 border border-dark-700 rounded p-0.5 text-[10px] font-mono">
                     <button
                       type="button"
-                      onClick={() => setPromptViewMode('analysis')}
+                      onClick={() => {
+                        if (promptViewMode === 'full') {
+                          const parsed = parseFullEnvelope(fullPromptText, systemPrompt);
+                          setSystemPrompt(parsed.systemPrompt);
+                          setPromptText(parsed.userPrompt);
+                          setPromptViewMode('analysis');
+                        }
+                      }}
                       className={`px-2 py-0.5 rounded transition cursor-pointer ${
                         promptViewMode === 'analysis'
                           ? 'bg-accent-600 text-white font-medium shadow-xs'
@@ -466,7 +512,12 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setPromptViewMode('full')}
+                      onClick={() => {
+                        if (promptViewMode !== 'full') {
+                          setFullPromptText(buildFullEnvelope(systemPrompt, promptText));
+                          setPromptViewMode('full');
+                        }
+                      }}
                       className={`px-2 py-0.5 rounded transition cursor-pointer ${
                         promptViewMode === 'full'
                           ? 'bg-accent-600 text-white font-medium shadow-xs'
@@ -501,7 +552,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               </div>
               <textarea
                 ref={promptTextareaRef}
-                value={promptViewMode === 'full' ? buildFullEnvelope(systemPrompt, promptText) : promptText}
+                value={promptViewMode === 'full' ? fullPromptText : promptText}
                 onChange={handlePromptChange}
                 placeholder={promptViewMode === 'full' ? 'Full LLM prompt envelope...' : 'Redacted prompt...'}
                 className="w-full bg-dark-950 border border-dark-700 rounded-lg p-3 font-mono text-slate-200 text-xs focus:outline-hidden focus:border-accent-500 leading-relaxed whitespace-pre-wrap resize-y overflow-y-hidden"
