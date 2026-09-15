@@ -132,7 +132,7 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
     (
         "connection_string",
         re.compile(
-            r"((?:mysql|postgres|postgresql|mongodb|redis|amqp|smtp|ftp|https?)://(?:[^:]*:)?)[^@\s]+(@)",
+            r"((?:mysql|postgres|postgresql|mongodb|redis|amqp|smtp|ftp|https?)://(?:[^:\s]*:)?)\S+?(@)(?=[^@/\s]+(?:[:/]|\s|$))",
             re.IGNORECASE,
         ),
         rf"\1{REDACTED}\2",
@@ -162,6 +162,48 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
         "pushover_token",
         re.compile(
             r"((?:pushover[_-]?(?:user[_-]?key|app[_-]?token|token|key))\s*[:=]\s*)[\"']?\S+[\"']?",
+            re.IGNORECASE,
+        ),
+        rf"\1{REDACTED}",
+    ),
+
+    # --- Webhooks ---
+    (
+        "slack_webhook",
+        re.compile(
+            r"(https?://hooks\.slack\.com/services/)[A-Za-z0-9+/_=-]+",
+            re.IGNORECASE,
+        ),
+        rf"\1{REDACTED}",
+    ),
+
+    # --- Generic Secret Assignments ---
+    (
+        "generic_secret",
+        re.compile(
+            r"((?:client[_-]?secret|app[_-]?secret|shared[_-]?secret|secret)\s*[:=]\s*)"
+            r"(?:\"[^\"]*\"|'[^']*'|[^\s,;\"'}{)(\]]+)",
+            re.IGNORECASE,
+        ),
+        rf"\1{REDACTED}",
+    ),
+
+    # --- CLI Tools (sshpass) ---
+    (
+        "sshpass_auth",
+        re.compile(
+            r"(sshpass\s+(?:-\w+\s+)*-p\s*)(?:'[^']*'|\"[^\"]*\"|\S+)",
+            re.IGNORECASE,
+        ),
+        rf"\1{REDACTED}",
+    ),
+
+    # --- Docker Registry Auth ---
+    (
+        "docker_registry_auth",
+        re.compile(
+            r"((?:\"?X-Registry-(?:Auth|Token)\"?|docker[_-]?registry[_-]?(?:token|auth)|registry[_-]?(?:auth|token))"
+            r"\s*[:=]\s*)[\"']?[^\s,;\"'}{)(\]]+[\"']?",
             re.IGNORECASE,
         ),
         rf"\1{REDACTED}",

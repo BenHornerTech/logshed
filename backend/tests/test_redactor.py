@@ -84,6 +84,13 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfnNkGFOQCPO...
         assert REDACTED in result
         assert "db.example.com" in result
 
+    def test_connection_string_with_at_symbol_in_password(self):
+        text = "Connecting to postgres://postgres:P@ssw0rd123!@db.internal:5432/prod_db with api_key=sk-proj-9999888877776666555544443333"
+        result = redact(text)
+        assert "P@ssw0rd123!" not in result
+        assert "@ssw0rd123!" not in result
+        assert result == f"Connecting to postgres://postgres:{REDACTED}@db.internal:5432/prod_db with api_key={REDACTED}"
+
     def test_pushover_token_redacted(self):
         text = "pushover_app_token=appToken1234567890abcdefghijklm"
         result = redact(text)
@@ -156,4 +163,66 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfnNkGFOQCPO...
         result2 = redact(text2)
         assert "verySecretKey456" not in result2
         assert result2 == f"curl --user deploy:{REDACTED} https://api.internal/v1"
+
+    def test_slack_webhook_redacted(self):
+        url = "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+        text = f"Sending alert to {url} failed with status 500"
+        result = redact(text)
+        assert "T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX" not in result
+        assert REDACTED in result
+        assert "https://hooks.slack.com/services/[REDACTED]" in result
+
+    def test_generic_secret_assignment_redacted(self):
+        text_double = 'secret="my_super_secret_double_quotes"'
+        result_double = redact(text_double)
+        assert "my_super_secret_double_quotes" not in result_double
+        assert REDACTED in result_double
+
+        text_single = "secret='my_super_secret_single_quotes'"
+        result_single = redact(text_single)
+        assert "my_super_secret_single_quotes" not in result_single
+        assert REDACTED in result_single
+
+        text_client = 'client_secret="oauth2_client_secret_xyz"'
+        result_client = redact(text_client)
+        assert "oauth2_client_secret_xyz" not in result_client
+        assert REDACTED in result_client
+
+        text_unquoted = "secret=my_unquoted_secret_value"
+        result_unquoted = redact(text_unquoted)
+        assert "my_unquoted_secret_value" not in result_unquoted
+        assert REDACTED in result_unquoted
+
+    def test_sshpass_command_redacted(self):
+        text1 = "sshpass -p 'MyS3cretPassword123' ssh user@192.168.1.10"
+        result1 = redact(text1)
+        assert "MyS3cretPassword123" not in result1
+        assert REDACTED in result1
+        assert result1 == f"sshpass -p {REDACTED} ssh user@192.168.1.10"
+
+        text2 = 'sshpass -p "AnotherSecretPass" scp file.txt host:/tmp'
+        result2 = redact(text2)
+        assert "AnotherSecretPass" not in result2
+        assert REDACTED in result2
+        assert result2 == f"sshpass -p {REDACTED} scp file.txt host:/tmp"
+
+        text3 = "ssh -p 22 user@host"
+        result3 = redact(text3)
+        assert result3 == text3
+
+    def test_docker_registry_auth_redacted(self):
+        text_header = "X-Registry-Auth: eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJzZWNyZXQifQ=="
+        result_header = redact(text_header)
+        assert "eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJzZWNyZXQifQ==" not in result_header
+        assert REDACTED in result_header
+
+        text_token = "X-Registry-Token: reg_token_abcdef123456"
+        result_token = redact(text_token)
+        assert "reg_token_abcdef123456" not in result_token
+        assert REDACTED in result_token
+
+        text_var = "docker_registry_token=reg_token_value_999"
+        result_var = redact(text_var)
+        assert "reg_token_value_999" not in result_var
+        assert REDACTED in result_var
 

@@ -1,0 +1,387 @@
+"""
+AI Service Module for LogShed.
+
+Encapsulates database log retrieval, host note aggregation, settings decryption,
+shared diagnosis context preparation, model cache management, and audit log persistence.
+"""
+
+import datetime
+import json
+import logging
+import sqlite3
+from typing import Any, Optional
+
+from fastapi import HTTPException, status
+
+from app.api.deps import run_db_query
+from app.core.config import DEFAULT_AI_MODEL
+from app.core.redactor import redact
+from app.core.security import decrypt_value
+from app.models import AiAuditItem
+from app.services.ai_engine import (
+    DEFAULT_SYSTEM_PROMPT,
+    build_analysis_prompt,
+    truncate_logs_to_budget,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def fetch_and_validate_logs(
+    conn: sqlite3.Connection,
+    log_ids: list[int],
+) -> tuple[Optional[list[sqlite3.Row]], Optional[str]]:
+    """
+    Fetch logs by IDs from the database and sort chronologically.
+    Returns (rows, error_message).
+    """
+    if len(log_ids) > 200:
+        return None, "Maximum of 200 log IDs allowed per request."
+    if not log_ids:
+        return None, "No logs found for provided IDs."
+
+    placeholders = ",".join("?" * len(log_ids))
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT id, timestamp, source_ip, source_alias, app_name, severity, message
+        FROM logs
+        WHERE id IN ({placeholders})
+        ORDER BY timestamp ASC, id ASC
+        """,
+        log_ids,
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return None, "No logs found for provided IDs."
+
+    return rows, None
+
+
+def get_aggregated_host_notes(conn: sqlite3.Connection, rows: list) -> Optional[str]:
+    """
+    Aggregate host notes from host_aliases matching any source_ip or source_alias in the batch.
+    For a single host with notes, returns the direct notes string.
+    For multiple hosts with notes, returns structured host-attributed notes.
+    """
+    unique_ips = list({r["source_ip"] for r in rows if r["source_ip"]})
+    unique_aliases = list({r["source_alias"] for r in rows if r["source_alias"]})
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT ip, alias, notes FROM host_aliases")
+    all_aliases = cursor.fetchall()
+
+    notes_by_host: dict[str, str] = {}
+    for a in all_aliases:
+        note = (a["notes"] or "").strip()
+        if note and (a["ip"] in unique_ips or a["alias"] in unique_aliases):
+            key = a["alias"] or a["ip"]
+            notes_by_host[key] = note
+
+    if not notes_by_host:
+        return None
+
+    # If all selected rows belong to a single host (alias or IP)
+    unique_batch_hosts = {r["source_alias"] or r["source_ip"] for r in rows}
+    if len(unique_batch_hosts) <= 1 and len(notes_by_host) == 1:
+        return list(notes_by_host.values())[0]
+
+    # Multi-host batch: attribute each note to its host
+    return "\n".join(f"- [{h}]: {n}" for h, n in sorted(notes_by_host.items()))
+
+
+def read_ai_settings(conn: sqlite3.Connection) -> tuple[dict[str, str], dict[str, str]]:
+    """
+    Read all system_settings, automatically decrypting encrypted values.
+    Returns (settings_dict, updated_map).
+    """
+    cursor = conn.cursor()
+    cursor.execute("SELECT key, value, is_encrypted, updated_at FROM system_settings")
+    rows = cursor.fetchall()
+    settings_dict: dict[str, str] = {}
+    updated_dict: dict[str, str] = {}
+    for r in rows:
+        k = r["key"]
+        val = r["value"]
+        is_enc = bool(r["is_encrypted"])
+        if is_enc and val:
+            try:
+                decrypted = decrypt_value(val)
+                settings_dict[k] = decrypted
+            except Exception:
+                settings_dict[k] = ""
+        else:
+            settings_dict[k] = val or ""
+        updated_dict[k] = r["updated_at"]
+    return settings_dict, updated_dict
+
+
+def is_cache_fresh(updated_at_str: Optional[str], max_age_seconds: int = 86400) -> bool:
+    """Check if cached models or settings are within the specified TTL (default 24h)."""
+    if not updated_at_str:
+        return False
+    try:
+        dt = datetime.datetime.fromisoformat(updated_at_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return (now - dt).total_seconds() < max_age_seconds
+    except Exception:
+        return False
+
+
+def save_models_cache(conn: sqlite3.Connection, cache_key: str, models_data: list[dict[str, Any]]) -> str:
+    """Persist discovered models cache in SQLite system_settings table."""
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO system_settings (key, value, updated_at, is_encrypted)
+        VALUES (?, ?, ?, 0)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """,
+        (cache_key, json.dumps(models_data), now_iso),
+    )
+    conn.commit()
+    return now_iso
+
+
+async def build_diagnosis_context(
+    log_ids: list[int],
+    user_context: Optional[str] = None,
+    prompt_override: Optional[str] = None,
+    system_prompt_override: Optional[str] = None,
+    provider_override: Optional[str] = None,
+    model_override: Optional[str] = None,
+    fallback_models_override: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """
+    Shared context preparation routine reused by preview_ai_prompt, diagnose_logs,
+    and diagnose_logs_stream.
+    Retrieves logs, decrypts configuration, aggregates host notes, redacts sensitive values,
+    truncates to budget, and constructs the final prompt payload and token estimation.
+    """
+    if len(log_ids) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot analyze more than 200 logs at once.",
+        )
+
+    def _fetch_all(conn: sqlite3.Connection):
+        rows, err = fetch_and_validate_logs(conn, log_ids)
+        if err:
+            return None, err
+
+        settings_dict, _ = read_ai_settings(conn)
+        host_notes = get_aggregated_host_notes(conn, rows)
+        return (rows, settings_dict, host_notes), None
+
+    result, err = await run_db_query(_fetch_all)
+    if err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=err,
+        )
+
+    rows, settings, host_notes = result
+
+    unique_aliases = sorted(list({r["source_alias"] for r in rows if r["source_alias"]}))
+    source_alias = ", ".join(unique_aliases) if unique_aliases else (rows[0]["source_ip"] or "unknown")
+
+    unique_apps = sorted(list({r["app_name"] for r in rows if r["app_name"]}))
+    app_name = ", ".join(unique_apps) if unique_apps else "unknown"
+
+    raw_lines = [
+        f"[{r['timestamp']}] [{r['source_alias'] or r['source_ip'] or 'unknown'}] [{r['app_name']}] {r['message']}"
+        for r in rows
+    ]
+    redacted_lines = redact(raw_lines)
+    redacted_logs_text = "\n".join(redacted_lines) if isinstance(redacted_lines, list) else str(redacted_lines)
+    redacted_logs_text = truncate_logs_to_budget(redacted_logs_text)
+
+    provider = (provider_override or settings.get("ai_provider") or "gemini").lower()
+    default_model = DEFAULT_AI_MODEL if provider == "gemini" else ("gpt-4o" if provider == "openai" else "llama3.2")
+    model = model_override or settings.get("ai_model") or default_model
+    api_key = settings.get("ai_api_key", "")
+    base_url = settings.get("ai_base_url") or None
+
+    system_prompt = (
+        system_prompt_override.strip()
+        if (system_prompt_override and system_prompt_override.strip())
+        else (settings.get("ai_system_prompt") or DEFAULT_SYSTEM_PROMPT)
+    )
+
+    fallback_models_str = settings.get("ai_fallback_models") or ""
+    configured_fallbacks = [m.strip() for m in fallback_models_str.split(",") if m.strip()]
+    fallback_models = (
+        fallback_models_override
+        if fallback_models_override is not None
+        else configured_fallbacks
+    )
+
+    redacted_host_notes = str(redact(host_notes)) if host_notes else None
+    redacted_user_context = str(redact(user_context.strip())) if (user_context and user_context.strip()) else None
+
+    if prompt_override and prompt_override.strip():
+        full_prompt = str(redact(prompt_override.strip()))
+        redacted_prompt_override = full_prompt
+    else:
+        full_prompt = build_analysis_prompt(
+            source_alias=source_alias,
+            app_name=app_name,
+            redacted_logs=redacted_logs_text,
+            log_count=len(rows),
+            user_context=redacted_user_context,
+            host_notes=redacted_host_notes,
+        )
+        redacted_prompt_override = None
+
+    # Estimate token count (~3.5 characters per token including system prompt and framing overhead)
+    estimated_tokens = max(1, int(len(full_prompt) // 3.5 + len(system_prompt) // 3.5 + 50))
+
+    return {
+        "rows": rows,
+        "source_alias": source_alias,
+        "app_name": app_name,
+        "redacted_logs": redacted_logs_text,
+        "provider": provider,
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "system_prompt": system_prompt,
+        "fallback_models": fallback_models,
+        "redacted_user_context": redacted_user_context,
+        "redacted_host_notes": redacted_host_notes,
+        "redacted_prompt_override": redacted_prompt_override,
+        "full_prompt": full_prompt,
+        "estimated_tokens": estimated_tokens,
+    }
+
+
+async def save_diagnosis_audit(
+    source_alias: str,
+    app_name: str,
+    log_count: int,
+    user_context: Optional[str],
+    actual_model: str,
+    prompt_sent: str,
+    raw_response: str,
+    tokens_in: int,
+    tokens_out: int,
+    tokens_thoughts: int,
+    tokens_used: int,
+    system_prompt: Optional[str],
+) -> int:
+    """Persist an AI diagnosis result to the ai_audit_log table."""
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    def _save(conn: sqlite3.Connection) -> int:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO ai_audit_log
+            (timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text, tokens_in, tokens_out, tokens_thoughts, tokens_used, system_prompt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                source_alias,
+                app_name,
+                log_count,
+                user_context or "",
+                actual_model,
+                prompt_sent,
+                raw_response,
+                tokens_in,
+                tokens_out,
+                tokens_thoughts,
+                tokens_used,
+                system_prompt,
+            ),
+        )
+        audit_id = cursor.lastrowid
+        conn.commit()
+        return audit_id
+
+    return await run_db_query(_save)
+
+
+async def list_ai_audit_logs(limit: int, offset: int) -> tuple[list[AiAuditItem], int]:
+    """Retrieve historical AI audit log entries with pagination."""
+    def _read(conn: sqlite3.Connection):
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM ai_audit_log")
+        total = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            SELECT id, timestamp, source_alias, app_name, log_count, user_context, model, prompt_sent, response_text,
+                   COALESCE(tokens_in, 0) AS tokens_in,
+                   COALESCE(tokens_out, 0) AS tokens_out,
+                   COALESCE(tokens_thoughts, MAX(0, tokens_used - (COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0)))) AS tokens_thoughts,
+                   tokens_used,
+                   system_prompt
+            FROM ai_audit_log
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        rows = cursor.fetchall()
+        items = []
+        for r in rows:
+            p_sent = r["prompt_sent"]
+            if p_sent and not p_sent.startswith("### System Metadata") and not p_sent.startswith("### Redacted Log Stream"):
+                p_sent = build_analysis_prompt(
+                    source_alias=r["source_alias"],
+                    app_name=r["app_name"],
+                    redacted_logs=p_sent,
+                    log_count=r["log_count"],
+                    user_context=r["user_context"],
+                )
+
+            items.append(
+                AiAuditItem(
+                    id=r["id"],
+                    timestamp=str(r["timestamp"]),
+                    source_alias=r["source_alias"],
+                    app_name=r["app_name"],
+                    log_count=r["log_count"],
+                    user_context=r["user_context"],
+                    model=r["model"],
+                    prompt_sent=p_sent,
+                    response_text=r["response_text"],
+                    tokens_in=r["tokens_in"],
+                    tokens_out=r["tokens_out"],
+                    tokens_thoughts=r["tokens_thoughts"],
+                    tokens_used=r["tokens_used"],
+                    system_prompt=r["system_prompt"] or DEFAULT_SYSTEM_PROMPT,
+                )
+            )
+        return items, total
+
+    return await run_db_query(_read)
+
+
+async def delete_ai_audit_item(audit_id: int) -> bool:
+    """Delete a single AI audit log entry by ID."""
+    def _delete(conn: sqlite3.Connection) -> bool:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ai_audit_log WHERE id = ?", (audit_id,))
+        affected = cursor.rowcount
+        conn.commit()
+        return affected > 0
+
+    return await run_db_query(_delete)
+
+
+async def clear_ai_audit_logs() -> int:
+    """Delete all AI audit log entries."""
+    def _clear(conn: sqlite3.Connection) -> int:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ai_audit_log")
+        affected = cursor.rowcount
+        conn.commit()
+        return affected
+
+    return await run_db_query(_clear)

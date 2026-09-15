@@ -359,7 +359,49 @@ def _get_token_count(obj: Any, *attr_names: str) -> int:
     return 0
 
 
-async def dispatch_gemini_request(
+def extract_token_usage(
+    prompt: str,
+    response_text: str,
+    usage: Any = None,
+) -> tuple[int, int, int, int]:
+    """
+    Unified token usage calculation across Gemini and OpenAI/compatible response structures.
+    Safely extracts tokens_in, tokens_out, tokens_thoughts, and tokens_used.
+    Falls back to character-based heuristic estimation (~4 chars/token) if metadata is unavailable.
+    """
+    tokens_in = 0
+    tokens_out = 0
+    tokens_thoughts = 0
+    tokens_used = 0
+
+    if usage:
+        tokens_in = _get_token_count(usage, "prompt_token_count", "prompt_tokens", "total_input_tokens", "input_tokens")
+        tokens_out = _get_token_count(usage, "candidates_token_count", "completion_tokens", "total_output_tokens", "output_tokens")
+        details = getattr(usage, "completion_tokens_details", None)
+        if details:
+            tokens_thoughts = _get_token_count(details, "reasoning_tokens", "thought_tokens", "thinking_tokens")
+        if tokens_thoughts == 0:
+            tokens_thoughts = _get_token_count(
+                usage,
+                "thoughts_token_count",
+                "total_thought_tokens",
+                "thought_tokens",
+                "thinking_tokens",
+                "reasoning_tokens",
+            )
+        tokens_used = _get_token_count(usage, "total_token_count", "total_tokens") or (tokens_in + tokens_out + tokens_thoughts)
+        if tokens_thoughts == 0 and tokens_used > (tokens_in + tokens_out):
+            tokens_thoughts = tokens_used - (tokens_in + tokens_out)
+
+    if tokens_used == 0:
+        tokens_in = max(1, len(prompt) // 4)
+        tokens_out = max(1, len(response_text) // 4)
+        tokens_used = tokens_in + tokens_out
+
+    return tokens_in, tokens_out, tokens_thoughts, tokens_used
+
+
+async def call_gemini(
     api_key: str,
     model: str,
     prompt: str,
@@ -409,26 +451,8 @@ async def dispatch_gemini_request(
         if not text:
             raise RuntimeError("Gemini API returned empty response text.")
 
-        # Extract token usage from response metadata across all Google GenAI SDK versions
         usage = getattr(response, "usage_metadata", None) or getattr(response, "usage", None)
-        tokens_in = 0
-        tokens_out = 0
-        tokens_thoughts = 0
-        tokens_used = 0
-        if usage:
-            tokens_in = _get_token_count(usage, "prompt_token_count", "total_input_tokens", "input_tokens")
-            tokens_out = _get_token_count(usage, "candidates_token_count", "total_output_tokens", "output_tokens")
-            tokens_thoughts = _get_token_count(usage, "thoughts_token_count", "total_thought_tokens", "thought_tokens", "thinking_tokens")
-            tokens_used = _get_token_count(usage, "total_token_count", "total_tokens") or (tokens_in + tokens_out + tokens_thoughts)
-            if tokens_thoughts == 0 and tokens_used > (tokens_in + tokens_out):
-                tokens_thoughts = tokens_used - (tokens_in + tokens_out)
-
-        if tokens_used == 0:
-            # Fallback estimation if usage metadata is unavailable
-            tokens_in = max(1, len(prompt) // 4)
-            tokens_out = max(1, len(text) // 4)
-            tokens_used = tokens_in + tokens_out
-
+        tokens_in, tokens_out, tokens_thoughts, tokens_used = extract_token_usage(prompt, text, usage)
         return text, tokens_in, tokens_out, tokens_thoughts, tokens_used
 
     except (asyncio.TimeoutError, TimeoutError):
@@ -468,7 +492,7 @@ async def dispatch_gemini_request(
         raise RuntimeError(err_msg) from e
 
 
-async def dispatch_openai_request(
+async def call_openai(
     api_key: str,
     model: str,
     prompt: str,
@@ -508,26 +532,7 @@ async def dispatch_openai_request(
         if not text:
             raise RuntimeError("OpenAI endpoint returned empty response content.")
 
-        # Extract token usage
-        tokens_in = 0
-        tokens_out = 0
-        tokens_thoughts = 0
-        tokens_used = 0
-        if response.usage:
-            tokens_in = _get_token_count(response.usage, "prompt_tokens", "prompt_token_count", "input_tokens")
-            tokens_out = _get_token_count(response.usage, "completion_tokens", "candidates_token_count", "output_tokens")
-            details = getattr(response.usage, "completion_tokens_details", None)
-            tokens_thoughts = _get_token_count(details, "reasoning_tokens", "thought_tokens", "thinking_tokens") if details else 0
-            if tokens_thoughts == 0:
-                tokens_thoughts = _get_token_count(response.usage, "reasoning_tokens", "thoughts_token_count")
-            tokens_used = _get_token_count(response.usage, "total_tokens", "total_token_count") or (tokens_in + tokens_out + tokens_thoughts)
-            if tokens_thoughts == 0 and tokens_used > (tokens_in + tokens_out):
-                tokens_thoughts = tokens_used - (tokens_in + tokens_out)
-        if tokens_used == 0:
-            tokens_in = max(1, len(prompt) // 4)
-            tokens_out = max(1, len(text) // 4)
-            tokens_used = tokens_in + tokens_out
-
+        tokens_in, tokens_out, tokens_thoughts, tokens_used = extract_token_usage(prompt, text, response.usage)
         return text, tokens_in, tokens_out, tokens_thoughts, tokens_used
 
     except APITimeoutError as te:
@@ -558,6 +563,11 @@ async def dispatch_openai_request(
         ):
             raise AiServiceUnavailableError(err_msg, code=err_code or 503) from e
         raise RuntimeError(err_msg) from e
+
+
+# Aliases for backward compatibility with existing tests and call sites
+dispatch_gemini_request = call_gemini
+dispatch_openai_request = call_openai
 
 
 MAX_LOG_TEXT_CHARS = 100_000

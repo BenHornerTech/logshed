@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core import pipeline as pipeline_mod
 from app.core.migrations import run_migrations
-from app.core.rate_limiter import login_rate_limiter
+from app.core.rate_limiter import ai_rate_limiter, login_rate_limiter
 from app.core.security import (
     SESSION_COOKIE_NAME,
     create_session_token,
@@ -35,6 +35,7 @@ def reset_globals(tmp_path: Path, monkeypatch):
     pipeline_mod._log_queue = None
     pipeline_mod._dropped_logs_total = 0
     login_rate_limiter.reset()
+    ai_rate_limiter.reset()
     reset_crypto_cache()
     sse_manager.reset()
 
@@ -53,6 +54,7 @@ def reset_globals(tmp_path: Path, monkeypatch):
     pipeline_mod._log_queue = None
     pipeline_mod._dropped_logs_total = 0
     login_rate_limiter.reset()
+    ai_rate_limiter.reset()
     reset_crypto_cache()
     sse_manager.reset()
 
@@ -1944,6 +1946,111 @@ class TestAiModelDiscovery:
             data3 = res3.json()
             assert data3["is_live"] is True
             assert mock_fetch.call_count == 2
+
+
+# ===================================================================
+# 6. AI Rate Limiting Tests (SEC-H3)
+# ===================================================================
+
+class TestAiRateLimiting:
+
+    def test_rate_limiter_direct_logic(self):
+        from app.core.rate_limiter import AiRateLimiter
+
+        limiter = AiRateLimiter(max_requests=10, window_seconds=60.0)
+        session_id = "test-session-1"
+
+        # 10 requests should succeed
+        for i in range(10):
+            assert limiter.is_rate_limited(session_id) is False
+            assert limiter.check_and_record(session_id) is True
+
+        # 11th request should be blocked
+        assert limiter.is_rate_limited(session_id) is True
+        assert limiter.check_and_record(session_id) is False
+
+        # Independent session should still have full quota
+        session_2 = "test-session-2"
+        assert limiter.is_rate_limited(session_2) is False
+        assert limiter.check_and_record(session_2) is True
+
+        # Reset clears state
+        limiter.reset()
+        assert limiter.is_rate_limited(session_id) is False
+        assert limiter.check_and_record(session_id) is True
+
+    def test_rate_limiter_sliding_window_expiration(self):
+        from app.core.rate_limiter import AiRateLimiter
+        import time
+
+        limiter = AiRateLimiter(max_requests=2, window_seconds=1.0)
+        session_id = "test-session-sliding"
+
+        assert limiter.check_and_record(session_id) is True
+        assert limiter.check_and_record(session_id) is True
+        assert limiter.check_and_record(session_id) is False
+
+        # Sleep past window
+        time.sleep(1.05)
+        assert limiter.is_rate_limited(session_id) is False
+        assert limiter.check_and_record(session_id) is True
+
+    @pytest.mark.asyncio
+    async def test_diagnose_rate_limit_exceeded_returns_429(self, populated_db, auth_client):
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=(
+                "Summary",
+                "Cause",
+                "Remediation",
+                "Raw response",
+                "Prompt sent",
+                100,
+                50,
+                0,
+                150,
+            ),
+        ):
+            # First 10 requests should succeed
+            for i in range(10):
+                res = await auth_client.post("/api/ai/diagnose", json={"log_ids": [1]})
+                assert res.status_code == 200, f"Request {i+1} failed with status {res.status_code}"
+
+            # 11th request must be rejected with HTTP 429 Too Many Requests
+            res_limited = await auth_client.post("/api/ai/diagnose", json={"log_ids": [1]})
+            assert res_limited.status_code == 429
+            data = res_limited.json()
+            assert "Rate limit exceeded" in data["detail"]
+
+    @pytest.mark.asyncio
+    async def test_diagnose_stream_rate_limit_exceeded_returns_429(self, populated_db, auth_client):
+        with patch(
+            "app.api.ai.execute_ai_analysis",
+            new_callable=AsyncMock,
+            return_value=(
+                "Summary",
+                "Cause",
+                "Remediation",
+                "Raw response",
+                "Prompt sent",
+                100,
+                50,
+                0,
+                150,
+            ),
+        ):
+            # Exhaust quota using 10 stream requests
+            for i in range(10):
+                res = await auth_client.post("/api/ai/diagnose/stream", json={"log_ids": [1]})
+                assert res.status_code == 200
+
+            # 11th stream request must trigger 429
+            res_limited = await auth_client.post("/api/ai/diagnose/stream", json={"log_ids": [1]})
+            assert res_limited.status_code == 429
+            data = res_limited.json()
+            assert "Rate limit exceeded" in data["detail"]
+
 
 
 
