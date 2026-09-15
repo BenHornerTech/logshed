@@ -14,7 +14,6 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { LogEntry, LogFilterParams } from '../../types.ts';
-import { SeverityBadge } from '../common/SeverityBadge.tsx';
 import { LogSearchBar } from './LogSearchBar.tsx';
 import { LogDetailModal } from './LogDetailModal.tsx';
 import { fetchLogs, fetchLogFacets } from '../../api/logs.ts';
@@ -22,6 +21,7 @@ import { fetchAliases } from '../../api/aliases.ts';
 import { useMediaQuery } from '../../utils/hooks.ts';
 import { stripAnsi, cleanLogMessageForDisplay } from '../../utils/formatters.ts';
 import { PullTouchHandlers } from '../../utils/usePullToRefresh.ts';
+import { LogRow, ProcessedLogEntry, areLogRowPropsEqual } from './LogRow.tsx';
 
 function cleanIsoString(ts: string): string {
   let parseable = ts.trim();
@@ -78,7 +78,25 @@ export function formatLocalTimestamp(ts: string, fallbackTs?: string): string {
   }
 }
 
-export function matchesSearchQuery(log: LogEntry, query?: string): boolean {
+export function prepareLogEntry(entry: LogEntry | ProcessedLogEntry): ProcessedLogEntry {
+  const existing = entry as ProcessedLogEntry;
+  return {
+    ...entry,
+    formattedTimestamp:
+      existing.formattedTimestamp ?? formatLocalTimestamp(entry.timestamp, entry.received_at),
+    cleanedMessage: existing.cleanedMessage ?? cleanLogMessageForDisplay(entry.message),
+    strippedMessage: existing.strippedMessage ?? stripAnsi(entry.message),
+  };
+}
+
+export { LogRow, areLogRowPropsEqual };
+export type { ProcessedLogEntry };
+
+export function matchesSearchQuery(
+  log: LogEntry,
+  query?: string,
+  precompiledRegex?: RegExp | null,
+): boolean {
   if (!query || !query.trim()) return true;
 
   const q = query.trim();
@@ -95,14 +113,20 @@ export function matchesSearchQuery(log: LogEntry, query?: string): boolean {
     return true;
   }
 
-  // 2. Try regex match (e.g. if query contains regex patterns)
-  try {
-    const regex = new RegExp(q, 'i');
-    if (fields.some((f) => regex.test(f))) {
-      return true;
-    }
-  } catch {
-    // If not a valid regex, continue with token matching
+  // 2. Try regex match (using precompiled regex if available, else compiling on demand)
+  const regex =
+    precompiledRegex !== undefined
+      ? precompiledRegex
+      : (() => {
+          try {
+            return new RegExp(q, 'i');
+          } catch {
+            return null;
+          }
+        })();
+
+  if (regex && fields.some((f) => regex.test(f))) {
+    return true;
   }
 
   // 3. Multi-term matching (e.g. "nginx error" -> all terms must match)
@@ -163,11 +187,21 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   clearSelectionSignal,
   pullTouchHandlers,
 }) => {
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useState<ProcessedLogEntry[]>([]);
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
   const [missedLogsCount, setMissedLogsCount] = useState<number>(0);
   const [selectedLogIds, setSelectedLogIds] = useState<Set<number>>(new Set());
   const [lastSelectedLogIndex, setLastSelectedLogIndex] = useState<number | null>(null);
+  const lastSelectedLogIndexRef = useRef<number | null>(null);
+  const logsRef = useRef<ProcessedLogEntry[]>([]);
+
+  useEffect(() => {
+    lastSelectedLogIndexRef.current = lastSelectedLogIndex;
+  }, [lastSelectedLogIndex]);
+
+  useEffect(() => {
+    logsRef.current = logs;
+  }, [logs]);
 
   // Clear selection when signaled from parent (e.g. AI modal closed)
   useEffect(() => {
@@ -192,9 +226,25 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   const [appToHostsMap, setAppToHostsMap] = useState<Record<string, string[]>>({});
 
   // Incoming SSE batch buffer & flush timer
-  const incomingBufferRef = useRef<LogEntry[]>([]);
+  const incomingBufferRef = useRef<ProcessedLogEntry[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const filtersRef = useRef<LogFilterParams>(filters);
+
+  // Precompile search pattern / RegExp when filters.query changes
+  const compiledSearchRegex = useMemo(() => {
+    const q = filters.query?.trim();
+    if (!q) return null;
+    try {
+      return new RegExp(q, 'i');
+    } catch {
+      return null;
+    }
+  }, [filters.query]);
+
+  const compiledSearchRegexRef = useRef<RegExp | null>(compiledSearchRegex);
+  useEffect(() => {
+    compiledSearchRegexRef.current = compiledSearchRegex;
+  }, [compiledSearchRegex]);
 
   useEffect(() => {
     filtersRef.current = filters;
@@ -396,7 +446,8 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       }
 
       // Keep newest logs at the top (res.logs is ordered DESC)
-      setLogs(res.logs);
+      const preparedLogs = res.logs.map(prepareLogEntry);
+      setLogs(preparedLogs);
       updateFacetsWithNewLogs(res.logs);
       historicalOffsetRef.current = res.logs.length;
       if (res.logs.length < 500 || (res.total !== undefined && res.logs.length >= res.total)) {
@@ -445,9 +496,10 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
       }
       if (res.logs.length > 0) {
         updateFacetsWithNewLogs(res.logs);
+        const preparedLogs = res.logs.map(prepareLogEntry);
         setLogs((prev) => {
           const existingIds = new Set(prev.map((l) => l.id));
-          const uniqueIncoming = res.logs.filter((l) => !existingIds.has(l.id));
+          const uniqueIncoming = preparedLogs.filter((l) => !existingIds.has(l.id));
           if (uniqueIncoming.length === 0 && res.logs.length > 0) {
             if (res.logs.length < 500) {
               setHasMoreLogs(false);
@@ -508,12 +560,12 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
         // Client-Side Query Filtering on Ingest (Issue #2)
         const currentQuery = filtersRef.current?.query;
-        if (currentQuery && !matchesSearchQuery(entry, currentQuery)) {
+        if (currentQuery && !matchesSearchQuery(entry, currentQuery, compiledSearchRegexRef.current)) {
           return;
         }
 
         // Buffer incoming SSE logs (Issue #1)
-        incomingBufferRef.current.push(entry);
+        incomingBufferRef.current.push(prepareLogEntry(entry));
 
         if (incomingBufferRef.current.length >= 500) {
           if (flushTimerRef.current !== null) {
@@ -808,35 +860,31 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
   }, [activeApps, allAvailableSources, appToHostsMap]);
 
   // Multi-select across single or multiple hosts with Shift-click range support
-  const toggleSelectLog = (log: LogEntry, index: number, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const toggleSelectLog = useCallback(
+    (log: LogEntry, index: number, e: React.MouseEvent) => {
+      e.stopPropagation();
+      const lastIndex = lastSelectedLogIndexRef.current;
 
-    // Shift-Click Range Selection
-    if (e.shiftKey && lastSelectedLogIndex !== null && lastSelectedLogIndex !== index) {
-      const start = Math.min(lastSelectedLogIndex, index);
-      const end = Math.max(lastSelectedLogIndex, index);
-      const rangeLogs = logs.slice(start, end + 1);
+      setSelectedLogIds((prev) => {
+        const next = new Set(prev);
+        if (e.shiftKey && lastIndex !== null && lastIndex !== index) {
+          const start = Math.min(lastIndex, index);
+          const end = Math.max(lastIndex, index);
+          const rangeLogs = logsRef.current.slice(start, end + 1);
+          rangeLogs.forEach((l) => next.add(l.id));
+        } else if (next.has(log.id)) {
+          next.delete(log.id);
+        } else {
+          next.add(log.id);
+        }
+        return next;
+      });
 
-      const newSet = new Set(selectedLogIds);
-      rangeLogs.forEach((l) => newSet.add(l.id));
-      setSelectedLogIds(newSet);
+      lastSelectedLogIndexRef.current = index;
       setLastSelectedLogIndex(index);
-      return;
-    }
-
-    // Normal single selection toggle
-    const newSet = new Set(selectedLogIds);
-    if (newSet.has(log.id)) {
-      newSet.delete(log.id);
-      setSelectedLogIds(newSet);
-      setLastSelectedLogIndex(index);
-      return;
-    }
-
-    newSet.add(log.id);
-    setSelectedLogIds(newSet);
-    setLastSelectedLogIndex(index);
-  };
+    },
+    [],
+  );
 
   const selectAllLogs = () => {
     // Select all logs loaded in the client-side buffer, capped at the 200-log AI analysis ceiling
@@ -1071,12 +1119,13 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
                 if (!log) return null;
                 const isSelected = selectedLogIds.has(log.id);
 
-                return isMobile ? (
-                  /* Mobile 3-Line Triage Card View */
-                  <div
+                return (
+                  <LogRow
                     key={virtualRow.key}
-                    data-index={virtualRow.index}
-                    onClick={() => setActiveLogDetail(log)}
+                    log={log}
+                    index={virtualRow.index}
+                    isSelected={isSelected}
+                    isMobile={isMobile}
                     style={{
                       position: 'absolute',
                       top: 0,
@@ -1085,116 +1134,10 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
-                    className={`log-row flex flex-col justify-between px-3 py-1.5 border-b border-dark-900 cursor-pointer text-[11px] leading-tight space-y-1 ${
-                      isSelected ? 'bg-accent-950/40 border-l-2 border-accent-500' : ''
-                    }`}
-                  >
-                    {/* Line 1: Severity Badge + App Name (Host Name) */}
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <SeverityBadge severity={log.severity} />
-                      <span className="font-mono text-xs truncate">
-                        <span className="text-slate-200 font-semibold">{log.app_name}</span>
-                        <span className="text-slate-400 font-normal ml-1">({log.source_alias})</span>
-                      </span>
-                    </div>
-
-                    {/* Line 2: Message Payload (break-all, 2 lines clamp) */}
-                    <div className="text-slate-200 text-xs font-mono break-all line-clamp-2 select-text leading-snug">
-                      {cleanLogMessageForDisplay(log.message)}
-                    </div>
-
-                    {/* Line 3: Timestamp (left) + AI Action (right) */}
-                    <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono">
-                      <span className="text-[10px] text-slate-400 font-mono shrink-0 select-none">
-                        {formatLocalTimestamp(log.timestamp, log.received_at)}
-                      </span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDiagnoseAi([log]);
-                        }}
-                        className="text-accent-400 hover:text-accent-300 p-1 flex items-center gap-1 shrink-0"
-                        title="Explain with AI"
-                      >
-                        <Sparkles className="w-3 h-3" />
-                        <span className="text-[10px] font-sans font-medium">AI</span>
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  /* Desktop 7-Column Grid View */
-                  <div
-                    key={virtualRow.key}
-                    data-index={virtualRow.index}
-                    onClick={() => setActiveLogDetail(log)}
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      height: `${virtualRow.size}px`,
-                      transform: `translateY(${virtualRow.start}px)`,
-                    }}
-                    className={`log-row grid grid-cols-[36px_165px_65px_130px_130px_1fr_60px] px-3 items-center border-b border-dark-900 hover:bg-dark-900/60 transition-colors cursor-pointer text-[11px] leading-tight ${
-                      isSelected ? 'bg-accent-950/40 border-l-2 border-accent-500' : ''
-                    }`}
-                  >
-                    {/* Checkbox */}
-                    <div
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleSelectLog(log, virtualRow.index, e);
-                      }}
-                      className="h-full w-full flex items-center justify-center text-slate-500 hover:text-slate-200 cursor-pointer select-none"
-                    >
-                      {isSelected ? (
-                        <CheckSquare className="w-3.5 h-3.5 text-accent-400" />
-                      ) : (
-                        <Square className="w-3.5 h-3.5 opacity-40 hover:opacity-100" />
-                      )}
-                    </div>
-
-                    {/* Timestamp */}
-                    <div
-                      className="text-slate-400 truncate pr-2"
-                      title={`UTC: ${log.timestamp}\nReceived: ${log.received_at}`}
-                    >
-                      {formatLocalTimestamp(log.timestamp, log.received_at)}
-                    </div>
-
-                    {/* Severity Badge */}
-                    <div>
-                      <SeverityBadge severity={log.severity} />
-                    </div>
-
-                    {/* Host Alias / IP */}
-                    <div className="text-slate-300 truncate pr-2" title={`${log.source_alias} (${log.source_ip})`}>
-                      {log.source_alias}
-                    </div>
-
-                    {/* App Name */}
-                    <div className="text-slate-400 truncate pr-2 font-medium" title={log.app_name}>
-                      {log.app_name}
-                    </div>
-
-                    {/* Raw Text Message without dangerouslySetInnerHTML */}
-                    <div className="text-slate-200 truncate pr-3 select-text" title={stripAnsi(log.message)}>
-                      {cleanLogMessageForDisplay(log.message)}
-                    </div>
-
-                    {/* Quick Row Actions */}
-                    <div className="flex items-center justify-end gap-1 pr-1" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => {
-                          onDiagnoseAi([log]);
-                        }}
-                        title="Explain with AI"
-                        className="p-1 text-slate-400 hover:text-accent-400 hover:bg-dark-800 rounded transition"
-                      >
-                        <Sparkles className="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
+                    onSelect={toggleSelectLog}
+                    onClick={setActiveLogDetail}
+                    onDiagnoseAi={onDiagnoseAi}
+                  />
                 );
               })}
             </div>
@@ -1302,7 +1245,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
           const logsToInspect = ctxLogs && ctxLogs.length > 0 ? ctxLogs : [log];
           setLogs((prevLogs) => {
             const existingIds = new Set(prevLogs.map((l) => l.id));
-            const missingLogs = logsToInspect.filter((l) => !existingIds.has(l.id));
+            const missingLogs = logsToInspect.filter((l) => !existingIds.has(l.id)).map(prepareLogEntry);
             if (missingLogs.length === 0) return prevLogs;
             return [...missingLogs, ...prevLogs].sort((a, b) => {
               const cmp = b.timestamp.localeCompare(a.timestamp);
@@ -1316,7 +1259,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
           setActiveLogDetail(null);
           setLogs((prevLogs) => {
             const existingIds = new Set(prevLogs.map((l) => l.id));
-            const missingLogs = targetAndCtxLogs.filter((l) => !existingIds.has(l.id));
+            const missingLogs = targetAndCtxLogs.filter((l) => !existingIds.has(l.id)).map(prepareLogEntry);
             if (missingLogs.length === 0) return prevLogs;
             return [...missingLogs, ...prevLogs].sort((a, b) => {
               const cmp = b.timestamp.localeCompare(a.timestamp);

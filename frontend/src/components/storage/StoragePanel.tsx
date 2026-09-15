@@ -18,9 +18,9 @@ import { extractCleanSummary } from '../../utils/summary.ts';
 import { DEFAULT_SYSTEM_PROMPT, buildFullEnvelope } from '../../utils/aiPrompt.ts';
 import { Modal } from '../common/Modal.tsx';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
-import { StorageCard } from '../settings/StorageCard.tsx';
-import { RetentionSlider } from '../settings/RetentionSlider.tsx';
-import { StorageTrendChart } from '../settings/StorageTrendChart.tsx';
+import { StorageCard } from './StorageCard.tsx';
+import { RetentionSlider } from './RetentionSlider.tsx';
+import { StorageTrendChart } from './StorageTrendChart.tsx';
 
 export const StoragePanel: React.FC = () => {
   const [storageMetrics, setStorageMetrics] = useState<StorageMetricsResponse | null>(null);

@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { RetentionSlider } from '../components/settings/RetentionSlider.tsx';
+import { RetentionSlider } from '../components/storage/RetentionSlider.tsx';
 import * as systemApi from '../api/system.ts';
 
 describe('RetentionSlider Component', () => {
