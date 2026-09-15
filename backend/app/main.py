@@ -19,9 +19,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import ai, aliases, auth, logs, settings, system
+from app.api.deps import run_db_query
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
-from app.core.config import get_cors_origins, get_db_path, get_syslog_port, get_internal_log_level
+from app.core.config import (
+    get_all_system_settings,
+    get_cors_origins,
+    get_db_path,
+    get_syslog_port,
+    get_internal_log_level,
+)
 from app.core.migrations import run_migrations
 from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer, InternalLogHandler
 from app.core.security import get_or_create_master_key
@@ -119,35 +126,13 @@ async def _model_refresh_worker(db_path) -> None:
     every 12 hours if an API key is configured.
     """
     from app.services.ai_engine import fetch_available_models
-    from app.core.security import decrypt_value
-    from app.core.migrations import get_connection
 
     while True:
         try:
             # Wait 60 seconds after startup before initial discovery check
             await asyncio.sleep(60)
 
-            def _check_and_refresh():
-                conn = get_connection(db_path)
-                try:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT key, value, is_encrypted FROM system_settings")
-                    rows = cursor.fetchall()
-                    settings = {}
-                    for r in rows:
-                        k, v, enc = r[0], r[1], bool(r[2])
-                        if enc and v:
-                            try:
-                                settings[k] = decrypt_value(v)
-                            except Exception:
-                                settings[k] = ""
-                        else:
-                            settings[k] = v or ""
-                    return settings
-                finally:
-                    conn.close()
-
-            settings = await asyncio.to_thread(_check_and_refresh)
+            settings = await run_db_query(get_all_system_settings, custom_db_path=Path(db_path))
             provider = (settings.get("ai_provider") or "gemini").lower()
             api_key = settings.get("ai_api_key", "").strip()
             base_url = settings.get("ai_base_url")
@@ -167,16 +152,8 @@ async def _model_refresh_worker(db_path) -> None:
                                 """,
                                 (f"ai_models_cache_{provider}", json.dumps(discovered), now_iso),
                             )
-                            conn.commit()
 
-                        def _run_save():
-                            conn = get_connection(db_path)
-                            try:
-                                _save(conn)
-                            finally:
-                                conn.close()
-
-                        await asyncio.to_thread(_run_save)
+                        await run_db_query(_save, custom_db_path=Path(db_path))
                 except Exception as e:
                     logger.debug(f"Background model refresh for {provider} skipped or failed: {e}")
 
@@ -242,19 +219,17 @@ async def lifespan(app: FastAPI):
     # 8. Attach internal log handler so application warnings and errors appear in LogShed
     persisted_level = None
     try:
-        from app.core.migrations import get_connection
+        import sqlite3
 
-        def _read_persisted_level():
-            conn = get_connection(db_path)
-            try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT value FROM system_settings WHERE key = 'internal_log_level'")
-                row = cursor.fetchone()
-                return row[0] if row and row[0] else None
-            finally:
-                conn.close()
+        def _read_persisted_level(conn):
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM system_settings WHERE key = 'internal_log_level'")
+            row = cursor.fetchone()
+            if row:
+                return row["value"] if isinstance(row, sqlite3.Row) else row[0]
+            return None
 
-        persisted_level = await asyncio.to_thread(_read_persisted_level)
+        persisted_level = await run_db_query(_read_persisted_level, custom_db_path=Path(db_path))
     except Exception:
         pass
 

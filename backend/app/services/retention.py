@@ -109,6 +109,31 @@ async def execute_prune_async(
 
 
 
+def get_effective_retention_days(conn: sqlite3.Connection) -> int:
+    """
+    Query configured retention_days from system_settings, respecting
+    MAX_RETENTION_DAYS override or clamp.
+    """
+    if is_max_retention_days_overridden():
+        return get_max_retention_days()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM system_settings WHERE key = 'retention_days'")
+        row = cursor.fetchone()
+        if row:
+            raw_val = row["value"] if isinstance(row, sqlite3.Row) else row[0]
+            if raw_val:
+                try:
+                    val = int(raw_val)
+                    max_days = get_max_retention_days()
+                    return max(1, min(val, max_days))
+                except ValueError:
+                    pass
+    except Exception as e:
+        logger.warning(f"Failed to read retention_days from database, defaulting to 14: {e}")
+    return min(14, get_max_retention_days())
+
+
 class PruneWorker:
     """
     Background worker that runs daily automated retention pruning.
@@ -133,7 +158,7 @@ class PruneWorker:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in PruneWorker daily pruning loop: {e}. Retrying in {backoff:.1f}s...")
+                logger.error(f"PruneWorker error, backing off for {backoff}s: {e}")
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
                     break
@@ -152,28 +177,16 @@ class PruneWorker:
 
     def _get_retention_days(self) -> int:
         """Synchronous query for configured retention_days."""
-        if is_max_retention_days_overridden():
-            return get_max_retention_days()
         conn = None
         try:
             conn = get_connection(self._db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT value FROM system_settings WHERE key = 'retention_days'")
-            row = cursor.fetchone()
-            if row and row[0]:
-                try:
-                    val = int(row[0])
-                    max_days = get_max_retention_days()
-                    return max(1, min(val, max_days))
-                except ValueError:
-                    pass
+            return get_effective_retention_days(conn)
         except Exception as e:
-            logger.warning(f"Failed to read retention_days from database, defaulting to 14: {e}")
+            logger.warning(f"Failed to connect to database for retention_days: {e}")
+            return min(14, get_max_retention_days())
         finally:
             if conn:
                 conn.close()
-        return min(14, get_max_retention_days())
-
 
     async def stop(self) -> None:
         """Signal graceful shutdown."""

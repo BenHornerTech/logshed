@@ -5,6 +5,7 @@ Manages environment variables, filesystem paths, and defaults.
 
 import logging
 import os
+import sqlite3
 from pathlib import Path
 from typing import Optional, Union
 
@@ -195,4 +196,31 @@ def to_canonical_log_level_name(val: Optional[Union[str, int]]) -> str:
     """
     parsed = parse_internal_log_level(val)
     return get_internal_log_level_name(parsed)
+
+
+def get_all_system_settings(conn: sqlite3.Connection) -> dict[str, str]:
+    """
+    Select all system_settings from the database and decrypt encrypted values.
+    Returns a dictionary of setting keys to decrypted string values.
+    """
+    from app.core.security import decrypt_value
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT key, value, is_encrypted FROM system_settings")
+    rows = cursor.fetchall()
+    settings: dict[str, str] = {}
+    for r in rows:
+        if isinstance(r, sqlite3.Row):
+            k, v, enc = r["key"], r["value"], bool(r["is_encrypted"])
+        else:
+            k, v, enc = r[0], r[1], bool(r[2])
+        if enc and v:
+            try:
+                settings[k] = decrypt_value(v)
+            except Exception:
+                settings[k] = ""
+        else:
+            settings[k] = v or ""
+    return settings
+
 

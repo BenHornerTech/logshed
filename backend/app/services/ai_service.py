@@ -14,7 +14,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 
 from app.api.deps import run_db_query
-from app.core.config import DEFAULT_AI_MODEL
+from app.core.config import DEFAULT_AI_MODEL, get_all_system_settings
 from app.core.redactor import redact
 from app.core.security import decrypt_value
 from app.models import AiAuditItem
@@ -95,24 +95,14 @@ def read_ai_settings(conn: sqlite3.Connection) -> tuple[dict[str, str], dict[str
     Read all system_settings, automatically decrypting encrypted values.
     Returns (settings_dict, updated_map).
     """
+    settings_dict = get_all_system_settings(conn)
     cursor = conn.cursor()
-    cursor.execute("SELECT key, value, is_encrypted, updated_at FROM system_settings")
+    cursor.execute("SELECT key, updated_at FROM system_settings")
     rows = cursor.fetchall()
-    settings_dict: dict[str, str] = {}
-    updated_dict: dict[str, str] = {}
-    for r in rows:
-        k = r["key"]
-        val = r["value"]
-        is_enc = bool(r["is_encrypted"])
-        if is_enc and val:
-            try:
-                decrypted = decrypt_value(val)
-                settings_dict[k] = decrypted
-            except Exception:
-                settings_dict[k] = ""
-        else:
-            settings_dict[k] = val or ""
-        updated_dict[k] = r["updated_at"]
+    updated_dict = {
+        r["key"] if isinstance(r, sqlite3.Row) else r[0]: r["updated_at"] if isinstance(r, sqlite3.Row) else r[1]
+        for r in rows
+    }
     return settings_dict, updated_dict
 
 

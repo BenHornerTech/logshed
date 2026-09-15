@@ -34,6 +34,29 @@ async def list_aliases(user: dict = Depends(get_current_user)) -> list[HostAlias
     return await run_db_query(_get_all)
 
 
+def _batch_update_log_aliases(conn, source_ip: str, target_alias: str, batch_size: int = 500) -> None:
+    """
+    Retroactively update or revert source_alias for existing logs in chunked batches.
+    Prevents long table locks on large datasets.
+    """
+    cursor = conn.cursor()
+    update_query = """
+        UPDATE logs SET source_alias = ?
+        WHERE source_ip = ? AND id IN (
+            SELECT id FROM logs
+            WHERE source_ip = ? AND source_alias != ?
+            LIMIT ?
+        )
+    """
+    while True:
+        cursor.execute(update_query, (target_alias, source_ip, source_ip, target_alias, batch_size))
+        count = cursor.rowcount
+        conn.commit()
+        if count < batch_size:
+            break
+        time.sleep(0.01)
+
+
 @router.post("", response_model=HostAliasResponse)
 async def create_or_update_alias(
     req: HostAliasCreate,
@@ -59,21 +82,7 @@ async def create_or_update_alias(
         conn.commit()
 
         # Retroactively update previously ingested logs for this source IP in chunked batches
-        update_query = """
-            UPDATE logs SET source_alias = ?
-            WHERE source_ip = ? AND id IN (
-                SELECT id FROM logs
-                WHERE source_ip = ? AND source_alias != ?
-                LIMIT 500
-            )
-        """
-        while True:
-            cursor.execute(update_query, (clean_alias, clean_ip, clean_ip, clean_alias))
-            count = cursor.rowcount
-            conn.commit()
-            if count < 500:
-                break
-            time.sleep(0.01)
+        _batch_update_log_aliases(conn, clean_ip, clean_alias, batch_size=500)
 
         cursor.execute("SELECT ip, alias, notes, created_at FROM host_aliases WHERE ip = ?", (clean_ip,))
         row = cursor.fetchone()
@@ -102,21 +111,7 @@ async def delete_alias(
         conn.commit()
         if deleted:
             # Revert previously ingested logs for this source IP back to the raw IP in chunked batches
-            update_query = """
-                UPDATE logs SET source_alias = source_ip
-                WHERE source_ip = ? AND id IN (
-                    SELECT id FROM logs
-                    WHERE source_ip = ? AND source_alias != ?
-                    LIMIT 500
-                )
-            """
-            while True:
-                cursor.execute(update_query, (ip, ip, ip))
-                count = cursor.rowcount
-                conn.commit()
-                if count < 500:
-                    break
-                time.sleep(0.01)
+            _batch_update_log_aliases(conn, ip, ip, batch_size=500)
         return deleted
 
     deleted = await run_db_query(_delete)

@@ -254,6 +254,77 @@ class TestLogQuerying:
         assert res_bad.json()["total"] == 1
 
     @pytest.mark.asyncio
+    async def test_malformed_fts5_queries_safety(
+        self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
+    ):
+        """Verify that malformed FTS5 search queries fall back cleanly and never raise OperationalError."""
+        client.cookies.set(SESSION_COOKIE_NAME, auth_cookie[SESSION_COOKIE_NAME])
+        db_file = tmp_path / "logs.db"
+
+        entries = [
+            ("2026-08-30T10:00:00Z", "2026-08-30T10:00:01Z", "10.0.0.1", "server1", "nginx", 1, 3, "Connection refused to backend upstream", "<11>nginx: Connection refused to backend upstream"),
+            ("2026-08-30T10:01:00Z", "2026-08-30T10:01:01Z", "10.0.0.1", "server1", "nginx", 1, 3, "Connection timeout to redis", "<11>nginx: Connection timeout to redis"),
+            ("2026-08-30T10:02:00Z", "2026-08-30T10:02:01Z", "10.0.0.2", "server2", "auth", 1, 2, "Authentication error: password mismatch", "<10>auth: Authentication error: password mismatch"),
+        ]
+        with get_connection(db_file) as conn:
+            conn.executemany(
+                """INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                entries,
+            )
+            conn.commit()
+
+        malformed_queries = [
+            # 1. Unallowlisted or incomplete column prefix
+            "bad_col:nginx",
+            "foo:bar",
+            "status:500",
+            "app_name:",
+            "app_name:*",
+            "source_alias:",
+            "source_alias:*",
+            "message:",
+            "message:*",
+            # 2. Dangling boolean operators
+            "AND",
+            "OR",
+            "NOT",
+            "NEAR",
+            "Connection AND",
+            "AND Connection",
+            "Connection AND AND refused",
+            "Connection OR",
+            "Connection NOT",
+            # 3. Unbalanced parentheses
+            "(Connection refused",
+            "Connection refused)",
+            "()",
+            ")(",
+            "Connection (refused",
+            # 4. Asterisks and special queries
+            "*",
+            "**",
+            "***",
+            "*refused",
+            # 5. Unbalanced quotes
+            '"',
+            '"""',
+            '"refused',
+            'refused"',
+            # 6. Punctuation / URLs
+            ":::",
+            "http://example.com/api",
+            "   ",
+        ]
+
+        for q in malformed_queries:
+            res = await client.get("/api/logs", params={"query": q})
+            assert res.status_code == 200, f"Query {q!r} failed with status {res.status_code}: {res.text}"
+            data = res.json()
+            assert "logs" in data
+            assert "total" in data
+
+    @pytest.mark.asyncio
     async def test_fts_queries_with_dots_and_ip_addresses(
         self, client: AsyncClient, auth_cookie: dict, tmp_path: Path
     ):

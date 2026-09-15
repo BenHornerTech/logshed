@@ -10,7 +10,7 @@ from app.core.config import get_db_path, get_max_retention_days, is_max_retentio
 from app.core.pipeline import get_dropped_count, get_ingest_rate, get_queue
 
 from app.models import HealthResponse, PruneResponse, StorageMetricItem, StorageOverviewResponse
-from app.services.retention import execute_prune_async
+from app.services.retention import execute_prune_async, get_effective_retention_days
 from app.services.storage_metrics import sample_storage_metrics
 
 router = APIRouter(tags=["System & Maintenance"])
@@ -64,22 +64,7 @@ async def trigger_prune(user: dict = Depends(get_current_user)) -> PruneResponse
     Manually triggers log retention pruning, FTS5 index compaction,
     WAL truncation, and takes a fresh storage metrics snapshot.
     """
-    def _get_retention_days(conn):
-        if is_max_retention_days_overridden():
-            return get_max_retention_days()
-        cursor = conn.cursor()
-        cursor.execute("SELECT value FROM system_settings WHERE key = 'retention_days'")
-        row = cursor.fetchone()
-        if row and row["value"]:
-            try:
-                val = int(row["value"])
-                max_days = get_max_retention_days()
-                return max(1, min(val, max_days))
-            except ValueError:
-                pass
-        return min(14, get_max_retention_days())
-
-    retention_days = await run_db_query(_get_retention_days)
+    retention_days = await run_db_query(get_effective_retention_days)
     db_path = get_db_path()
 
     result = await execute_prune_async(db_path, retention_days=retention_days)

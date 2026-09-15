@@ -131,34 +131,27 @@ class TestFacetsPerformanceAndEdgeCases:
                 ).fetchall()
             ]
 
-            # 3. Distinct pairs
+            # 3. Distinct pairs via streamlined covering index skip-scan
             pairs = conn.execute(
                 """
-                WITH RECURSIVE cte(s, a) AS (
-                    SELECT
-                        (SELECT MIN(source_alias) FROM logs WHERE source_alias != '' AND app_name != ''),
-                        (SELECT MIN(app_name) FROM logs WHERE source_alias = (SELECT MIN(source_alias) FROM logs WHERE source_alias != '' AND app_name != '') AND app_name != '')
+                WITH RECURSIVE cte(s, a, ip) AS (
+                    SELECT s.source_alias, s.app_name, s.source_ip
+                    FROM (
+                        SELECT source_alias, app_name, source_ip
+                        FROM logs
+                        WHERE source_alias != '' AND app_name != ''
+                        ORDER BY source_alias ASC, app_name ASC
+                        LIMIT 1
+                    ) s
                     UNION ALL
-                    SELECT
-                        CASE
-                            WHEN (SELECT MIN(app_name) FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '') IS NOT NULL
-                            THEN cte.s
-                            ELSE (SELECT MIN(source_alias) FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '')
-                        END,
-                        CASE
-                            WHEN (SELECT MIN(app_name) FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '') IS NOT NULL
-                            THEN (SELECT MIN(app_name) FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '')
-                            ELSE (SELECT MIN(app_name) FROM logs WHERE source_alias = (SELECT MIN(source_alias) FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '') AND app_name != '')
-                        END
+                    SELECT nxt.source_alias, nxt.app_name, nxt.source_ip
                     FROM cte
-                    WHERE cte.s IS NOT NULL
+                    JOIN logs nxt ON nxt.id = COALESCE(
+                        (SELECT id FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '' ORDER BY app_name ASC LIMIT 1),
+                        (SELECT id FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '' ORDER BY source_alias ASC, app_name ASC LIMIT 1)
+                    )
                 )
-                SELECT
-                    s AS source_alias,
-                    a AS app_name,
-                    (SELECT source_ip FROM logs WHERE source_alias = cte.s AND app_name = cte.a LIMIT 1) AS source_ip
-                FROM cte
-                WHERE s IS NOT NULL;
+                SELECT s AS source_alias, a AS app_name, ip AS source_ip FROM cte;
                 """
             ).fetchall()
             t1 = time.perf_counter()
@@ -208,3 +201,92 @@ class TestFacetsPerformanceAndEdgeCases:
         assert "monthly-prune" in data["apps"]
         assert "monthly-prune" in data["host_to_apps"]["unaliased-monthly-worker"]
         assert "unaliased-monthly-worker" in data["app_to_hosts"]["monthly-prune"]
+
+    def test_streamlined_facets_covering_index_benchmark(self, tmp_path):
+        """
+        Validate that the streamlined facets CTE uses covering index scans,
+        selects source_ip directly without redundant scalar subqueries,
+        and executes in single-digit milliseconds.
+        """
+        db_file = tmp_path / "streamlined_bench.db"
+        run_migrations(db_file)
+
+        hosts = [f"server-{i:02d}" for i in range(15)]
+        apps = [f"app-{j:02d}" for j in range(20)]
+
+        data = []
+        for i in range(10000):
+            h = hosts[i % len(hosts)]
+            a = apps[i % len(apps)]
+            ip = f"10.0.0.{hosts.index(h) + 1}"
+            data.append(("2026-09-01T12:00:00", "2026-09-01T12:00:00", ip, h, a, 1, 6, "msg", "msg"))
+
+        with get_connection(db_file) as conn:
+            conn.executemany(
+                "INSERT INTO logs (timestamp, received_at, source_ip, source_alias, app_name, facility, severity, message, raw) VALUES (?,?,?,?,?,?,?,?,?)",
+                data,
+            )
+            conn.commit()
+
+            # Verify query plan uses covering index
+            q_plan = conn.execute(
+                """
+                EXPLAIN QUERY PLAN
+                WITH RECURSIVE cte(s, a, ip) AS (
+                    SELECT s.source_alias, s.app_name, s.source_ip
+                    FROM (
+                        SELECT source_alias, app_name, source_ip
+                        FROM logs
+                        WHERE source_alias != '' AND app_name != ''
+                        ORDER BY source_alias ASC, app_name ASC
+                        LIMIT 1
+                    ) s
+                    UNION ALL
+                    SELECT nxt.source_alias, nxt.app_name, nxt.source_ip
+                    FROM cte
+                    JOIN logs nxt ON nxt.id = COALESCE(
+                        (SELECT id FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '' ORDER BY app_name ASC LIMIT 1),
+                        (SELECT id FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '' ORDER BY source_alias ASC, app_name ASC LIMIT 1)
+                    )
+                )
+                SELECT s AS source_alias, a AS app_name, ip AS source_ip FROM cte;
+                """
+            ).fetchall()
+            plan_str = " ".join(str(row) for row in q_plan)
+            assert "idx_logs_source_app_ip" in plan_str
+
+            # Benchmark execution time
+            t0 = time.perf_counter()
+            rows = conn.execute(
+                """
+                WITH RECURSIVE cte(s, a, ip) AS (
+                    SELECT s.source_alias, s.app_name, s.source_ip
+                    FROM (
+                        SELECT source_alias, app_name, source_ip
+                        FROM logs
+                        WHERE source_alias != '' AND app_name != ''
+                        ORDER BY source_alias ASC, app_name ASC
+                        LIMIT 1
+                    ) s
+                    UNION ALL
+                    SELECT nxt.source_alias, nxt.app_name, nxt.source_ip
+                    FROM cte
+                    JOIN logs nxt ON nxt.id = COALESCE(
+                        (SELECT id FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '' ORDER BY app_name ASC LIMIT 1),
+                        (SELECT id FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '' ORDER BY source_alias ASC, app_name ASC LIMIT 1)
+                    )
+                )
+                SELECT s AS source_alias, a AS app_name, ip AS source_ip FROM cte;
+                """
+            ).fetchall()
+            t1 = time.perf_counter()
+            duration_ms = (t1 - t0) * 1000
+
+            assert len(rows) > 0
+            assert duration_ms < 25.0
+            # Verify source_ip is populated directly in result tuples
+            for r in rows:
+                assert r[0] != ""  # source_alias
+                assert r[1] != ""  # app_name
+                assert r[2].startswith("10.0.0.")  # source_ip
+

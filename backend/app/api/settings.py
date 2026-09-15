@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import get_current_user, run_db_query
 from app.core.config import (
     DEFAULT_AI_MODEL,
+    get_all_system_settings,
     get_max_retention_days,
     is_max_retention_days_overridden,
     get_internal_log_level,
@@ -32,26 +33,7 @@ async def get_settings(user: dict = Depends(get_current_user)) -> SettingsRespon
     Retrieve application configuration.
     Sensitive secrets (API keys) are masked with '********' and never returned decrypted.
     """
-    def _read_settings(conn):
-        cursor = conn.cursor()
-        cursor.execute("SELECT key, value, is_encrypted FROM system_settings")
-        rows = cursor.fetchall()
-        settings_dict = {}
-        for r in rows:
-            k = r["key"]
-            val = r["value"]
-            is_enc = bool(r["is_encrypted"])
-            if is_enc and val:
-                try:
-                    decrypted = decrypt_value(val)
-                    settings_dict[k] = decrypted
-                except Exception:
-                    settings_dict[k] = ""
-            else:
-                settings_dict[k] = val or ""
-        return settings_dict
-
-    stored = await run_db_query(_read_settings)
+    stored = await run_db_query(get_all_system_settings)
 
     ai_api_key_val = stored.get("ai_api_key", "")
 

@@ -23,84 +23,10 @@ import re
 
 router = APIRouter(prefix="/logs", tags=["Logs"])
 
-# Reserved FTS5 syntax keywords
-_FTS_KEYWORDS = {"AND", "OR", "NOT", "NEAR"}
-
-
-def _format_fts_query(query_str: str) -> str:
-    """
-    Format user query for FTS5 search with prefix matching.
-    - If user entered quoted phrases (e.g. "exact phrase"), preserve them.
-    - If terms do not end in '*' and are not boolean operators (AND, OR, NOT, NEAR),
-      automatically append '*' for search-as-you-type prefix matching.
-    - If column filters are used (e.g. app_name:nginx), apply wildcard to the value.
-    """
-    q = query_str.strip()
-    if not q:
-        return ""
-
-    # Regex matches:
-    # 1. Quoted strings: "[^"]*" or '[^']*'
-    # 2. Column filters: [a-zA-Z_]+:(?:"[^"]*"|[^\s()]+)
-    # 3. Parentheses: \( or \)
-    # 4. Words/terms: [^\s()]+
-    pattern = re.compile(r'("[^"]*"|\'[^\']*\'|[a-zA-Z_]+:(?:"[^"]*"|[^\s()]+)|\(|\)|[^\s()]+)')
-    tokens = pattern.findall(q)
-    if not tokens:
-        return q
-
-    formatted_tokens = []
-    for token in tokens:
-        token = token.strip()
-        if not token:
-            continue
-
-        # Quoted strings or parentheses
-        if token.startswith(('"', "'")) or token in ("(", ")"):
-            formatted_tokens.append(token)
-            continue
-
-        # Boolean keywords
-        if token.upper() in _FTS_KEYWORDS:
-            formatted_tokens.append(token.upper())
-            continue
-
-        # Column filters: app_name:nginx or app_name:"web server"
-        if ":" in token:
-            col, val = token.split(":", 1)
-            if val.startswith(('"', "'")) or not val:
-                formatted_tokens.append(token)
-            elif val.endswith("*"):
-                core = val[:-1]
-                clean_core = core.replace('"', '""')
-                if "." in clean_core:
-                    formatted_tokens.append(f'{col}:"{clean_core}"*')
-                else:
-                    formatted_tokens.append(f"{col}:{clean_core}*")
-            else:
-                clean_val = val.replace('"', '""')
-                if "." in clean_val:
-                    formatted_tokens.append(f'{col}:"{clean_val}"*')
-                else:
-                    formatted_tokens.append(f"{col}:{clean_val}*")
-            continue
-
-        # Regular word token: append wildcard if not already present
-        if token.endswith("*"):
-            core = token[:-1]
-            clean_core = core.replace('"', '""')
-            if "." in clean_core:
-                formatted_tokens.append(f'"{clean_core}"*')
-            else:
-                formatted_tokens.append(f"{clean_core}*")
-        else:
-            clean_token = token.replace('"', '""')
-            if "." in clean_token:
-                formatted_tokens.append(f'"{clean_token}"*')
-            else:
-                formatted_tokens.append(f"{clean_token}*")
-
-    return " ".join(formatted_tokens)
+# Reserved FTS5 syntax operators
+_FTS_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
+# Strict allowlist of searchable columns in logs_fts virtual table
+_FTS_ALLOWED_COLUMNS = {"app_name", "source_alias", "message"}
 
 
 def _escape_fts_tokens(query_str: str) -> str:
@@ -114,10 +40,153 @@ def _escape_fts_tokens(query_str: str) -> str:
     words = q.split()
     tokens = []
     for w in words:
-        clean = w.replace('"', '').replace("'", '').replace('*', '').strip()
+        clean = w.replace('"', '').replace("'", '').replace('*', '').replace('\x00', '').strip()
         if clean:
             tokens.append(f'"{clean}"*')
     return " ".join(tokens)
+
+
+def _format_fts_query(query_str: str) -> str:
+    """
+    Format user query for FTS5 search with prefix matching.
+    - Strict allowlist for valid column prefixes (app_name, source_alias, message) and operators.
+    - If search query contains unbalanced quotes or syntax errors, fall back cleanly
+      to escaped token prefix queries so queries never trigger an unhandled OperationalError.
+    - If user entered quoted phrases (e.g. "exact phrase"), preserve them.
+    - If terms do not end in '*' and are not boolean operators (AND, OR, NOT, NEAR),
+      automatically append '*' for search-as-you-type prefix matching.
+    - If column filters are used (e.g. app_name:nginx), apply wildcard to the value.
+    """
+    q = query_str.strip()
+    if not q:
+        return ""
+
+    # Special FTS5 query syntax: queries starting with '*' trigger unknown special query errors
+    if q.startswith("*"):
+        return _escape_fts_tokens(q)
+
+    # Check for unbalanced double or single quotes
+    if q.count('"') % 2 != 0 or q.count("'") % 2 != 0:
+        return _escape_fts_tokens(q)
+
+    # Check for unbalanced or malformed parentheses
+    depth = 0
+    for char in q:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return _escape_fts_tokens(q)
+    if depth != 0:
+        return _escape_fts_tokens(q)
+
+    pattern = re.compile(r'("[^"]*"|\'[^\']*\'|[a-zA-Z_]+:(?:"[^"]*"|[^\s()]+)|\(|\)|[^\s()]+)')
+    tokens = pattern.findall(q)
+    if not tokens:
+        return _escape_fts_tokens(q)
+
+    formatted_tokens = []
+    for token in tokens:
+        token = token.strip()
+        if not token:
+            continue
+
+        if token.startswith(('"', "'")) or token in ("(", ")"):
+            formatted_tokens.append(token)
+            continue
+
+        if token.upper() in _FTS_OPERATORS:
+            formatted_tokens.append(token.upper())
+            continue
+
+        if ":" in token:
+            col, val = token.split(":", 1)
+            col_lower = col.lower()
+            if col_lower in _FTS_ALLOWED_COLUMNS:
+                if not val or val == "*":
+                    # Incomplete column filter while user is typing (e.g. "app_name:" or "app_name:*")
+                    # Fall back cleanly to escaped token search to prevent FTS5 syntax errors
+                    return _escape_fts_tokens(q)
+                if val.startswith(('"', "'")):
+                    formatted_tokens.append(f"{col_lower}:{val}")
+                elif val.startswith("*"):
+                    clean_val = val.replace('"', '""')
+                    formatted_tokens.append(f'{col_lower}:"{clean_val}"*')
+                elif val.endswith("*"):
+                    core = val[:-1]
+                    clean_core = core.replace('"', '""')
+                    if "." in clean_core:
+                        formatted_tokens.append(f'{col_lower}:"{clean_core}"*')
+                    else:
+                        formatted_tokens.append(f"{col_lower}:{clean_core}*")
+                else:
+                    clean_val = val.replace('"', '""')
+                    if "." in clean_val:
+                        formatted_tokens.append(f'{col_lower}:"{clean_val}"*')
+                    else:
+                        formatted_tokens.append(f"{col_lower}:{clean_val}*")
+                continue
+            else:
+                # Column is not allowlisted - treat as literal token wrapped in quotes
+                clean_token = token.replace('"', '""')
+                if clean_token.endswith("*") and not clean_token.startswith("*"):
+                    formatted_tokens.append(f'"{clean_token[:-1]}"*')
+                else:
+                    formatted_tokens.append(f'"{clean_token}"*')
+                continue
+
+        if token.startswith("*"):
+            clean_token = token.replace('"', '""')
+            formatted_tokens.append(f'"{clean_token}"*')
+        elif token.endswith("*"):
+            core = token[:-1]
+            clean_core = core.replace('"', '""')
+            if "." in clean_core:
+                formatted_tokens.append(f'"{clean_core}"*')
+            else:
+                formatted_tokens.append(f"{clean_core}*")
+        else:
+            clean_token = token.replace('"', '""')
+            if "." in clean_token:
+                formatted_tokens.append(f'"{clean_token}"*')
+            else:
+                formatted_tokens.append(f"{clean_token}*")
+
+    if not formatted_tokens:
+        return _escape_fts_tokens(q)
+
+    # Validate token sequence for FTS5 syntax correctness
+    non_parens = [t for t in formatted_tokens if t not in ("(", ")")]
+    if not non_parens:
+        return _escape_fts_tokens(q)
+
+    # First and last non-paren tokens cannot be operators
+    if non_parens[0] in _FTS_OPERATORS or non_parens[-1] in _FTS_OPERATORS:
+        return _escape_fts_tokens(q)
+
+    for i in range(len(formatted_tokens) - 1):
+        t1, t2 = formatted_tokens[i], formatted_tokens[i + 1]
+        # Consecutive operators
+        if t1 in _FTS_OPERATORS and t2 in _FTS_OPERATORS:
+            return _escape_fts_tokens(q)
+        # Operator immediately after '('
+        if t1 == "(" and t2 in _FTS_OPERATORS:
+            return _escape_fts_tokens(q)
+        # Operator immediately before ')'
+        if t1 in _FTS_OPERATORS and t2 == ")":
+            return _escape_fts_tokens(q)
+        # Empty parens
+        if t1 == "(" and t2 == ")":
+            return _escape_fts_tokens(q)
+        # Term directly before '(' without operator
+        if t1 not in _FTS_OPERATORS and t1 != "(" and t2 == "(":
+            return _escape_fts_tokens(q)
+        # Term directly after ')' without operator
+        if t1 == ")" and t2 not in _FTS_OPERATORS and t2 != ")":
+            return _escape_fts_tokens(q)
+
+    return " ".join(formatted_tokens)
 
 
 def _parse_multi_values(values: Optional[list[str]]) -> list[str]:
@@ -181,10 +250,13 @@ async def list_logs(
         from_table = "logs"
 
         if is_fts:
-            from_table = "logs JOIN logs_fts ON logs.id = logs_fts.rowid"
             fts_term = _format_fts_query(query)
-            where_clauses.append("logs_fts MATCH :fts_term")
-            params["fts_term"] = fts_term
+            if not fts_term.strip():
+                where_clauses.append("0")
+            else:
+                from_table = "logs JOIN logs_fts ON logs.id = logs_fts.rowid"
+                where_clauses.append("logs_fts MATCH :fts_term")
+                params["fts_term"] = fts_term
 
         parsed_sources = _parse_multi_values(source)
         if parsed_sources:
@@ -237,15 +309,20 @@ async def list_logs(
         except sqlite3.OperationalError as e:
             if is_fts:
                 logger.info(f"FTS5 query '{params.get('fts_term')}' failed ({e}), falling back to escaped token search.")
-                params["fts_term"] = _escape_fts_tokens(query)
-                try:
-                    cursor.execute(count_sql, params)
-                    total = cursor.fetchone()[0]
-                    cursor.execute(select_sql, params)
-                    rows = cursor.fetchall()
-                except sqlite3.OperationalError:
+                fallback_term = _escape_fts_tokens(query)
+                if not fallback_term.strip():
                     total = 0
                     rows = []
+                else:
+                    params["fts_term"] = fallback_term
+                    try:
+                        cursor.execute(count_sql, params)
+                        total = cursor.fetchone()[0]
+                        cursor.execute(select_sql, params)
+                        rows = cursor.fetchall()
+                    except sqlite3.OperationalError:
+                        total = 0
+                        rows = []
             else:
                 raise
 
@@ -394,34 +471,27 @@ async def get_log_facets(
         )
         apps_res = [r[0] for r in cursor.fetchall()]
 
-        # 4. Distinct (source_alias, app_name, source_ip) pairs via 2-column skip-scan
+        # 4. Distinct (source_alias, app_name, source_ip) pairs via covering index skip-scan
         cursor.execute(
             """
-            WITH RECURSIVE cte(s, a) AS (
-                SELECT
-                    (SELECT MIN(source_alias) FROM logs WHERE source_alias != '' AND app_name != ''),
-                    (SELECT MIN(app_name) FROM logs WHERE source_alias = (SELECT MIN(source_alias) FROM logs WHERE source_alias != '' AND app_name != '') AND app_name != '')
+            WITH RECURSIVE cte(s, a, ip) AS (
+                SELECT s.source_alias, s.app_name, s.source_ip
+                FROM (
+                    SELECT source_alias, app_name, source_ip
+                    FROM logs
+                    WHERE source_alias != '' AND app_name != ''
+                    ORDER BY source_alias ASC, app_name ASC
+                    LIMIT 1
+                ) s
                 UNION ALL
-                SELECT
-                    CASE
-                        WHEN (SELECT MIN(app_name) FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '') IS NOT NULL
-                        THEN cte.s
-                        ELSE (SELECT MIN(source_alias) FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '')
-                    END,
-                    CASE
-                        WHEN (SELECT MIN(app_name) FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '') IS NOT NULL
-                        THEN (SELECT MIN(app_name) FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '')
-                        ELSE (SELECT MIN(app_name) FROM logs WHERE source_alias = (SELECT MIN(source_alias) FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '') AND app_name != '')
-                    END
+                SELECT nxt.source_alias, nxt.app_name, nxt.source_ip
                 FROM cte
-                WHERE cte.s IS NOT NULL
+                JOIN logs nxt ON nxt.id = COALESCE(
+                    (SELECT id FROM logs WHERE source_alias = cte.s AND app_name > cte.a AND app_name != '' ORDER BY app_name ASC LIMIT 1),
+                    (SELECT id FROM logs WHERE source_alias > cte.s AND source_alias != '' AND app_name != '' ORDER BY source_alias ASC, app_name ASC LIMIT 1)
+                )
             )
-            SELECT
-                s AS source_alias,
-                a AS app_name,
-                (SELECT source_ip FROM logs WHERE source_alias = cte.s AND app_name = cte.a LIMIT 1) AS source_ip
-            FROM cte
-            WHERE s IS NOT NULL;
+            SELECT s AS source_alias, a AS app_name, ip AS source_ip FROM cte;
             """
         )
         pairs = cursor.fetchall()
