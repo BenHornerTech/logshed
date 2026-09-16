@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Documentation & Architecture Alignment**: Aligned technical specifications, LLM instructions, environment configuration template, and README with the v1.1.0 application architecture (batch flusher 50ms debounce window, complete API contracts, FTS5 facet skip-scan indexes, CSRF protection, AI request rate limits, and expanded runtime settings).
+
 ## [1.1.0-beta.4] - 2026-09-15
 
 ### Added

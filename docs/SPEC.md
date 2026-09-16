@@ -3,26 +3,30 @@
 ## 1. System Architecture & Process Model
 Single Docker container running Python 3.12 (`asyncio`) + FastAPI backend serving a pre-built React SPA, with background ingestion workers managed under isolated supervisors.
 
-- **Process Boundaries:** Main thread runs `uvicorn` and supervised background tasks (`SyslogServer`, `DockerTailer`, `QueueConsumer`, `PruneWorker`).  SQLite operations must use stdlib `sqlite3` and offload synchronous queries via `asyncio.to_thread()` (per AGENTS.md, `aiosqlite` is not used).
+- **Process Boundaries:** Main thread runs `uvicorn` and supervised background tasks (`SyslogServer`, `DockerTailer`, `QueueConsumer`, `PruneWorker`, `StorageMetricsWorker`, `ModelRefreshWorker`).  SQLite operations must use stdlib `sqlite3` and offload synchronous queries via `asyncio.to_thread()` (per AGENTS.md, `aiosqlite` is not used).
 - **Failure Isolation:** Worker exceptions must be caught, logged, and restarted with exponential backoff without crashing the event loop.
 - **Security & Privileges:** Container starts as root to allow `entrypoint.sh` to configure permissions. It reads `PUID` and `PGID` environment variables (defaulting to 1000:1000), maps the `appuser` to match, dynamically detects `/var/run/docker.sock` GID and adds the user to that group, changes ownership of `/data`, and drops privileges via `gosu appuser`.
 - **Docker Endpoint:** Connects via `DOCKER_HOST` environment variable (`unix:///var/run/docker.sock` or `tcp://proxy:2375` for `tecnativa/docker-socket-proxy`).
 
 ### 1.1 Environment Variables vs. Runtime Settings
-Only the following are true environment variables, supplied at container start and never stored in the database:
+The following environment variables are supplied at container start and never stored in the database:
 - `DOCKER_HOST` - Docker endpoint (socket path or `tcp://` proxy address, e.g. `unix:///var/run/docker.sock` or `tcp://192.168.1.50:2375`). Defaults to `unix:///var/run/docker.sock` if unset. Not exposed as an Unraid template `Config` entry (see §8.2) - the socket path is fixed by the `/var/run/docker.sock` volume mount; only set `DOCKER_HOST` explicitly when using a `tcp://` socket-proxy instead of a direct mount.
 - `DOCKER_SOURCE_ALIAS` - Source attribution alias for Docker logs ingested via `DOCKER_HOST` (defaults to `docker` if unset).
 - `DOCKER_EXCLUDE_CONTAINERS` - Optional comma-separated list of container names or IDs to exclude from log tailing (e.g. `logshed,custom_redis`).
-- `TZ` - container timezone.
-- `PORT` - web/API port (defaults to `8080` if unset).
+- `ENABLE_DOCKER` - Optional boolean (`true`/`false`, defaults to `true`) to enable or disable Docker log collection.
+- `TZ` - Container timezone.
+- `PORT` - Web/API port (defaults to `8080` if unset).
 - `SYSLOG_PORT` - Syslog listening port for UDP and TCP (defaults to `1514` if unset).
-- `PUID` and `PGID` - user and group IDs for the application to run as (defaults to `1000` if unset).
-- `LOGSHED_SECRET_KEY` - optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
-- `COOKIE_SECURE` - optional boolean (`true`/`false`, defaults to `false`). When `false` (the default), session cookies are issued without the `Secure` flag to allow direct HTTP access over local IP addresses in homelabs, or automatically detects HTTPS via `X-Forwarded-Proto` header or request scheme. Set to `true` when running behind an SSL-terminating reverse proxy that does not send `X-Forwarded-Proto`.
+- `PUID` and `PGID` - User and group IDs for the application to run as (defaults to `1000` if unset).
+- `LOGSHED_SECRET_KEY` - Optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
+- `LOGSHED_INTERNAL_LOG_LEVEL` - Optional minimum severity level for LogShed internal diagnostic logs captured into SQLite (defaults to `WARNING`). Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`, or `DISABLED`.
+- `COOKIE_SECURE` - Optional boolean (`true`/`false`, defaults to `false`). When `false` (the default), session cookies are issued without the `Secure` flag to allow direct HTTP access over local IP addresses in homelabs, or automatically detects HTTPS via `X-Forwarded-Proto` header or request scheme. Set to `true` when running behind an SSL-terminating reverse proxy that does not send `X-Forwarded-Proto`.
+- `TRUSTED_PROXIES` - Optional comma-separated list of trusted reverse proxy IPs or CIDR blocks (e.g. `172.16.0.0/12, 10.0.0.1`) used for client IP extraction and brute-force login rate limiting. `TRUST_DOCKER_PROXIES=true` can also be used to automatically trust standard Docker bridge subnets (`172.16.0.0/12`).
 - `MAX_RETENTION_DAYS` - Optional maximum log retention period in days (defaults to `30`, minimum `1`). Caps the retention period selectable in the UI. Advanced users can override this to retain logs for longer periods.
+- `LOGSHED_AI_TIMEOUT` - Optional outbound LLM API request timeout in seconds (defaults to `45.0`).
+- `LOGSHED_AI_THINKING_BUDGET` - Optional reasoning token budget for extended thinking models (defaults to `1024`).
 
-
-All other configuration - AI provider, AI API key, AI base URL, AI model, and `retention_days` (default 14 days, up to `MAX_RETENTION_DAYS`) - is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
+All other configuration - AI provider, AI API key, AI base URL, AI model, AI fallback models, custom system prompt, and `retention_days` (default 14 days, up to `MAX_RETENTION_DAYS`) - is **runtime-configurable only**, entered via the Settings UI, encrypted with `cryptography.fernet`, and persisted in the `system_settings` table (see §5, §6). These values must never be read from environment variables or written to `.env.example`.
 
 
 ---
@@ -48,10 +52,12 @@ CREATE TABLE logs (
     raw TEXT NOT NULL
 );
 
--- Relational Indexes for Structured Query Filtering
+-- Relational Indexes for Structured Query Filtering & Loose Index Skip-Scans
 CREATE INDEX idx_logs_time_sev ON logs(timestamp DESC, severity);
 CREATE INDEX idx_logs_app_time ON logs(app_name, timestamp DESC);
 CREATE INDEX idx_logs_src_time ON logs(source_alias, timestamp DESC);
+CREATE INDEX idx_logs_source_ip ON logs(source_ip);
+CREATE INDEX idx_logs_source_app_ip ON logs(source_alias, app_name, source_ip);
 
 -- Full-Text Search Virtual Table (External Content Table)
 CREATE VIRTUAL TABLE logs_fts USING fts5(
@@ -129,6 +135,8 @@ CREATE TABLE system_settings (
     is_encrypted BOOLEAN DEFAULT 0
 );
 
+INSERT OR IGNORE INTO system_settings (key, value, updated_at, is_encrypted)
+VALUES ('retention_days', '14', datetime('now'), 0);
 ```
 
 ### 2.2 Retention Pruning
@@ -165,7 +173,7 @@ Daily task runs iterative batch pruning to prevent WAL expansion and lock conten
   * Docker streams: `stream_key = f"docker:{container_id}"`
   * Flushes buffered lines into a single log entry on a **150ms per-stream timeout** or upon receiving a new RFC-compliant timestamped header for that stream.
 * **Raw Log Storage:** Logs are committed to SQLite in their original unredacted format. Redaction is not applied at ingestion.
-* **Bounded Buffer & Batch Flusher:** `asyncio.Queue(maxsize=10000)`. If saturated, increment atomic `dropped_logs_total` counter. Flusher commits batches to SQLite every 2000ms or when the batch reaches 5000 records. The flusher must aggressively drain pending items using `queue.get_nowait()` during each cycle to maximize throughput and prevent artificial bottlenecks.
+* **Bounded Buffer & Batch Flusher:** `asyncio.Queue(maxsize=10000)`. If saturated, increment atomic `dropped_logs_total` counter. Flusher commits batches to SQLite after a **50ms debounce window** or when the batch reaches 5000 records. The flusher aggressively drains pending items using `queue.get_nowait()` during each cycle to maximize throughput, prevent artificial bottlenecks, and provide low-latency real-time streaming to UI and SSE subscribers.
 
 ---
 
@@ -205,15 +213,17 @@ Unified client supporting Google Gemini (`google-genai` SDK) and OpenAI-compatib
 
 ## 5. Security & Authentication
 
-* **Password Hashing:** `argon2id` via `argon2-cffi` (single library - do not also add `pwdlib`).
+* **Password Hashing:** `argon2id` via `argon2-cffi` (single library - do not also add `pwdlib`). Verification is offloaded to worker threads via `asyncio.to_thread` to keep authentication from blocking the event loop.
 * **First-Run Setup Lockout:** `/api/auth/setup` is only accessible when the `admin_auth` table is empty. If an admin record exists, `/api/auth/setup` immediately returns `403 Forbidden`.
 * **Session Security:** Cryptographically signed, HTTP-only, `SameSite=Lax` session cookies. No JWTs in browser storage.
-* **Rate Limiting:** In-memory sliding window on `/api/auth/login` (5 failed attempts per IP per minute).
+* **CSRF Request Protection:** Mutating API endpoints (`POST`, `PUT`, `DELETE`, `PATCH`) require the custom `X-Requested-With` header to prevent cross-site request forgery.
+* **Rate Limiting:**
+  * In-memory sliding window on `/api/auth/login` (5 failed attempts per IP per minute).
+  * In-memory sliding window on `/api/ai/diagnose` and `/api/ai/diagnose/stream` (10 requests per minute per user/session) to prevent runaway LLM consumption.
 * **Secrets at Rest:** API keys encrypted with `cryptography.fernet`. Master encryption key stored at `/data/.secret_key` (generated automatically on first boot with `0600` permissions).
-* **CLI Password Recovery:** Single-command rescue executable inside container:
+* **CLI Password Recovery:** Single-command rescue executable inside container (accepts `--password` or prompts securely via terminal):
 ```bash
-python -m app.cli reset-admin --password <new_password>
-
+python -m app.cli reset-admin [--password <new_password>]
 ```
 
 
@@ -234,24 +244,27 @@ python -m app.cli reset-admin --password <new_password>
 | `GET` | `/api/logs` | Search & filter logs. Severity filter follows RFC 5424 numeric ordering directly, where lower numbers are more severe (`WHERE severity <= :severity_max`, e.g., `severity_max=3` returns Emergency(0) through Error(3)) | `query`, `severity_max` (0-7), `app_name`, `source`, `from`, `to`, `limit`, `offset` |
 | `GET` | `/api/logs/stream` | Real-time Server-Sent Events (SSE) | `severity_max`, `source`, `app_name` |
 | `GET` | `/api/logs/facets` | Fetch all distinct sources, apps, and their mappings | None |
-| `GET` | `/api/logs/{id}/context` | Fetch surrounding context lines scoped to the same `source_alias` and `app_name` | Query params: `lines=10`, `same_app: bool` |
+| `GET` | `/api/logs/{id}/context` | Fetch surrounding context lines symmetrically around target log. Defaults to host activity (`same_app=false`). When `same_app=true`, restricts to matching application | Query params: `lines=10`, `same_app: bool` (default `false`) |
 | **On-Demand AI Engine** |  |  |  |
-| `POST` | `/api/ai/preview` | Generate redacted preview and token estimate | `{"log_ids": [101, 102]}` |
-| `POST` | `/api/ai/diagnose` | Execute user-confirmed AI diagnosis | `{"log_ids": [101, 102], "user_context": "...", "provider": "gemini|openai", "model": "..."}` |
+| `POST` | `/api/ai/preview` | Generate redacted preview and token estimate | `{"log_ids": [101, 102], "user_context": "...", "prompt_override": "..."}` |
+| `POST` | `/api/ai/diagnose` | Execute user-confirmed AI diagnosis (rate-limited) | `{"log_ids": [101, 102], "user_context": "...", "prompt_override": "...", "system_prompt_override": "...", "provider": "...", "model": "...", "fallback_models": ["..."]}` |
+| `POST` | `/api/ai/diagnose/stream` | Stream live diagnosis stages, failover events, and tokens via SSE | Same payload as `/api/ai/diagnose` |
+| `GET` | `/api/ai/models` | Discover available models from configured or requested provider (cached in SQLite for 24h) | Query params: `provider`, `refresh: bool` |
 | `GET` | `/api/ai/audit` | Fetch historical AI queries & token usage | Query params: `limit`, `offset` |
 | `DELETE` | `/api/ai/audit/{audit_id}` | Delete a single AI audit record | None |
 | `DELETE` | `/api/ai/audit` | Clear all AI audit records | None |
 | **Host Aliases** |  |  |  |
 | `GET` | `/api/aliases` | List IP-to-Host mappings | None |
-| `POST` | `/api/aliases` | Upsert host alias mapping | `{"ip": "...", "alias": "...", "notes": "..."}` |
-| `DELETE` | `/api/aliases/{ip}` | Remove host alias | None |
+| `POST` | `/api/aliases` | Upsert host alias mapping (retroactively updates existing logs) | `{"ip": "...", "alias": "...", "notes": "..."}` |
+| `DELETE` | `/api/aliases/{ip}` | Remove host alias (reverts existing logs to raw IP) | None |
 | **Settings** |  |  |  |
 | `GET` | `/api/settings` | Read application configuration (keys masked) | None |
-| `POST` | `/api/settings` | Update settings (encrypted at rest) | `{"ai_provider": "...", "ai_model": "...", "ai_api_key": "...", "ai_base_url": "...", "retention_days": 14}` |
+| `POST` | `/api/settings` | Update settings (encrypted at rest) | `{"ai_provider": "...", "ai_model": "...", "ai_fallback_models": "...", "ai_api_key": "...", "ai_base_url": "...", "ai_system_prompt": "...", "retention_days": 14, "internal_log_level": "WARNING", "check_for_updates": true}` |
 | **System & Maintenance** |  |  |  |
-| `GET` | `/api/health` | Container healthcheck & queue metrics | Returns DB status, queue depth, dropped log count |
-| `POST` | `/api/maintenance/prune` | Trigger manual retention purge | None |
-| `GET` | `/api/system/storage` | Fetch live disk usage & 30-day history | `{"db_size_bytes": 18247000000, "disk_free_bytes": 450000000000, "disk_total_bytes": 1000000000000, "history": [{"recorded_at": "...", "db_size_bytes": 18247000000, "disk_free_bytes": 450000000000, "disk_total_bytes": 1000000000000, "total_logs_count": 26000000}]}` |
+| `GET` | `/api/health` | Container healthcheck (unauthenticated returns minimal `{"status": "ok"}`; authenticated returns DB status, queue depth, dropped count, ingest rate) | Returns HTTP 503 if database check fails |
+| `POST` | `/api/maintenance/prune` | Trigger manual retention purge, compaction, and metrics snapshot | None |
+| `GET` | `/api/system/storage` | Fetch live disk usage & 30-day history | `{"db_size_bytes": ..., "disk_free_bytes": ..., "disk_total_bytes": ..., "history": [...]}` |
+| `GET` | `/api/system/version` | Read installed version and check GHCR for stable release updates | Query params: `refresh: bool` |
 
 
 ---
@@ -291,19 +304,24 @@ python -m app.cli reset-admin --password <new_password>
   * Markdown-rendered analysis display (Summary, Root Cause, Remediation steps with copyable code/command blocks).
 
 
-* **Host Alias Manager:**
+* **Host Alias Manager (`/aliases`):**
   * Dedicated table to manage IP-to-Hostname mappings (e.g., `192.168.1.1` $\rightarrow$ `OPNsense Firewall`).
   * Quick-add prompts for newly detected, unmapped IP addresses.
 
 
-* **Settings & Audit Panel:**
-  * Encrypted API key management (Google Gemini, OpenAI / custom OpenAI-compatible endpoint like Ollama/vLLM).
-  * **Storage & Retention Dashboard:**
-    * Log retention slider (1–30 days by default, configurable up to MAX_RETENTION_DAYS, default 14 days) with manual `"Purge Expired Logs Now"` trigger.
-    * **Current Storage Card:** Dual-metric display showing active Database Footprint (MB/GB) alongside a visual progress bar for Available Mount Disk Space.
-    * **30-Day Storage Trend Chart:** Compact line/area chart (via `recharts` or lightweight SVG) plotting DB disk footprint and total log volume over the past 30 days.
-    * Real-time optimistic UI update on manual purge showing immediate reclaimed space.
-  * Interactive AI Audit Log table showing historical prompt dispatches, user notes, responses and token consumption.
+* **Storage Management Panel (`/storage`):**
+  * **Current Storage Card:** Dual-metric display showing active Database Footprint (MB/GB) alongside a visual progress bar for Available Mount Disk Space.
+  * **30-Day Storage Trend Chart:** Compact line/area chart (via `recharts`) plotting DB disk footprint and total log volume over the past 30 days.
+  * **Maintenance Actions:** Manual trigger for log purge, FTS5 optimization, and WAL truncation with real-time optimistic UI update.
+
+
+* **Settings & Audit Panel (`/settings`):**
+  * **Navigation & State Protection:** HTML5 History API routing across `/`, `/aliases`, `/storage`, and `/settings` with unsaved changes detection and browser exit guards.
+  * **AI Provider & Model Configuration:** Encrypted API key management (Google Gemini, OpenAI / custom OpenAI-compatible endpoint like Ollama/vLLM), dynamic model discovery with 24-hour cache, multi-model failover configuration, and custom system prompt.
+  * **Storage Retention:** Log retention slider (1 to 30 days by default, configurable up to `MAX_RETENTION_DAYS`, default 14 days) with override indicator when capped by environment variable.
+  * **Internal Log Level:** Dynamic selector for LogShed internal diagnostic logging severity.
+  * **About & Updates:** Card displaying current version, copyright, documentation links, and GHCR stable release update notifications.
+  * **Interactive AI Audit Log:** Historical dispatches, user notes, model responses, token consumption breakdown (in, out, thoughts, total), and single/bulk deletion.
 
 
 
@@ -334,6 +352,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 * Map `/data` to direct cache-pool appdata: `/mnt/cache/appdata/logshed` (avoids Unraid FUSE `shfs` locking/mmap issues on SQLite WAL and prevents spinning up array parity disks).
 * Map host port `1514` (UDP/TCP) to container `1514`.
+* Template defaults to `PUID=99` and `PGID=100` (`nobody:users`) to match standard Unraid share permission conventions. The container `entrypoint.sh` automatically maps these IDs and adjusts `/data` ownership on startup.
 
 ### 8.3 Multi-Host & Remote Docker Deployment Architecture
 

@@ -9,13 +9,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/BenHornerTech/logshed"><img src="https://img.shields.io/badge/version-1.0.0-blue?style=flat-square" alt="Version 1.0.0"></a>
+  <a href="https://github.com/BenHornerTech/logshed"><img src="https://img.shields.io/badge/version-1.1.0--beta.4-blue?style=flat-square" alt="Version 1.1.0-beta.4"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT License"></a>
   <a href="https://github.com/BenHornerTech/logshed/pkgs/container/logshed"><img src="https://img.shields.io/badge/container-ghcr.io-blue?logo=docker&logoColor=white&style=flat-square" alt="GHCR Container"></a>
   <a href="#prerequisites--system-requirements"><img src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blueviolet?style=flat-square" alt="Multi-Arch Support"></a>
   <a href="#built-with"><img src="https://img.shields.io/badge/python-3.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.12"></a>
   <a href="#built-with"><img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI"></a>
-  <a href="#built-with"><img src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React 18"></a>
+  <a href="#built-with"><img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React 19"></a>
   <a href="#built-with"><img src="https://img.shields.io/badge/SQLite-WAL%20%2B%20FTS5-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite FTS5"></a>
 </p>
 
@@ -101,7 +101,7 @@ LogShed was designed and built using AI models from **Google Gemini** and **Anth
 |---|---|
 | **Backend Runtime** | Python 3.12 (`asyncio`), [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/) (single-worker process model) |
 | **Storage & Search** | Standard Library `sqlite3` + `asyncio.to_thread()`, WAL mode, FTS5 external content virtual table |
-| **Frontend UI** | [React 18](https://react.dev/), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/), [@tanstack/react-virtual](https://tanstack.com/virtual), [Recharts](https://recharts.org/), [Lucide React](https://lucide.dev/) |
+| **Frontend UI** | [React 19](https://react.dev/), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/), [@tanstack/react-virtual](https://tanstack.com/virtual), [Recharts](https://recharts.org/), [Lucide React](https://lucide.dev/) |
 | **Collector Integrations** | [HTTPX](https://www.python-httpx.org/) (Docker Engine API over UDS and TCP), Async UDP/TCP Syslog server |
 | **AI Integrations** | Google GenAI SDK (`google-genai`), OpenAI SDK (`openai` compatible with Ollama/vLLM/LocalAI) |
 | **Security & Cryptography** | `argon2-cffi` (password hashing), `cryptography.fernet` (runtime settings encryption) |
@@ -266,6 +266,8 @@ Environment variables are supplied at container startup and control networking, 
 | `DATA_DIR` | Directory for persistent database files. | `/data` | No |
 | `DB_PATH` | Explicit path override for the SQLite database file. | `/data/logs.db` | No |
 | `CORS_ORIGINS` | Comma-separated origins permitted for cross-origin requests (empty in production). | *(empty)* | No |
+| `LOGSHED_AI_TIMEOUT` | Outbound LLM API request timeout in seconds. | `45.0` | No |
+| `LOGSHED_AI_THINKING_BUDGET` | Reasoning token budget for extended thinking models. | `1024` | No |
 
 ---
 
@@ -276,8 +278,12 @@ To protect credentials from leaking into environment dumps or process listings, 
 - **AI Provider**: `Google Gemini` or `OpenAI / Custom OpenAI-Compatible`
 - **AI API Key**: Stored encrypted; masked in the UI
 - **AI Model**: e.g., `gemini-3.7-flash`, `gpt-4o`, or local model tag like `llama3.2`
+- **AI Fallback Models**: Comma-separated secondary models for automatic failover during rate limits or timeouts
 - **Custom AI Base URL**: Optional endpoint for self-hosted LLMs (e.g., `http://192.168.1.50:11434/v1` for Ollama or vLLM)
+- **AI System Prompt**: Editable instructions guiding root-cause analysis role and structure
 - **Active Log Retention**: Slider ranging from 1 to `MAX_RETENTION_DAYS` (default: 14 days)
+- **Internal Log Level**: Runtime dropdown to configure LogShed diagnostic log capture without restart
+- **Automated Update Checks**: Toggle to check GitHub Container Registry for new releases
 - **Host Aliases**: IP-to-name mappings to give readable names to homelab devices
 
 ---
