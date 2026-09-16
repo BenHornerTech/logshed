@@ -74,20 +74,19 @@ LogShed is a compact, self-hosted log hub designed for home labs and personal se
 
 ## Screenshots
 
-| Live Log Stream | Filtered Search & Facets |
+| Live Log Stream | Filtered Search & Quick Filters |
 | :---: | :---: |
-| <a href="assets/logshed-console-view.png"><img src="assets/logshed-console-view.png" width="450" alt="Live Console View"/></a> | <a href="assets/logshed-console-filtered.png"><img src="assets/logshed-console-filtered.png" width="450" alt="Filtered Search View"/></a> |
-| *Main log stream view* | *Fast multi-host and severity search* |
-
-| Log Detail & Raw Metadata | Surrounding Context Inspection |
-| :---: | :---: |
-| <a href="assets/logshed-log-detail.png"><img src="assets/logshed-log-detail.png" width="450" alt="Log Detail"/></a> | <a href="assets/logshed-log-detail-context.png"><img src="assets/logshed-log-detail-context.png" width="450" alt="Surrounding Log Context"/></a> |
-| *Structured fields and raw payload viewer* | *View preceding & subsequent log lines across hosts* |
-
-| Host Alias Manager | AI Root-Cause Analysis |
-| :---: | :---: |
-| <a href="assets/logshed-alias-manager.png"><img src="assets/logshed-alias-manager.png" width="450" alt="Host Alias Manager"/></a> | <a href="assets/logshed-ai-analysis.png"><img src="assets/logshed-ai-analysis.png" width="450" alt="AI Analysis"/></a> |
-| *Friendly hostname mappings for routers and switches* | *AI incident diagnosis with automatic secret redaction* |
+| <a href="assets/logshed-logstream.png"><img src="assets/logshed-logstream.png" width="450" alt="Live Console View"/></a> | <a href="assets/logshed-filter.png"><img src="assets/logshed-filter.png" width="450" alt="Filtered Search View"/></a> |
+| *Real-time streaming console with smooth scrolling and pause controls* | *Quick multi-host, container, severity, and regex search filters* |
+| **Log Detail & Surrounding Context** | **Host Alias Manager** |
+| <a href="assets/logshed-log-detail.png"><img src="assets/logshed-log-detail.png" width="450" alt="Log Detail"/></a> | <a href="assets/logshed-host-aliases.png"><img src="assets/logshed-host-aliases.png" width="450" alt="Host Alias Manager"/></a> |
+| *Structured field inspection, raw payloads, and adjacent log lines* | *Friendly hostname mappings for routers, switches, and bare-metal nodes* |
+| **Targeted AI Investigation** | **AI Root-Cause Diagnosis** |
+| <a href="assets/logshed-ai-ondemand.png"><img src="assets/logshed-ai-ondemand.png" width="450" alt="Targeted AI Investigation"/></a> | <a href="assets/logshed-ai-analysis.png"><img src="assets/logshed-ai-analysis.png" width="450" alt="AI Root-Cause Diagnosis"/></a> |
+| *Select logs, add context, and ask the AI questions with automatic secret masking* | *Get a clear breakdown of what went wrong with step-by-step fix commands* |
+| **AI Provider & Model Settings** | **Mobile Responsive Console** |
+| <a href="assets/logshed-ai-config.png"><img src="assets/logshed-ai-config.png" width="450" alt="AI Provider & Model Settings"/></a> | <a href="assets/logshed-mobile.png"><img src="assets/logshed-mobile.png" height="467" alt="Mobile Responsive Console"/></a> |
+| *Configure Gemini, OpenAI, or local Ollama with token and rate limits* | *Touch-friendly console interface built for monitoring on phones and tablets* |
 
 ---
 
