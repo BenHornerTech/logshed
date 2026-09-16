@@ -3,6 +3,7 @@ import { Search, RotateCcw, Filter, Clock, X, SlidersHorizontal } from 'lucide-r
 import { LogFilterParams } from '../../types.ts';
 import { MultiSelectDropdown } from '../common/MultiSelectDropdown.tsx';
 import { SlideOver } from '../common/SlideOver.tsx';
+import { toLocalDatetimeInputString, fromLocalDatetimeInputString } from '../../utils/formatters.ts';
 
 interface LogSearchBarProps {
   filters: LogFilterParams;
@@ -243,11 +244,11 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
               <span className="text-slate-400 text-[11px]">From:</span>
               <input
                 type="datetime-local"
-                value={filters.from ? filters.from.slice(0, 16) : ''}
+                value={toLocalDatetimeInputString(filters.from)}
                 onChange={(e) =>
                   onFilterChange({
                     ...filters,
-                    from: e.target.value ? new Date(e.target.value).toISOString() : undefined,
+                    from: fromLocalDatetimeInputString(e.target.value),
                   })
                 }
                 className="bg-dark-950 border border-dark-700 rounded px-1.5 py-0.5 text-[11px] text-slate-200 font-mono"
@@ -257,11 +258,11 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
               <span className="text-slate-400 text-[11px]">To:</span>
               <input
                 type="datetime-local"
-                value={filters.to ? filters.to.slice(0, 16) : ''}
+                value={toLocalDatetimeInputString(filters.to)}
                 onChange={(e) =>
                   onFilterChange({
                     ...filters,
-                    to: e.target.value ? new Date(e.target.value).toISOString() : undefined,
+                    to: fromLocalDatetimeInputString(e.target.value),
                   })
                 }
                 className="bg-dark-950 border border-dark-700 rounded px-1.5 py-0.5 text-[11px] text-slate-200 font-mono"
@@ -363,11 +364,11 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
                 <label className="block text-slate-400 text-[11px] mb-1">From:</label>
                 <input
                   type="datetime-local"
-                  value={filters.from ? filters.from.slice(0, 16) : ''}
+                  value={toLocalDatetimeInputString(filters.from)}
                   onChange={(e) =>
                     onFilterChange({
                       ...filters,
-                      from: e.target.value ? new Date(e.target.value).toISOString() : undefined,
+                      from: fromLocalDatetimeInputString(e.target.value),
                     })
                   }
                   className="w-full bg-dark-900 border border-dark-700 rounded px-2 py-1 text-xs text-slate-200 font-mono"
@@ -377,11 +378,11 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
                 <label className="block text-slate-400 text-[11px] mb-1">To:</label>
                 <input
                   type="datetime-local"
-                  value={filters.to ? filters.to.slice(0, 16) : ''}
+                  value={toLocalDatetimeInputString(filters.to)}
                   onChange={(e) =>
                     onFilterChange({
                       ...filters,
-                      to: e.target.value ? new Date(e.target.value).toISOString() : undefined,
+                      to: fromLocalDatetimeInputString(e.target.value),
                     })
                   }
                   className="w-full bg-dark-900 border border-dark-700 rounded px-2 py-1 text-xs text-slate-200 font-mono"

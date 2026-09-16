@@ -71,3 +71,42 @@ export function cleanLogMessageForDisplay(text: string | null | undefined): stri
   return result.length > 0 ? result : stripped;
 }
 
+/**
+ * Formats a UTC ISO datetime string into a local 'YYYY-MM-DDTHH:mm' string
+ * suitable for the value attribute of an HTML5 <input type="datetime-local" />.
+ */
+export function toLocalDatetimeInputString(isoString?: string | null): string {
+  if (!isoString) return '';
+  const date = new Date(isoString);
+  if (isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+/**
+ * Converts a local 'YYYY-MM-DDTHH:mm' string from an HTML5 <input type="datetime-local" />
+ * into a UTC ISO datetime string suitable for backend API log filtering.
+ */
+export function fromLocalDatetimeInputString(localString?: string | null): string | undefined {
+  if (!localString || !localString.trim()) return undefined;
+  const [datePart, timePart] = localString.trim().split('T');
+  if (!datePart || !timePart) return undefined;
+  const [year, month, day] = datePart.split('-').map(Number);
+  const timePieces = timePart.split(':').map(Number);
+  const hours = timePieces[0];
+  const minutes = timePieces[1];
+  if (
+    isNaN(year) || isNaN(month) || isNaN(day) ||
+    isNaN(hours) || isNaN(minutes)
+  ) {
+    return undefined;
+  }
+  const d = new Date(year, month - 1, day, hours, minutes);
+  if (isNaN(d.getTime())) return undefined;
+  return d.toISOString();
+}
+

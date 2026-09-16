@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Custom Time Filter Timezone Alignment**: Formatted datetime-local input values in client-local time instead of UTC slicing, ensuring time values selected in the browser's native picker match the displayed input text across non-UTC client timezones.
 - **Syslog TCP Persistent Connections**: Disabled the TCP inactivity timeout by default (`SYSLOG_TCP_INACTIVITY_TIMEOUT=0`) and enabled TCP keepalive (`SO_KEEPALIVE`) on accepted client sockets to prevent disconnection of persistent log forwarders (e.g. Proxmox rsyslogd) during idle periods.
 - **Syslog TCP Connection Limit**: Increased the default concurrent Syslog TCP connection ceiling from 50 to 250 with configuration via `SYSLOG_MAX_TCP_CONNECTIONS`.
 - **Frontend Package Version**: Synchronized `frontend/package.json` and `frontend/package-lock.json` version numbers with the current release version.

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { stripAnsi, cleanLogMessageForDisplay } from '../utils/formatters.ts';
+import {
+  stripAnsi,
+  cleanLogMessageForDisplay,
+  toLocalDatetimeInputString,
+  fromLocalDatetimeInputString,
+} from '../utils/formatters.ts';
 
 describe('stripAnsi', () => {
   it('handles null, undefined, and empty string gracefully', () => {
@@ -110,6 +115,52 @@ describe('cleanLogMessageForDisplay', () => {
   it('preserves plain log message starting with the word Log when not followed by a colon', () => {
     const input = 'Log file rotated successfully';
     expect(cleanLogMessageForDisplay(input)).toBe(input);
+  });
+});
+
+describe('toLocalDatetimeInputString', () => {
+  it('handles null, undefined, empty string, and invalid date gracefully', () => {
+    expect(toLocalDatetimeInputString(null)).toBe('');
+    expect(toLocalDatetimeInputString(undefined)).toBe('');
+    expect(toLocalDatetimeInputString('')).toBe('');
+    expect(toLocalDatetimeInputString('invalid-date')).toBe('');
+  });
+
+  it('formats an ISO UTC string into local YYYY-MM-DDTHH:mm representation', () => {
+    // Construct a local date at 06:57 on 2026-09-16
+    const localDate = new Date(2026, 8, 16, 6, 57);
+    const isoString = localDate.toISOString();
+    expect(toLocalDatetimeInputString(isoString)).toBe('2026-09-16T06:57');
+  });
+
+  it('pads single-digit months, days, hours, and minutes with leading zeroes', () => {
+    const localDate = new Date(2026, 0, 5, 4, 8);
+    const isoString = localDate.toISOString();
+    expect(toLocalDatetimeInputString(isoString)).toBe('2026-01-05T04:08');
+  });
+});
+
+describe('fromLocalDatetimeInputString', () => {
+  it('handles null, undefined, empty string, and invalid strings gracefully', () => {
+    expect(fromLocalDatetimeInputString(null)).toBeUndefined();
+    expect(fromLocalDatetimeInputString(undefined)).toBeUndefined();
+    expect(fromLocalDatetimeInputString('')).toBeUndefined();
+    expect(fromLocalDatetimeInputString('   ')).toBeUndefined();
+    expect(fromLocalDatetimeInputString('invalid-datetime')).toBeUndefined();
+    expect(fromLocalDatetimeInputString('2026-09-16')).toBeUndefined();
+  });
+
+  it('converts a local YYYY-MM-DDTHH:mm string into a UTC ISO string', () => {
+    const localString = '2026-09-16T06:57';
+    const expectedIso = new Date(2026, 8, 16, 6, 57).toISOString();
+    expect(fromLocalDatetimeInputString(localString)).toBe(expectedIso);
+  });
+
+  it('correctly round-trips with toLocalDatetimeInputString across local time', () => {
+    const localString = '2026-09-16T06:57';
+    const isoString = fromLocalDatetimeInputString(localString);
+    expect(isoString).toBeDefined();
+    expect(toLocalDatetimeInputString(isoString)).toBe(localString);
   });
 });
 
