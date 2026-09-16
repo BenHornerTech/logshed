@@ -250,7 +250,9 @@ Environment variables are supplied at container startup and control networking, 
 | Variable | Description | Default | Required? |
 |---|---|---|:---:|
 | `PORT` | Listening HTTP port for the web dashboard and REST API. | `8080` | No |
-| `SYSLOG_PORT` | Listening port for both UDP and TCP syslog ingestion (1–65535). | `1514` | No |
+| `SYSLOG_PORT` | Listening port for both UDP and TCP syslog ingestion (1-65535). | `1514` | No |
+| `SYSLOG_MAX_TCP_CONNECTIONS` | Maximum concurrent Syslog TCP connections allowed. | `250` | No |
+| `SYSLOG_TCP_INACTIVITY_TIMEOUT` | Syslog TCP inactivity timeout in seconds (`0` disables timeout, keeping connections open indefinitely for persistent forwarders). | `0` | No |
 | `DOCKER_HOST` | Docker daemon endpoint (`unix:///var/run/docker.sock` or `tcp://host:port`). Set to `none` or `disabled` to skip Docker collection. | `unix:///var/run/docker.sock` | No |
 | `DOCKER_SOURCE_ALIAS` | Default source alias assigned to Docker logs in the UI and database. | `docker` | No |
 | `DOCKER_EXCLUDE_CONTAINERS` | Comma-separated list of container names or container IDs to exclude from log tailing. | *(empty)* | No |

@@ -54,6 +54,37 @@ def get_syslog_port() -> int:
         pass
     return 1514
 
+def get_syslog_max_tcp_connections() -> int:
+    """
+    Returns the maximum concurrent Syslog TCP connections allowed.
+    Reads SYSLOG_MAX_TCP_CONNECTIONS environment variable (default: 250).
+    Validates that the value is an integer >= 1, falling back to 250 if unset or invalid.
+    """
+    raw = os.environ.get("SYSLOG_MAX_TCP_CONNECTIONS", "250")
+    try:
+        val = int(raw.strip())
+        if val >= 1:
+            return val
+    except (ValueError, TypeError):
+        pass
+    return 250
+
+def get_syslog_tcp_inactivity_timeout() -> float:
+    """
+    Returns the Syslog TCP inactivity timeout in seconds.
+    Reads SYSLOG_TCP_INACTIVITY_TIMEOUT environment variable (default: 0.0, disabled).
+    Validates that the value is a float >= 0.0, falling back to 0.0 if unset or invalid.
+    A value of 0.0 disables TCP inactivity timeouts, keeping connections open indefinitely.
+    """
+    raw = os.environ.get("SYSLOG_TCP_INACTIVITY_TIMEOUT", "0.0")
+    try:
+        val = float(raw.strip())
+        if val >= 0.0:
+            return val
+    except (ValueError, TypeError):
+        pass
+    return 0.0
+
 def get_docker_host() -> str:
     """Returns the Docker host socket or proxy address."""
     return os.environ.get("DOCKER_HOST", "unix:///var/run/docker.sock")

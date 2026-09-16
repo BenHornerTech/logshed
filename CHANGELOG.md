@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Syslog TCP Persistent Connections**: Disabled the TCP inactivity timeout by default (`SYSLOG_TCP_INACTIVITY_TIMEOUT=0`) and enabled TCP keepalive (`SO_KEEPALIVE`) on accepted client sockets to prevent disconnection of persistent log forwarders (e.g. Proxmox rsyslogd) during idle periods.
+- **Syslog TCP Connection Limit**: Increased the default concurrent Syslog TCP connection ceiling from 50 to 250 with configuration via `SYSLOG_MAX_TCP_CONNECTIONS`.
+- **Frontend Package Version**: Synchronized `frontend/package.json` and `frontend/package-lock.json` version numbers with the current release version.
+
 ### Changed
 - **Documentation & Architecture Alignment**: Aligned technical specifications, LLM instructions, environment configuration template, and README with the v1.1.0 application architecture (batch flusher 50ms debounce window, complete API contracts, FTS5 facet skip-scan indexes, CSRF protection, AI request rate limits, and expanded runtime settings).
 

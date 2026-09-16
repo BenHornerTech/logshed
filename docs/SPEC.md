@@ -17,6 +17,8 @@ The following environment variables are supplied at container start and never st
 - `TZ` - Container timezone.
 - `PORT` - Web/API port (defaults to `8080` if unset).
 - `SYSLOG_PORT` - Syslog listening port for UDP and TCP (defaults to `1514` if unset).
+- `SYSLOG_MAX_TCP_CONNECTIONS` - Optional maximum concurrent Syslog TCP connections (defaults to `250`).
+- `SYSLOG_TCP_INACTIVITY_TIMEOUT` - Optional Syslog TCP inactivity timeout in seconds (defaults to `0`, keeping connections open indefinitely for persistent log forwarders; set to a positive value, e.g. `60`, to disconnect idle clients).
 - `PUID` and `PGID` - User and group IDs for the application to run as (defaults to `1000` if unset).
 - `LOGSHED_SECRET_KEY` - Optional override for the Fernet master key; if unset, one is generated at `/data/.secret_key` on first boot.
 - `LOGSHED_INTERNAL_LOG_LEVEL` - Optional minimum severity level for LogShed internal diagnostic logs captured into SQLite (defaults to `WARNING`). Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`, or `DISABLED`.
@@ -166,7 +168,7 @@ Daily task runs iterative batch pruning to prevent WAL expansion and lock conten
 
 ```
 
-* **Syslog Ingestion:** Async UDP and TCP on port `1514` (configurable via `SYSLOG_PORT`). RFC 3164 and RFC 5424 parsing with RFC 6587 octet-counted and newline-delimited TCP framing. Unparseable messages default to severity 6 (Info) preserving raw content.
+* **Syslog Ingestion:** Async UDP and TCP on port `1514` (configurable via `SYSLOG_PORT`). RFC 3164 and RFC 5424 parsing with RFC 6587 octet-counted and newline-delimited TCP framing. Default TCP connection ceiling is 250 (configurable via `SYSLOG_MAX_TCP_CONNECTIONS`) with TCP keepalive enabled (`SO_KEEPALIVE`). TCP inactivity timeout defaults to disabled (`0.0`, configurable via `SYSLOG_TCP_INACTIVITY_TIMEOUT`) to prevent disconnection of persistent log forwarders during idle periods. Unparseable messages default to severity 6 (Info) preserving raw content.
 * **Docker Ingestion:** Connects via `DOCKER_HOST`. Tails running containers and listens for Docker lifecycle events (`start`/`die`). Sets `source_alias="docker"` (or value of `DOCKER_SOURCE_ALIAS`) and `app_name=container_name`.
 * **Keyed Multiline Assembler:** Buffers continuation lines (e.g., lines starting with whitespace, `\t`, `Caused by:`, `Traceback`) mapped by stream key:
   * Syslog streams: `stream_key = f"{source_ip}:{app_name}"`

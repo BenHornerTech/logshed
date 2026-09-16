@@ -1182,8 +1182,8 @@ class TestSyslogTCPConnectionLimitsAndTimeout:
     """Unit tests for TCP connection limits, inactivity timeouts, and shared dispatch logic."""
 
     def test_constants_and_aliases(self):
-        assert MAX_TCP_CONNECTIONS == 50
-        assert TCP_INACTIVITY_TIMEOUT == 60.0
+        assert MAX_TCP_CONNECTIONS == 250
+        assert TCP_INACTIVITY_TIMEOUT == 0.0
         assert SyslogTCPServerProtocol is SyslogTCPProtocol
 
     @pytest.mark.asyncio
@@ -1344,6 +1344,76 @@ class TestSyslogTCPConnectionLimitsAndTimeout:
         assert item["app_name"] == "my-daemon"
         assert item["source_alias"] == "host01"
         assert item["message"] == "process started successfully"
+
+    @pytest.mark.asyncio
+    async def test_tcp_keepalive_socket_option(self, db_path: Path):
+        """SyslogTCPProtocol sets SO_KEEPALIVE on accepted client socket."""
+        import socket
+        from unittest.mock import MagicMock
+        assembler = KeyedMultilineAssembler()
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(assembler, alias_cache)
+
+        mock_socket = MagicMock()
+        transport = MagicMock()
+        def get_extra_info(name, default=None):
+            if name == "socket":
+                return mock_socket
+            if name == "peername":
+                return ("192.168.1.50", 55555)
+            return default
+        transport.get_extra_info.side_effect = get_extra_info
+
+        proto.connection_made(transport)
+        mock_socket.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        await proto.stop()
+
+    @pytest.mark.asyncio
+    async def test_tcp_inactivity_disabled_by_default(self, db_path: Path):
+        """SyslogTCPProtocol does not schedule an inactivity timer when inactivity_timeout is 0.0."""
+        from unittest.mock import MagicMock
+        assembler = KeyedMultilineAssembler()
+        alias_cache = AliasCache(db_path)
+        proto = SyslogTCPProtocol(assembler, alias_cache, inactivity_timeout=0.0)
+
+        transport = MagicMock()
+        transport.get_extra_info.return_value = ("192.168.1.50", 55555)
+        proto.connection_made(transport)
+
+        assert proto._inactivity_handle is None
+        await asyncio.sleep(0.05)
+        assert not transport.close.called
+        await proto.stop()
+
+    def test_config_syslog_tcp_env_vars(self, monkeypatch):
+        """Config helpers parse SYSLOG_MAX_TCP_CONNECTIONS and SYSLOG_TCP_INACTIVITY_TIMEOUT."""
+        from app.core.config import (
+            get_syslog_max_tcp_connections,
+            get_syslog_tcp_inactivity_timeout,
+        )
+
+        # Default values when env vars are unset
+        monkeypatch.delenv("SYSLOG_MAX_TCP_CONNECTIONS", raising=False)
+        monkeypatch.delenv("SYSLOG_TCP_INACTIVITY_TIMEOUT", raising=False)
+        assert get_syslog_max_tcp_connections() == 250
+        assert get_syslog_tcp_inactivity_timeout() == 0.0
+
+        # Valid custom values
+        monkeypatch.setenv("SYSLOG_MAX_TCP_CONNECTIONS", "500")
+        monkeypatch.setenv("SYSLOG_TCP_INACTIVITY_TIMEOUT", "120.5")
+        assert get_syslog_max_tcp_connections() == 500
+        assert get_syslog_tcp_inactivity_timeout() == 120.5
+
+        # Invalid fallback values
+        monkeypatch.setenv("SYSLOG_MAX_TCP_CONNECTIONS", "0")
+        monkeypatch.setenv("SYSLOG_TCP_INACTIVITY_TIMEOUT", "-10")
+        assert get_syslog_max_tcp_connections() == 250
+        assert get_syslog_tcp_inactivity_timeout() == 0.0
+
+        monkeypatch.setenv("SYSLOG_MAX_TCP_CONNECTIONS", "invalid")
+        monkeypatch.setenv("SYSLOG_TCP_INACTIVITY_TIMEOUT", "not_a_number")
+        assert get_syslog_max_tcp_connections() == 250
+        assert get_syslog_tcp_inactivity_timeout() == 0.0
 
 
 

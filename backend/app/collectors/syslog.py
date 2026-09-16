@@ -7,6 +7,7 @@ import asyncio
 import datetime
 import logging
 import re
+import socket
 import sqlite3
 import threading
 import weakref
@@ -549,8 +550,8 @@ class SyslogUDPProtocol(asyncio.DatagramProtocol):
 
 
 MAX_TCP_BUFFER = 65536  # 64 KB limit to prevent unbounded memory growth / OOM DoS
-MAX_TCP_CONNECTIONS = 50
-TCP_INACTIVITY_TIMEOUT = 60.0
+MAX_TCP_CONNECTIONS = 250
+TCP_INACTIVITY_TIMEOUT = 0.0
 
 
 class SyslogTCPProtocol(asyncio.Protocol):
@@ -629,6 +630,12 @@ class SyslogTCPProtocol(asyncio.Protocol):
     def connection_made(self, transport):
         self.transport = transport
         self.peername = transport.get_extra_info('peername')
+        sock = transport.get_extra_info('socket')
+        if sock is not None:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            except Exception:
+                pass
         if self.reject_on_connect:
             logger.warning(
                 f"Syslog TCP connection limit reached. Rejecting connection from {self.peername}."
