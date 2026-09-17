@@ -3,7 +3,7 @@
 ## 1. System Architecture & Process Model
 Single Docker container running Python 3.12 (`asyncio`) + FastAPI backend serving a pre-built React SPA, with background ingestion workers managed under isolated supervisors.
 
-- **Process Boundaries:** Main thread runs `uvicorn` and supervised background tasks (`SyslogServer`, `DockerTailer`, `QueueConsumer`, `PruneWorker`, `StorageMetricsWorker`, `ModelRefreshWorker`).  SQLite operations must use stdlib `sqlite3` and offload synchronous queries via `asyncio.to_thread()` (per AGENTS.md, `aiosqlite` is not used).
+- **Process Boundaries:** Main thread runs `uvicorn` and supervised background tasks (`SyslogServer`, `DockerTailer`, `QueueConsumer`, `FTSIndexWorker`, `PruneWorker`, `StorageMetricsWorker`, `ModelRefreshWorker`). SQLite operations must use stdlib `sqlite3` and offload synchronous queries via `asyncio.to_thread()` (per AGENTS.md, `aiosqlite` is not used). Thread-local read connection reuse (`get_thread_read_connection` in `backend/app/api/deps.py`) eliminates connection setup overhead across queries in worker threads with defensive rollback guards in `finally` blocks preventing WAL lock leaks.
 - **Failure Isolation:** Worker exceptions must be caught, logged, and restarted with exponential backoff without crashing the event loop.
 - **Security & Privileges:** Container starts as root to allow `entrypoint.sh` to configure permissions. It reads `PUID` and `PGID` environment variables (defaulting to 1000:1000), maps the `appuser` to match, dynamically detects `/var/run/docker.sock` GID and adds the user to that group, changes ownership of `/data`, and drops privileges via `gosu appuser`.
 - **Docker Endpoint:** Connects via `DOCKER_HOST` environment variable (`unix:///var/run/docker.sock` or `tcp://proxy:2375` for `tecnativa/docker-socket-proxy`).
@@ -141,16 +141,103 @@ INSERT OR IGNORE INTO system_settings (key, value, updated_at, is_encrypted)
 VALUES ('retention_days', '14', datetime('now'), 0);
 ```
 
-### 2.2 Retention Pruning
-Daily task runs iterative batch pruning to prevent WAL expansion and lock contention:
-1. Loop batch deletions until no matching rows remain:
-   `DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE timestamp < datetime('now', '-' || :retention_days || ' days') LIMIT 5000);`
-2. Execute FTS5 index compaction:
+### 2.2 Schema Migration v2 (Decoupled Asynchronous FTS5 Indexing)
+Migration v2 upgrades the database schema to `PRAGMA user_version = 2;`:
+
+1. **Drop Synchronous Trigger:**
+   Removes the synchronous `logs_ai` AFTER INSERT trigger to decouple raw ingestion from FTS tokenization and indexing:
+   ```sql
+   DROP TRIGGER IF EXISTS logs_ai;
+   ```
+   This eliminates indexing overhead from the raw ingestion transaction path, boosting write throughput and preventing ingestion stalls during burst traffic.
+
+2. **Durable Index State Tracking:**
+   Creates `fts_index_state` table tracking the maximum log ID indexed into `logs_fts`:
+   ```sql
+   CREATE TABLE IF NOT EXISTS fts_index_state (
+       id INTEGER PRIMARY KEY CHECK (id = 1),
+       last_indexed_id INTEGER NOT NULL DEFAULT 0,
+       updated_at DATETIME NOT NULL
+   );
+
+   INSERT OR IGNORE INTO fts_index_state (id, last_indexed_id, updated_at)
+   VALUES (1, (SELECT COALESCE(MAX(id), 0) FROM logs), datetime('now'));
+   ```
+   For upgraded databases, `last_indexed_id` is initialized to the current `MAX(id)` from `logs`, ensuring historical logs already indexed under v1 are not re-indexed.
+
+3. **Conditional Deletion and Update Triggers:**
+   In SQLite FTS5 external content tables (`content='logs', content_rowid='id'`), issuing an FTS delete record (`INSERT INTO logs_fts(logs_fts, rowid, ...) VALUES('delete', ...)`) against a row ID that has not yet been indexed into `logs_fts` raises fatal error `sqlite3.DatabaseError: database disk image is malformed`.
+   Migration v2 replaces unconditional `logs_ad` and `logs_au` triggers with conditional triggers guarded by `last_indexed_id`:
+   ```sql
+   DROP TRIGGER IF EXISTS logs_ad;
+   CREATE TRIGGER logs_ad AFTER DELETE ON logs
+   WHEN old.id <= (SELECT last_indexed_id FROM fts_index_state WHERE id = 1)
+   BEGIN
+       INSERT INTO logs_fts(logs_fts, rowid, app_name, source_alias, message)
+       VALUES('delete', old.id, old.app_name, old.source_alias, old.message);
+   END;
+
+   DROP TRIGGER IF EXISTS logs_au;
+   CREATE TRIGGER logs_au AFTER UPDATE ON logs
+   WHEN old.id <= (SELECT last_indexed_id FROM fts_index_state WHERE id = 1)
+   BEGIN
+       INSERT INTO logs_fts(logs_fts, rowid, app_name, source_alias, message)
+       VALUES('delete', old.id, old.app_name, old.source_alias, old.message);
+       INSERT INTO logs_fts(rowid, app_name, source_alias, message)
+       VALUES(new.id, new.app_name, new.source_alias, new.message);
+   END;
+   ```
+   These trigger conditions guarantee that deleting or updating unindexed logs never invokes FTS deletion instructions for non-existent FTS records.
+
+### 2.3 Asynchronous FTS5 Indexing Model & Worker Architecture
+- **Supervised Background Task:** `FTSIndexWorker` (`backend/app/services/fts_indexer.py`) runs as a supervised task under `_supervise_worker` in `backend/app/main.py`. Worker failures are isolated, logged, and restarted with exponential backoff.
+- **Decoupled Ingestion Pipeline:** Ingestion tasks (`QueueConsumer`) commit raw log rows directly to the `logs` table without waiting for FTS tokenization.
+- **Catch-Up Latency Target:** Catch-up latency target is <= 1000ms (empirically measured < 250ms).
+- **Single-Statement Bulk Inserts with RETURNING rowid:**
+  ```sql
+  INSERT INTO logs_fts(rowid, app_name, source_alias, message)
+  SELECT id, app_name, source_alias, message FROM logs
+  WHERE id > ? ORDER BY id ASC LIMIT ?
+  RETURNING rowid;
+  ```
+  Using `RETURNING rowid` allows the worker to atomically determine the highest rowid indexed in the batch and update `fts_index_state.last_indexed_id` within the same transaction.
+- **Reactive Wake-Up & Fallback Polling:** `QueueConsumer` triggers `fts_indexer.notify_new_logs()` immediately upon committing a batch of logs to the database, waking up `FTSIndexWorker` via an internal `asyncio.Event` (`_wake_event`). A periodic polling interval (default 0.5s) serves as fallback in case of missed notifications, guaranteeing the <= 1000ms catch-up latency SLA.
+- **Crash Resilience & State Tracking:** `fts_index_state.last_indexed_id` is committed atomically with each FTS insert batch. On worker crash or restart, indexing resumes from `last_indexed_id + 1`, eliminating duplicate or missing FTS rows.
+- **Search Consistency Middleware:** When search queries arrive at `/api/logs?query=...`, middleware triggers `index_pending_logs(db_path)` prior to executing the FTS search query, providing read-your-own-writes consistency.
+- **Retention Coordination:** Retention pruning (`backend/app/services/retention.py`) coordinates with `fts_index_state.last_indexed_id`. During retention pruning (`execute_prune`), pending unindexed logs are indexed first (`index_pending_logs`), and deletions enforce `AND id <= (SELECT COALESCE(last_indexed_id, 0) FROM fts_index_state WHERE id = 1)` to guarantee no unindexed log records are ever purged without being indexed, preventing orphaned FTS records or unindexed log deletion.
+- **Graceful Shutdown Sequencing:** Lifespan shutdown stops log collectors (`SyslogServer`, `DockerTailer`), flushes the multiline assembler, stops `QueueConsumer` (drains queue to DB), then stops `FTSIndexWorker` (flushes all pending unindexed logs to `logs_fts`) before shutting down `PruneWorker` and `StorageMetricsWorker`.
+
+### 2.4 Thread-Local Connection Model & Concurrency
+- **Thread-Local Read Connection Reuse:** In `backend/app/api/deps.py`, synchronous database queries are dispatched to worker threads via `run_db_query(fn, custom_db_path)` using `asyncio.to_thread()`. `get_thread_read_connection(db_path: Path) -> sqlite3.Connection` maintains a thread-local dictionary `_thread_local.connections` keyed by resolved database path, reusing connections across sequential queries on worker threads.
+- **One-Time Pragma Execution:** Pragmas and row factory are configured only once per newly opened thread connection:
+  `PRAGMA journal_mode=WAL;`
+  `PRAGMA synchronous=NORMAL;`
+  `PRAGMA busy_timeout=5000;`
+  `PRAGMA foreign_keys=ON;`
+  `conn.row_factory = sqlite3.Row;`
+- **Defensive Transaction Rollback Guard:** To prevent uncommitted transactions or dangling locks from leaking across thread pool invocations, `run_db_query` wraps query execution with defensive cleanup:
+  ```python
+  try:
+      with conn:
+          return fn(conn)
+  finally:
+      if conn.in_transaction:
+          conn.rollback()
+  ```
+  This rollback guard prevents shared read locks on the WAL index (`-shm`) from blocking write checkpoints, allowing `PRAGMA wal_checkpoint(TRUNCATE)` to complete without contention.
+- **Connection Teardown Hook:** `close_thread_local_connections()` closes all cached connections on the calling thread and clears the dictionary, ensuring clean test fixture teardown and process exit.
+
+### 2.5 Retention Pruning
+Daily task runs iterative batch pruning coordinated with the FTS indexing watermark to prevent WAL expansion, lock contention, and orphaned FTS rows:
+1. Drain unindexed logs via `index_pending_logs(db_path)` to ensure all historical records are searchable prior to purge.
+2. Loop batch deletions until no matching rows remain, guarded by `last_indexed_id`:
+   `DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE timestamp < datetime('now', '-' || :retention_days || ' days') AND id <= (SELECT COALESCE(last_indexed_id, 0) FROM fts_index_state WHERE id = 1) LIMIT 5000);`
+3. Execute FTS5 index compaction:
    `INSERT INTO logs_fts(logs_fts) VALUES('optimize');`
-3. Checkpoint and truncate the WAL:
+4. Checkpoint and truncate the WAL:
    `PRAGMA wal_checkpoint(TRUNCATE);`
 
-### 2.3 Storage Metrics & Disk Monitoring
+### 2.6 Storage Metrics & Disk Monitoring
 - **Sampling Strategy:** Background worker samples metrics hourly and immediately following any manual/automated prune event.
  - Compute total database disk footprint via `os.path.getsize()` across `/data/logs.db`, `/data/logs.db-wal`, and `/data/logs.db-shm`.
  - Read host mount capacity and free space using `shutil.disk_usage("/data")`.
@@ -176,6 +263,7 @@ Daily task runs iterative batch pruning to prevent WAL expansion and lock conten
   * Flushes buffered lines into a single log entry on a **150ms per-stream timeout** or upon receiving a new RFC-compliant timestamped header for that stream.
 * **Raw Log Storage:** Logs are committed to SQLite in their original unredacted format. Redaction is not applied at ingestion.
 * **Bounded Buffer & Batch Flusher:** `asyncio.Queue(maxsize=10000)`. If saturated, increment atomic `dropped_logs_total` counter. Flusher commits batches to SQLite after a **50ms debounce window** or when the batch reaches 5000 records. The flusher aggressively drains pending items using `queue.get_nowait()` during each cycle to maximize throughput, prevent artificial bottlenecks, and provide low-latency real-time streaming to UI and SSE subscribers.
+* **Chunked Batch Inserts with RETURNING id:** In `QueueConsumer._insert_batch`, drained items are partitioned into chunks of <= 500 records to respect SQLite parameter limits (9 columns * 500 = 4,500 parameters << 32,766 limit). Each chunk is inserted using a single multi-row parameterized `INSERT INTO logs (...) VALUES (...), ... RETURNING id` statement. The returned database auto-increment IDs are sequentially mapped to in-memory entries, broadcast to live SSE subscribers (`/api/logs/stream`), and `fts_indexer.notify_new_logs()` is signaled immediately upon transaction commit for sub-second FTS search catch-up.
 
 ---
 

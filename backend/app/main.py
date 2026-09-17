@@ -34,6 +34,7 @@ from app.core.config import (
 from app.core.migrations import run_migrations
 from app.core.pipeline import KeyedMultilineAssembler, QueueConsumer, InternalLogHandler
 from app.core.security import get_or_create_master_key
+from app.services.fts_indexer import FTSIndexWorker
 from app.services.retention import PruneWorker
 from app.services.storage_metrics import StorageMetricsWorker
 from app.version import APP_VERSION
@@ -45,6 +46,7 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 # Module-level worker references for lifespan management
 _queue_consumer: Optional[QueueConsumer] = None
+_fts_worker: Optional[FTSIndexWorker] = None
 _metrics_worker: Optional[StorageMetricsWorker] = None
 _prune_worker: Optional[PruneWorker] = None
 _syslog_server: Optional[SyslogServer] = None
@@ -175,7 +177,7 @@ async def lifespan(app: FastAPI):
     Application lifespan manager.
     Sets up database schema, master encryption keys, and starts background workers.
     """
-    global _queue_consumer, _metrics_worker, _prune_worker, _syslog_server, _docker_tailer, _assembler, _background_tasks
+    global _queue_consumer, _fts_worker, _metrics_worker, _prune_worker, _syslog_server, _docker_tailer, _assembler, _background_tasks
 
     db_path = get_db_path()
     logger.info(f"Setting up LogShed database at {db_path}...")
@@ -187,8 +189,11 @@ async def lifespan(app: FastAPI):
     # 2. Shared KeyedMultilineAssembler for all collectors
     _assembler = KeyedMultilineAssembler()
 
-    # 3. Start QueueConsumer
-    _queue_consumer = QueueConsumer(db_path)
+    # 3. Start FTSIndexWorker and QueueConsumer
+    _fts_worker = FTSIndexWorker(db_path)
+    _background_tasks.append(asyncio.create_task(_supervise_worker(_fts_worker.run, "FTSIndexWorker")))
+
+    _queue_consumer = QueueConsumer(db_path, fts_indexer=_fts_worker)
     _background_tasks.append(asyncio.create_task(_supervise_worker(_queue_consumer.run, "QueueConsumer")))
 
     # 4. Start StorageMetricsWorker
@@ -275,6 +280,16 @@ async def lifespan(app: FastAPI):
             await _assembler.flush_all()
         except Exception as e:
             logger.warning(f"Error flushing multiline assembler: {e}")
+    if _queue_consumer:
+        try:
+            await _queue_consumer.stop()
+        except Exception as e:
+            logger.error(f"Error stopping QueueConsumer: {e}")
+    if _fts_worker:
+        try:
+            await _fts_worker.stop()
+        except Exception as e:
+            logger.error(f"Error stopping FTSIndexWorker: {e}")
     if _prune_worker:
         try:
             await _prune_worker.stop()
@@ -285,11 +300,6 @@ async def lifespan(app: FastAPI):
             await _metrics_worker.stop()
         except Exception as e:
             logger.warning(f"Error stopping StorageMetricsWorker: {e}")
-    if _queue_consumer:
-        try:
-            await _queue_consumer.stop()
-        except Exception as e:
-            logger.error(f"Error stopping QueueConsumer: {e}")
 
     for task in _background_tasks:
         task.cancel()
@@ -323,6 +333,19 @@ def create_app() -> FastAPI:
             status_code=422,
             content={"detail": clean_detail},
         )
+
+    # FTS search consistency middleware: ensures pending unindexed logs are caught up
+    # prior to executing full-text search queries.
+    @app.middleware("http")
+    async def fts_search_consistency(request: Request, call_next):
+        if request.url.path == "/api/logs" and request.query_params.get("query"):
+            db_path = get_db_path()
+            from app.services.fts_indexer import index_pending_logs
+            try:
+                await asyncio.to_thread(index_pending_logs, db_path)
+            except Exception:
+                pass
+        return await call_next(request)
 
     # Security headers middleware
     @app.middleware("http")

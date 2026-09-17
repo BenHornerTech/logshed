@@ -15,13 +15,13 @@
 ## Architecture & Code Standards
 - **Runtime:** Python 3.12 (`asyncio`) + FastAPI + SQLite (WAL mode + FTS5).
 - **Frontend:** React + Vite + Tailwind CSS (bundled to `backend/app/static`).
-- **Process Model:** Single container, **single OS process**, running multiple concurrent `asyncio` tasks (`SyslogServer`, `DockerTailer`, `QueueConsumer`, `PruneWorker`, `StorageMetricsWorker`, `ModelRefreshWorker`) under supervisor isolation. Never run multiple uvicorn/gunicorn worker processes (`--workers 1` only) - the in-memory ingestion queue, rate limiter, and drop counters are process-local and would silently desync across separate OS processes.
+- **Process Model:** Single container, **single OS process**, running multiple concurrent `asyncio` tasks (`SyslogServer`, `DockerTailer`, `QueueConsumer`, `FTSIndexWorker`, `PruneWorker`, `StorageMetricsWorker`, `ModelRefreshWorker`) under supervisor isolation. Never run multiple uvicorn/gunicorn worker processes (`--workers 1` only) - the in-memory ingestion queue, rate limiter, and drop counters are process-local and would silently desync across separate OS processes.
 - **Docker Access:** Respect `DOCKER_HOST` (supports socket or `tecnativa/docker-socket-proxy`).
 - **Security Baseline:**
   * App drops privileges via `gosu` to run as a non-root user defined by `PUID` and `PGID` environment variables (defaults to 1000:1000).
   * On-demand redaction of all sensitive tokens/passwords via `redactor.py` before LLM dispatch.
   * Native Auth: Argon2id password hashing + HTTP-only SameSite=Lax session cookies.
-  * No external database servers; use SQLite migrations via `PRAGMA user_version`.
+  * Database & Migrations: SQLite (WAL mode + FTS5 external content table) versioned via `PRAGMA user_version = 2`. Asynchronous FTS5 indexing decoupled from raw ingestion via supervised `FTSIndexWorker` (target catch-up latency <= 1000ms), durable state tracking in `fts_index_state` (last_indexed_id), conditional triggers guarding against unindexed row deletions, and thread-local read connection reuse via `run_db_query` in `backend/app/api/deps.py`. No external database servers.
 
 ## Workflow Protocol
 1. Consult `docs/SPEC.md` for technical schemas, endpoints, and exact trigger definitions.
@@ -33,4 +33,4 @@
 - **No Heavyweight Tooling:** Strictly forbid data-science or heavy ORM libraries (e.g., `pandas`, `numpy`, `scipy`, `sqlalchemy`) - these are never approved, regardless of `docs/SPEC.md`.
 
 ## Typography & Formatting Guardrails
-- **No Em Dashes:** Never use em dashes (`—`) anywhere in the codebase, UI text, error messages, test descriptions, or documentation markdown files. Always use standard hyphens (` - `) or clean commas/parentheses instead. Avoid fancy curly quotes or typographer symbols in code strings.
+- **No Em Dashes:** Never use em dashes (the character \u2014) anywhere in the codebase, UI text, error messages, test descriptions, or documentation markdown files. Always use standard hyphens (` - `) or clean commas/parentheses instead. Avoid fancy curly quotes or typographer symbols in code strings.

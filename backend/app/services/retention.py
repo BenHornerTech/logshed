@@ -14,7 +14,9 @@ from app.services.storage_metrics import record_metrics, prune_old_metrics
 
 logger = logging.getLogger(__name__)
 
-def execute_prune(db_path: str | Path, retention_days: int = 14) -> dict:
+def execute_prune(
+    db_path: str | Path, retention_days: int = 14, index_pending: bool = True
+) -> dict:
     """
     Executes iterative batch pruning, FTS5 index compaction, WAL checkpointing,
     and updates storage metrics.
@@ -28,15 +30,25 @@ def execute_prune(db_path: str | Path, retention_days: int = 14) -> dict:
     total_deleted = 0
     db_path_obj = Path(db_path)
 
+    if index_pending:
+        from app.services.fts_indexer import index_pending_logs
+        try:
+            index_pending_logs(db_path_obj)
+        except Exception as e:
+            logger.warning(f"Failed to index pending logs prior to prune: {e}")
+
     conn = get_connection(db_path_obj)
     try:
         cursor = conn.cursor()
         
-        # 1. Iterative batch deletion of logs older than retention_days
+        # 1. Iterative batch deletion of logs older than retention_days.
+        # Defense-in-depth: only delete rows that have already been indexed by FTSIndexWorker
+        # to prevent orphaned FTS records or deleting unindexed rows.
         delete_query = """
             DELETE FROM logs WHERE id IN (
                 SELECT id FROM logs 
                 WHERE timestamp < datetime('now', '-' || ? || ' days') 
+                  AND id <= (SELECT COALESCE(last_indexed_id, 0) FROM fts_index_state WHERE id = 1)
                 LIMIT 5000
             )
         """
@@ -102,10 +114,10 @@ def execute_prune(db_path: str | Path, retention_days: int = 14) -> dict:
 
 
 async def execute_prune_async(
-    db_path: str | Path, retention_days: int = 14
+    db_path: str | Path, retention_days: int = 14, index_pending: bool = True
 ) -> dict:
     """Async wrapper executing prune on a thread."""
-    return await asyncio.to_thread(execute_prune, db_path, retention_days)
+    return await asyncio.to_thread(execute_prune, db_path, retention_days, index_pending)
 
 
 

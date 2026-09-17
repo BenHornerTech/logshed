@@ -168,8 +168,50 @@ VALUES ('retention_days', '14', datetime('now'), 0);
 
 
 # Registry of migrations to run. Must be ordered by version ascending.
+def migrate_v2(conn: sqlite3.Connection) -> None:
+    """
+    Execute Migration 2: Decoupled asynchronous FTS5 indexing.
+    - Drop synchronous logs_ai trigger on logs.
+    - Create fts_index_state tracking table.
+    - Initialize last_indexed_id to MAX(id) of existing logs.
+    - Recreate logs_ad and logs_au with WHEN condition guarding against unindexed rows.
+    """
+    logger.info("Running migration v2...")
+    conn.executescript('''
+DROP TRIGGER IF EXISTS logs_ai;
+
+CREATE TABLE IF NOT EXISTS fts_index_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_indexed_id INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL
+);
+
+INSERT OR IGNORE INTO fts_index_state (id, last_indexed_id, updated_at)
+VALUES (1, (SELECT COALESCE(MAX(id), 0) FROM logs), datetime('now'));
+
+DROP TRIGGER IF EXISTS logs_ad;
+CREATE TRIGGER logs_ad AFTER DELETE ON logs
+WHEN old.id <= (SELECT last_indexed_id FROM fts_index_state WHERE id = 1)
+BEGIN
+    INSERT INTO logs_fts(logs_fts, rowid, app_name, source_alias, message)
+    VALUES('delete', old.id, old.app_name, old.source_alias, old.message);
+END;
+
+DROP TRIGGER IF EXISTS logs_au;
+CREATE TRIGGER logs_au AFTER UPDATE ON logs
+WHEN old.id <= (SELECT last_indexed_id FROM fts_index_state WHERE id = 1)
+BEGIN
+    INSERT INTO logs_fts(logs_fts, rowid, app_name, source_alias, message)
+    VALUES('delete', old.id, old.app_name, old.source_alias, old.message);
+    INSERT INTO logs_fts(rowid, app_name, source_alias, message)
+    VALUES (new.id, new.app_name, new.source_alias, new.message);
+END;
+''')
+
+
 MIGRATIONS = [
     (1, migrate_v1),
+    (2, migrate_v2),
 ]
 
 def run_migrations(db_path: Union[str, Path]) -> None:

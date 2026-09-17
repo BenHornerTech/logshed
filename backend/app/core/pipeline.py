@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import time
 import traceback
-from typing import Optional, Union
+from typing import Any, Optional, Union
 from pathlib import Path
 from collections import defaultdict, deque
 
@@ -550,9 +550,15 @@ class QueueConsumer:
     """
     Background task that drains the shared queue and batch-inserts into SQLite.
     """
-    def __init__(self, db_path: str | Path, debounce_seconds: float = 0.05):
+    def __init__(
+        self,
+        db_path: str | Path,
+        debounce_seconds: float = 0.05,
+        fts_indexer: Optional[Any] = None,
+    ):
         self._db_path = Path(db_path)
         self._debounce_seconds = debounce_seconds
+        self._fts_indexer = fts_indexer
         self._started = False
         self._running = False
         self._stopping = False
@@ -561,6 +567,10 @@ class QueueConsumer:
         self._drain_lock = asyncio.Lock()
         self._conn: Optional[sqlite3.Connection] = None
         self._conn_lock = threading.Lock()
+
+    def set_fts_indexer(self, fts_indexer: Any) -> None:
+        """Register FTSIndexWorker instance for immediate post-commit notification."""
+        self._fts_indexer = fts_indexer
 
     def _get_connection(self) -> sqlite3.Connection:
         """Returns or opens a persistent connection configured with WAL and performance PRAGMAs."""
@@ -781,16 +791,9 @@ class QueueConsumer:
         logger.info("QueueConsumer stopped: all pending logs drained and committed.")
 
     def _insert_batch(self, batch: list[dict]) -> None:
-        """Synchronous: insert batch into SQLite in a transaction and assign generated row IDs."""
-        query = '''
-            INSERT INTO logs (
-                timestamp, received_at, source_ip, source_alias,
-                app_name, facility, severity, message, raw
-            ) VALUES (
-                :timestamp, :received_at, :source_ip, :source_alias,
-                :app_name, :facility, :severity, :message, :raw
-            )
-        '''
+        """Synchronous: insert batch into SQLite using chunked multi-row queries and assign generated row IDs."""
+        if not batch:
+            return
 
         conn = self._get_connection()
         utc = datetime.timezone.utc
@@ -839,9 +842,47 @@ class QueueConsumer:
                 except Exception:
                     if entry.get("received_at"):
                         entry["timestamp"] = entry["received_at"]
-                cursor.execute(query, entry)
-                entry["id"] = cursor.lastrowid
+
+            # Chunked multi-row parameterized insert with RETURNING id (chunk size <= 500)
+            chunk_size = 500
+            row_placeholder = "(?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            for i in range(0, len(batch), chunk_size):
+                chunk = batch[i:i + chunk_size]
+                placeholders = ", ".join([row_placeholder] * len(chunk))
+                sql = f"""
+                    INSERT INTO logs (
+                        timestamp, received_at, source_ip, source_alias,
+                        app_name, facility, severity, message, raw
+                    ) VALUES {placeholders} RETURNING id
+                """
+                params = []
+                for entry in chunk:
+                    params.extend([
+                        entry.get("timestamp"),
+                        entry.get("received_at"),
+                        entry.get("source_ip", ""),
+                        entry.get("source_alias", ""),
+                        entry.get("app_name", ""),
+                        entry.get("facility", 1),
+                        entry.get("severity", 6),
+                        entry.get("message", ""),
+                        entry.get("raw", ""),
+                    ])
+                cursor.execute(sql, params)
+                returned_rows = cursor.fetchall()
+                if len(returned_rows) != len(chunk):
+                    raise RuntimeError(
+                        f"Returned ID count ({len(returned_rows)}) does not match chunk size ({len(chunk)})"
+                    )
+                for entry, (row_id,) in zip(chunk, returned_rows):
+                    entry["id"] = row_id
+
             conn.commit()
+            if self._fts_indexer is not None:
+                try:
+                    self._fts_indexer.notify_new_logs()
+                except Exception as e:
+                    logger.warning(f"Failed to notify FTS indexer: {e}")
         except Exception as e:
             try:
                 conn.rollback()
