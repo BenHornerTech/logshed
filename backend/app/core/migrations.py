@@ -170,11 +170,13 @@ VALUES ('retention_days', '14', datetime('now'), 0);
 # Registry of migrations to run. Must be ordered by version ascending.
 def migrate_v2(conn: sqlite3.Connection) -> None:
     """
-    Execute Migration 2: Decoupled asynchronous FTS5 indexing.
+    Execute Migration 2: Decoupled asynchronous FTS5 indexing, drop rules, and saved views.
     - Drop synchronous logs_ai trigger on logs.
     - Create fts_index_state tracking table.
     - Initialize last_indexed_id to MAX(id) of existing logs.
     - Recreate logs_ad and logs_au with WHEN condition guarding against unindexed rows.
+    - Create drop_rules table and idx_drop_rules_enabled index.
+    - Create saved_views table and idx_saved_views_pinned index.
     """
     logger.info("Running migration v2...")
     conn.executescript('''
@@ -206,6 +208,29 @@ BEGIN
     INSERT INTO logs_fts(rowid, app_name, source_alias, message)
     VALUES (new.id, new.app_name, new.source_alias, new.message);
 END;
+
+CREATE TABLE IF NOT EXISTS drop_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_pattern TEXT,
+    app_pattern TEXT,
+    message_pattern TEXT NOT NULL,
+    is_regex BOOLEAN NOT NULL DEFAULT 0,
+    is_enabled BOOLEAN NOT NULL DEFAULT 1,
+    dropped_count INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_drop_rules_enabled ON drop_rules(is_enabled);
+
+CREATE TABLE IF NOT EXISTS saved_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    query_params TEXT NOT NULL,
+    is_pinned BOOLEAN NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_views_pinned ON saved_views(is_pinned, name);
 ''')
 
 

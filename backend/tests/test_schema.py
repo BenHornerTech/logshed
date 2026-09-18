@@ -70,6 +70,8 @@ class TestSchemaIntegrity:
             "admin_auth",
             "system_settings",
             "fts_index_state",
+            "drop_rules",
+            "saved_views",
         }
         assert expected.issubset(tables)
 
@@ -120,6 +122,46 @@ class TestSchemaIntegrity:
             )
         conn.close()
 
+    def test_drop_rules_schema(self, db_path: Path):
+        """drop_rules table should contain expected columns and defaults."""
+        conn = get_connection(db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(drop_rules);")
+        cols = {row[1]: row for row in cursor.fetchall()}
+        conn.close()
+
+        expected = {
+            "id",
+            "source_pattern",
+            "app_pattern",
+            "message_pattern",
+            "is_regex",
+            "is_enabled",
+            "dropped_count",
+            "created_at",
+        }
+        assert expected.issubset(set(cols.keys()))
+        assert cols["message_pattern"][3] == 1  # NOT NULL
+
+    def test_saved_views_schema(self, db_path: Path):
+        """saved_views table should contain expected columns and defaults."""
+        conn = get_connection(db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(saved_views);")
+        cols = {row[1]: row for row in cursor.fetchall()}
+        conn.close()
+
+        expected = {
+            "id",
+            "name",
+            "query_params",
+            "is_pinned",
+            "created_at",
+        }
+        assert expected.issubset(set(cols.keys()))
+        assert cols["name"][3] == 1  # NOT NULL
+        assert cols["query_params"][3] == 1  # NOT NULL
+
     def test_indexes_exist(self, db_path: Path):
         """B-tree indexes should exist."""
         conn = get_connection(db_path)
@@ -137,6 +179,8 @@ class TestSchemaIntegrity:
             "idx_logs_source_ip",
             "idx_logs_source_app_ip",
             "idx_storage_metrics_time",
+            "idx_drop_rules_enabled",
+            "idx_saved_views_pinned",
         }
         assert expected.issubset(indexes)
 

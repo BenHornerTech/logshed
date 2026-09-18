@@ -1,9 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Search, RotateCcw, Filter, Clock, X, SlidersHorizontal } from 'lucide-react';
-import { LogFilterParams } from '../../types.ts';
+import { LogFilterParams, SavedView } from '../../types.ts';
 import { MultiSelectDropdown } from '../common/MultiSelectDropdown.tsx';
 import { SlideOver } from '../common/SlideOver.tsx';
 import { toLocalDatetimeInputString, fromLocalDatetimeInputString } from '../../utils/formatters.ts';
+import { fetchSavedViews, createSavedView, updateSavedView, deleteSavedView } from '../../api/savedViews.ts';
+import { SavedViewsMenu, SaveViewModal } from './SavedViewsMenu.tsx';
 
 interface LogSearchBarProps {
   filters: LogFilterParams;
@@ -12,6 +14,7 @@ interface LogSearchBarProps {
   onReset: () => void;
   availableSources?: string[];
   availableApps?: string[];
+  onApplySavedView?: (filters: LogFilterParams) => void;
 }
 
 export const LogSearchBar: React.FC<LogSearchBarProps> = ({
@@ -21,10 +24,86 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
   onReset,
   availableSources = [],
   availableApps = [],
+  onApplySavedView,
 }) => {
   const [timePreset, setTimePreset] = useState<string>('all');
   const [showCustomTime, setShowCustomTime] = useState<boolean>(false);
   const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState<boolean>(false);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [isViewsLoading, setIsViewsLoading] = useState<boolean>(false);
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState<boolean>(false);
+
+  const loadSavedViews = useCallback(async () => {
+    try {
+      setIsViewsLoading(true);
+      const data = await fetchSavedViews();
+      setSavedViews(data);
+    } catch {
+      // Non-critical background fetch
+    } finally {
+      setIsViewsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSavedViews();
+  }, [loadSavedViews]);
+
+  const handleTogglePin = async (e: React.MouseEvent, view: SavedView) => {
+    e.stopPropagation();
+    try {
+      const updated = await updateSavedView(view.id, { is_pinned: !view.is_pinned });
+      setSavedViews((prev) =>
+        prev
+          .map((v) => (v.id === view.id ? updated : v))
+          .sort((a, b) => (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0) || a.name.localeCompare(b.name))
+      );
+    } catch {
+      // Ignored
+    }
+  };
+
+  const handleDeleteSavedView = async (e: React.MouseEvent, viewId: number) => {
+    e.stopPropagation();
+    try {
+      await deleteSavedView(viewId);
+      setSavedViews((prev) => prev.filter((v) => v.id !== viewId));
+    } catch {
+      // Ignored
+    }
+  };
+
+  const handleSaveViewSubmit = async (name: string, isPinned: boolean) => {
+    const cleanParams: Record<string, any> = {};
+    if (filters.query?.trim()) cleanParams.query = filters.query.trim();
+    if (filters.severity_max !== undefined && filters.severity_max !== null) {
+      cleanParams.severity_max = filters.severity_max;
+    }
+    if (filters.sources && filters.sources.length > 0) {
+      cleanParams.sources = filters.sources;
+    } else if (filters.source) {
+      cleanParams.source = filters.source;
+    }
+    if (filters.apps && filters.apps.length > 0) {
+      cleanParams.apps = filters.apps;
+    } else if (filters.app_name) {
+      cleanParams.app_name = filters.app_name;
+    }
+    if (filters.from) cleanParams.from = filters.from;
+    if (filters.to) cleanParams.to = filters.to;
+
+    const created = await createSavedView({
+      name,
+      query_params: cleanParams,
+      is_pinned: isPinned,
+    });
+
+    setSavedViews((prev) =>
+      [...prev, created].sort(
+        (a, b) => (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0) || a.name.localeCompare(b.name)
+      )
+    );
+  };
 
   // Compute active sources as an array
   const activeSources: string[] = useMemo(() => {
@@ -270,6 +349,23 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
             </div>
           </div>
         )}
+
+        {/* Desktop Saved Views Dropdown */}
+        <SavedViewsMenu
+          variant="desktop"
+          views={savedViews}
+          isLoading={isViewsLoading}
+          onApplyView={(params) => {
+            if (onApplySavedView) onApplySavedView(params);
+            else {
+              onFilterChange(params);
+              onSearch();
+            }
+          }}
+          onTogglePin={handleTogglePin}
+          onDeleteView={handleDeleteSavedView}
+          onOpenSaveModal={() => setIsSaveModalOpen(true)}
+        />
       </div>
 
       {/* Mobile Filter SlideOver Drawer */}
@@ -280,6 +376,24 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
         width="max-w-md"
       >
         <div className="space-y-4 text-xs font-sans">
+          {/* Mobile Saved Views Section */}
+          <SavedViewsMenu
+            variant="mobile"
+            views={savedViews}
+            isLoading={isViewsLoading}
+            onApplyView={(params) => {
+              if (onApplySavedView) onApplySavedView(params);
+              else {
+                onFilterChange(params);
+                onSearch();
+              }
+              setIsMobileDrawerOpen(false);
+            }}
+            onTogglePin={handleTogglePin}
+            onDeleteView={handleDeleteSavedView}
+            onOpenSaveModal={() => setIsSaveModalOpen(true)}
+          />
+
           {/* Host / IP Filter */}
           <div>
             <label className="block text-slate-400 font-medium mb-1.5">Host / IP</label>
@@ -416,6 +530,14 @@ export const LogSearchBar: React.FC<LogSearchBarProps> = ({
           </div>
         </div>
       </SlideOver>
+
+      {/* Save View Modal */}
+      <SaveViewModal
+        isOpen={isSaveModalOpen}
+        onClose={() => setIsSaveModalOpen(false)}
+        currentFilters={filters}
+        onSave={handleSaveViewSubmit}
+      />
     </div>
   );
 };

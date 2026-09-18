@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import ai, aliases, auth, logs, settings, system
+from app.api import ai, aliases, auth, drop_rules, logs, saved_views, settings, system
 from app.api.deps import run_db_query
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
@@ -171,6 +171,24 @@ async def _model_refresh_worker(db_path) -> None:
             await asyncio.sleep(3600)
 
 
+async def _drop_filter_flush_worker() -> None:
+    """
+    Background worker that periodically flushes in-memory drop counts
+    to SQLite every 30 seconds to minimize write contention.
+    """
+    from app.services.drop_filter import get_drop_filter
+
+    while True:
+        try:
+            await asyncio.sleep(30)
+            get_drop_filter().flush_counts()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Error flushing drop counts: {e}")
+            await asyncio.sleep(10)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -185,6 +203,11 @@ async def lifespan(app: FastAPI):
     # 1. Run migrations and set up master key
     await asyncio.to_thread(run_migrations, db_path)
     await asyncio.to_thread(get_or_create_master_key)
+
+    # Initialize in-memory drop filter cache
+    from app.services.drop_filter import init_drop_filter
+    init_drop_filter(db_path)
+    _background_tasks.append(asyncio.create_task(_supervise_worker(_drop_filter_flush_worker, "DropFilterWorker")))
 
     # 2. Shared KeyedMultilineAssembler for all collectors
     _assembler = KeyedMultilineAssembler()
@@ -301,6 +324,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Error stopping StorageMetricsWorker: {e}")
 
+    try:
+        from app.services.drop_filter import get_drop_filter
+        get_drop_filter().flush_counts()
+    except Exception as e:
+        logger.warning(f"Error flushing drop filter counts during shutdown: {e}")
+
     for task in _background_tasks:
         task.cancel()
         try:
@@ -384,6 +413,8 @@ def create_app() -> FastAPI:
     api_router.include_router(logs.router)
     api_router.include_router(settings.router)
     api_router.include_router(aliases.router)
+    api_router.include_router(drop_rules.router)
+    api_router.include_router(saved_views.router)
     api_router.include_router(system.router)
     api_router.include_router(ai.router)
 

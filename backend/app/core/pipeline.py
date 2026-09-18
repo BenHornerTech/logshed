@@ -126,6 +126,17 @@ class InternalLogHandler(logging.Handler):
                 "raw": f"[{now_iso}] [{record.name}] [{record.levelname}] {msg}",
             }
 
+            from app.services.drop_filter import get_drop_filter
+            drop_filter = get_drop_filter()
+            if drop_filter.should_drop(
+                log_entry.get("source_alias"),
+                log_entry.get("source_ip"),
+                log_entry.get("app_name"),
+                log_entry.get("message", ""),
+            ) is not None:
+                increment_dropped_by_filter_count(1)
+                return
+
             try:
                 queue = get_queue()
                 try:
@@ -160,6 +171,8 @@ class InternalLogHandler(logging.Handler):
 _log_queue: Optional[asyncio.Queue] = None
 _dropped_logs_total: int = 0
 _dropped_logs_lock = threading.Lock()
+_dropped_by_filter_total: int = 0
+_dropped_by_filter_lock = threading.Lock()
 _QUEUE_MAXSIZE = 10000
 
 def get_queue() -> asyncio.Queue:
@@ -179,6 +192,17 @@ def get_dropped_count() -> int:
     """Returns the total number of logs dropped due to queue overflow."""
     with _dropped_logs_lock:
         return _dropped_logs_total
+
+def increment_dropped_by_filter_count(amount: int = 1) -> None:
+    """Thread-safe increment of the filtered drop counter."""
+    global _dropped_by_filter_total
+    with _dropped_by_filter_lock:
+        _dropped_by_filter_total += amount
+
+def get_dropped_by_filter_count() -> int:
+    """Returns the total number of logs discarded by drop rules."""
+    with _dropped_by_filter_lock:
+        return _dropped_by_filter_total
 
 
 class IngestionRateTracker:
@@ -530,6 +554,18 @@ class KeyedMultilineAssembler:
             merged_entry['message'] = merged_message
             merged_entry['raw'] = merged_raw
             merged_entry['severity'] = min_severity
+
+        # Check drop rules before enqueuing
+        from app.services.drop_filter import get_drop_filter
+        drop_filter = get_drop_filter()
+        if drop_filter.should_drop(
+            merged_entry.get('source_alias'),
+            merged_entry.get('source_ip'),
+            merged_entry.get('app_name'),
+            merged_entry.get('message', ''),
+        ) is not None:
+            increment_dropped_by_filter_count(1)
+            return
 
         queue = get_queue()
         try:

@@ -22,6 +22,108 @@ import { useMediaQuery } from '../../utils/hooks.ts';
 import { stripAnsi, cleanLogMessageForDisplay } from '../../utils/formatters.ts';
 import { PullTouchHandlers } from '../../utils/usePullToRefresh.ts';
 import { LogRow, ProcessedLogEntry, areLogRowPropsEqual } from './LogRow.tsx';
+import { CreateDropRuleModal } from '../settings/CreateDropRuleModal.tsx';
+
+export function parseFiltersFromUrl(): LogFilterParams {
+  if (typeof window === 'undefined') return {};
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const initial: LogFilterParams = {};
+
+    const q = params.get('q');
+    if (q) initial.query = q;
+
+    const severity = params.get('severity');
+    if (severity !== null && severity !== '') {
+      const parsedSev = parseInt(severity, 10);
+      if (!isNaN(parsedSev) && parsedSev >= 0 && parsedSev <= 7) {
+        initial.severity_max = parsedSev;
+      }
+    }
+
+    const app = params.get('app');
+    if (app) {
+      const apps = app.split(',').map((s) => s.trim()).filter(Boolean);
+      if (apps.length > 1) {
+        initial.apps = apps;
+      } else if (apps.length === 1) {
+        initial.apps = [apps[0]];
+        initial.app_name = apps[0];
+      }
+    }
+
+    const source = params.get('source');
+    if (source) {
+      const sources = source.split(',').map((s) => s.trim()).filter(Boolean);
+      if (sources.length > 1) {
+        initial.sources = sources;
+      } else if (sources.length === 1) {
+        initial.sources = [sources[0]];
+        initial.source = sources[0];
+      }
+    }
+
+    const time = params.get('time');
+    if (time) {
+      initial.from = time;
+    }
+
+    return initial;
+  } catch {
+    return {};
+  }
+}
+
+export function syncFiltersToUrl(filters: LogFilterParams) {
+  if (typeof window === 'undefined') return;
+  try {
+    const params = new URLSearchParams(window.location.search);
+
+    if (filters.query?.trim()) {
+      params.set('q', filters.query.trim());
+    } else {
+      params.delete('q');
+    }
+
+    if (filters.severity_max !== undefined && filters.severity_max !== null) {
+      params.set('severity', String(filters.severity_max));
+    } else {
+      params.delete('severity');
+    }
+
+    const apps = (filters.apps && filters.apps.length > 0)
+      ? filters.apps
+      : (filters.app_name ? (Array.isArray(filters.app_name) ? filters.app_name : [filters.app_name]) : []);
+    if (apps.length > 0) {
+      params.set('app', apps.join(','));
+    } else {
+      params.delete('app');
+    }
+
+    const sources = (filters.sources && filters.sources.length > 0)
+      ? filters.sources
+      : (filters.source ? (Array.isArray(filters.source) ? filters.source : [filters.source]) : []);
+    if (sources.length > 0) {
+      params.set('source', sources.join(','));
+    } else {
+      params.delete('source');
+    }
+
+    if (filters.from) {
+      params.set('time', filters.from);
+    } else {
+      params.delete('time');
+    }
+
+    const newQuery = params.toString();
+    const newUrl = newQuery ? `${window.location.pathname}?${newQuery}` : window.location.pathname;
+    if (window.location.search !== (newQuery ? `?${newQuery}` : '')) {
+      window.history.replaceState(null, '', newUrl);
+    }
+  } catch {
+    // Ignore URL manipulation failures in restricted environments
+  }
+}
 
 function cleanIsoString(ts: string): string {
   let parseable = ts.trim();
@@ -211,13 +313,18 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     }
   }, [clearSelectionSignal]);
   const [activeLogDetail, setActiveLogDetail] = useState<LogEntry | null>(null);
+  const [dropRuleTargetLog, setDropRuleTargetLog] = useState<LogEntry | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   const [hasMoreLogs, setHasMoreLogs] = useState<boolean>(true);
   const historicalOffsetRef = useRef<number>(0);
   const isLoadingMoreRef = useRef<boolean>(false);
-  const [filters, setFilters] = useState<LogFilterParams>({});
+  const [filters, setFilters] = useState<LogFilterParams>(() => parseFiltersFromUrl());
   const [activeAliasesMap, setActiveAliasesMap] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    syncFiltersToUrl(filters);
+  }, [filters]);
 
   // Decoupled facet accumulation states
   const [accumulatedSources, setAccumulatedSources] = useState<string[]>([]);
@@ -521,6 +628,11 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
 
   useEffect(() => {
     loadInitialLogs();
+  }, [loadInitialLogs]);
+
+  const handleApplySavedView = useCallback((newParams: LogFilterParams) => {
+    setFilters(newParams);
+    loadInitialLogs(newParams);
   }, [loadInitialLogs]);
 
   const sourcesKey = useMemo(() => {
@@ -944,7 +1056,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
     <div className="flex flex-col h-full min-h-0 flex-1 bg-dark-950 select-text overflow-hidden">
       {/* Top Filter & Search Controls (Supports Pull-to-Refresh on Mobile) */}
       <div {...(isMobile && pullTouchHandlers ? pullTouchHandlers : {})} className="shrink-0 select-none">
-        {/* Search & Filter Bar */}
+        {/* Search & Filter Bar with Integrated Saved Views */}
         <LogSearchBar
           filters={filters}
           onFilterChange={setFilters}
@@ -952,6 +1064,7 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
           onReset={handleResetFilters}
           availableSources={availableSourcesForSelectedApps}
           availableApps={availableAppsForSelectedHosts}
+          onApplySavedView={handleApplySavedView}
         />
 
         {/* Stream Controls & Filter Pills Bar */}
@@ -1282,7 +1395,24 @@ export const LiveLogStream: React.FC<LiveLogStreamProps> = ({
               )
             : true
         }
+        onCreateDropRule={(targetLog) => {
+          setActiveLogDetail(null);
+          setDropRuleTargetLog(targetLog);
+        }}
       />
+
+      {/* Create Drop Rule Modal */}
+      {dropRuleTargetLog && (
+        <CreateDropRuleModal
+          isOpen={Boolean(dropRuleTargetLog)}
+          onClose={() => setDropRuleTargetLog(null)}
+          initialSource={dropRuleTargetLog.source_ip}
+          initialApp={dropRuleTargetLog.app_name}
+          initialMessage={cleanLogMessageForDisplay(dropRuleTargetLog.message)}
+          availableSources={availableSourcesForSelectedApps}
+          availableApps={availableAppsForSelectedHosts}
+        />
+      )}
     </div>
   );
 };

@@ -8,10 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Ingestion Drop Rules**: In-memory filtering engine evaluating host/source, application/container, and message patterns (substring, regex, or app-wide wildcard `*`) to discard repetitive log chatter before database persistence and FTS5 indexing. Includes in-memory drop counters with periodic SQLite flushing to eliminate disk write contention.
+- **Saved Filter Views & URL Synchronization**: Saved filter views menu on the Console filter bar and mobile filter drawer with pinned view support, 1-tap activation, and bidirectional query parameter synchronization in the browser URL for bookmarking and sharing.
+- **Interactive Rule Tester & Console Quick-Action**: Dry-run pattern tester in Settings and a "Create Drop Rule" shortcut directly within the log detail modal that pre-fills host, application, and message context.
+- **Deletion Safety Net**: Confirmation modal protection for drop rules and saved views to prevent accidental deletion.
 - **Asynchronous FTS5 Indexing Worker**: Decoupled full-text search indexing from the raw log ingestion path into a supervised background task (`FTSIndexWorker`), enabling raw ingestion rates without holding exclusive SQLite write locks during tokenization.
 - **Chunked Batch Ingestion with RETURNING id**: Modernized `QueueConsumer` batch inserts using parameterized multi-row `INSERT INTO logs (...) VALUES (...) RETURNING id` queries to eliminate Python interpreter loops while accurately binding IDs for live SSE streaming.
 - **Thread-Local Read Connection Reuse**: Reusable SQLite read connections for worker threads in `run_db_query`, eliminating ephemeral connection churn and per-request PRAGMA execution overhead.
-- **Database Schema Migration v2**: Upgraded schema to version 2, dropping synchronous `logs_ai` trigger and introducing `fts_index_state` table with guarded deletion triggers to prevent orphaned FTS records.
+- **Database Schema Migration v2**: Upgraded schema to version 2, dropping synchronous `logs_ai` trigger and introducing `fts_index_state`, `drop_rules`, and `saved_views` tables with guarded deletion triggers to prevent orphaned FTS records.
 
 ## [1.1.0] - 2026-09-16
 

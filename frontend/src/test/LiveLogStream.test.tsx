@@ -167,6 +167,7 @@ describe('formatLocalTimestamp Helper (Item #5)', () => {
 
 describe('LiveLogStream Component', () => {
   beforeEach(() => {
+    window.history.replaceState(null, '', '/');
     vi.restoreAllMocks();
     MockEventSource.instances = [];
     vi.spyOn(logsApi, 'fetchLogs').mockResolvedValue({

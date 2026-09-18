@@ -274,4 +274,24 @@ describe('LogDetailModal Component (Items #8, #9, #11)', () => {
     expect(transferredLogs).toHaveLength(4);
     expect(transferredLogs.every((l: LogEntry) => l.source_alias === 'proxmox-01')).toBe(true);
   });
+
+  it('renders Create Drop Rule button and calls callback when clicked', () => {
+    const handleCreateDropRule = vi.fn();
+
+    render(
+      <LogDetailModal
+        log={sampleLog}
+        isOpen={true}
+        onClose={vi.fn()}
+        onExplainWithAi={vi.fn()}
+        onCreateDropRule={handleCreateDropRule}
+      />
+    );
+
+    const dropRuleBtn = screen.getByRole('button', { name: /Create Drop Rule/i });
+    expect(dropRuleBtn).toBeInTheDocument();
+
+    fireEvent.click(dropRuleBtn);
+    expect(handleCreateDropRule).toHaveBeenCalledWith(sampleLog);
+  });
 });

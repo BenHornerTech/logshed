@@ -1,0 +1,261 @@
+"""
+In-memory compiled drop rule filter service for LogShed log ingestion.
+
+Evaluates incoming log records against configured drop rules before SQLite insertion
+and FTS5 indexing. Tracks dropped counts in memory and flushes periodically to SQLite.
+"""
+
+import fnmatch
+import logging
+import re
+import sqlite3
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Union
+
+logger = logging.getLogger(__name__)
+
+
+def match_wildcard(pattern: Optional[str], text: Optional[str]) -> bool:
+    """
+    Case-insensitive wildcard matching supporting '*' and '?'.
+    If no wildcard characters exist in pattern, performs an exact case-insensitive match.
+    """
+    if not pattern or not pattern.strip():
+        return True
+    if not text:
+        return False
+
+    p = pattern.lower().strip()
+    t = text.lower().strip()
+    if "*" in p or "?" in p:
+        return fnmatch.fnmatchcase(t, p)
+    return p == t
+
+
+@dataclass
+class CompiledDropRule:
+    """Compiled drop rule representation with pre-compiled regex."""
+    id: int
+    source_pattern: Optional[str]
+    app_pattern: Optional[str]
+    message_pattern: str
+    is_regex: bool
+    is_enabled: bool
+    compiled_regex: Optional[re.Pattern] = None
+
+    def matches(
+        self,
+        source_alias: Optional[str],
+        source_ip: Optional[str],
+        app_name: Optional[str],
+        message: str,
+    ) -> bool:
+        """Check if incoming log fields match this rule's criteria."""
+        if not self.is_enabled:
+            return False
+
+        # 1. Source matching (matches either source_alias or source_ip)
+        if self.source_pattern and self.source_pattern.strip():
+            matched_source = False
+            if source_alias and match_wildcard(self.source_pattern, source_alias):
+                matched_source = True
+            elif source_ip and match_wildcard(self.source_pattern, source_ip):
+                matched_source = True
+            if not matched_source:
+                return False
+
+        # 2. App name matching
+        if self.app_pattern and self.app_pattern.strip():
+            if not app_name or not match_wildcard(self.app_pattern, app_name):
+                return False
+
+        # 3. Message pattern matching
+        if not self.message_pattern or self.message_pattern.strip() == "*":
+            return True
+
+        if self.is_regex:
+            if self.compiled_regex is None:
+                return False
+            return bool(self.compiled_regex.search(message))
+        else:
+            pattern = self.message_pattern.strip()
+            if "*" in pattern or "?" in pattern:
+                wildcard_pat = pattern.lower()
+                if not wildcard_pat.startswith("*"):
+                    wildcard_pat = f"*{wildcard_pat}"
+                if not wildcard_pat.endswith("*"):
+                    wildcard_pat = f"{wildcard_pat}*"
+                return fnmatch.fnmatchcase(message.lower(), wildcard_pat)
+            return pattern.lower() in message.lower()
+
+
+class DropFilter:
+    """
+    In-memory rule cache and evaluation engine for dropping noise during ingestion.
+    """
+    def __init__(self, db_path: Optional[Union[str, Path]] = None):
+        self.db_path = Path(db_path) if db_path else None
+        self._rules: list[CompiledDropRule] = []
+        self._pending_counts: dict[int, int] = {}
+        self._lock = threading.Lock()
+        if self.db_path:
+            self.reload_rules()
+
+    def should_drop(
+        self,
+        source_alias: Optional[str],
+        source_ip: Optional[str],
+        app_name: Optional[str],
+        message: str,
+    ) -> Optional[int]:
+        """
+        Evaluate if a log entry matches any active drop rule.
+        Returns the matched rule ID if dropped, or None if kept.
+        """
+        with self._lock:
+            rules = self._rules
+        if not rules:
+            return None
+
+        for rule in rules:
+            try:
+                if rule.matches(source_alias, source_ip, app_name, message):
+                    with self._lock:
+                        self._pending_counts[rule.id] = self._pending_counts.get(rule.id, 0) + 1
+                    return rule.id
+            except Exception as e:
+                logger.debug(f"Error evaluating drop rule {rule.id}: {e}")
+                continue
+
+        return None
+
+    def get_pending_count(self, rule_id: int) -> int:
+        """Get accumulated drop count for a specific rule not yet flushed to database."""
+        with self._lock:
+            return self._pending_counts.get(rule_id, 0)
+
+    def get_all_pending_counts(self) -> dict[int, int]:
+        """Get a copy of all pending in-memory drop counts."""
+        with self._lock:
+            return dict(self._pending_counts)
+
+    def reset_rule_count(self, rule_id: int) -> None:
+        """Clear pending in-memory counts for a specific rule."""
+        with self._lock:
+            self._pending_counts.pop(rule_id, None)
+
+    def flush_counts(self, conn: Optional[sqlite3.Connection] = None) -> int:
+        """
+        Flush accumulated drop counts to SQLite.
+        Returns the total count of drops written.
+        """
+        with self._lock:
+            if not self._pending_counts:
+                return 0
+            to_flush = self._pending_counts
+            self._pending_counts = {}
+
+        total_flushed = sum(to_flush.values())
+        if not self.db_path and conn is None:
+            return total_flushed
+
+        def _do_update(c: sqlite3.Connection):
+            for rule_id, count in to_flush.items():
+                c.execute(
+                    "UPDATE drop_rules SET dropped_count = dropped_count + ? WHERE id = ?",
+                    (count, rule_id),
+                )
+            c.commit()
+
+        if conn is not None:
+            _do_update(conn)
+        elif self.db_path:
+            c = sqlite3.connect(str(self.db_path), timeout=5.0)
+            try:
+                _do_update(c)
+            finally:
+                c.close()
+
+        return total_flushed
+
+    def reload_rules(self, conn: Optional[sqlite3.Connection] = None) -> None:
+        """
+        Reload active drop rules from SQLite and compile regex patterns.
+        """
+        if not self.db_path and conn is None:
+            return
+
+        def _load(c: sqlite3.Connection):
+            cur = c.cursor()
+            cur.execute(
+                "SELECT id, source_pattern, app_pattern, message_pattern, is_regex, is_enabled "
+                "FROM drop_rules WHERE is_enabled = 1 ORDER BY id ASC"
+            )
+            return cur.fetchall()
+
+        if conn is not None:
+            rows = _load(conn)
+        elif self.db_path:
+            c = sqlite3.connect(str(self.db_path), timeout=5.0)
+            try:
+                rows = _load(c)
+            finally:
+                c.close()
+        else:
+            rows = []
+
+        compiled: list[CompiledDropRule] = []
+        for r in rows:
+            rule_id = r[0]
+            src_pat = r[1]
+            app_pat = r[2]
+            msg_pat = r[3]
+            is_regex = bool(r[4])
+            is_enabled = bool(r[5])
+
+            compiled_re = None
+            if is_regex:
+                try:
+                    compiled_re = re.compile(msg_pat, re.IGNORECASE)
+                except re.error as e:
+                    logger.warning(f"Drop rule {rule_id} has invalid regex '{msg_pat}': {e}")
+                    continue
+
+            compiled.append(
+                CompiledDropRule(
+                    id=rule_id,
+                    source_pattern=src_pat,
+                    app_pattern=app_pat,
+                    message_pattern=msg_pat,
+                    is_regex=is_regex,
+                    is_enabled=is_enabled,
+                    compiled_regex=compiled_re,
+                )
+            )
+
+        with self._lock:
+            self._rules = compiled
+
+
+# Module-level singleton instance
+_drop_filter: Optional[DropFilter] = None
+_filter_lock = threading.Lock()
+
+
+def get_drop_filter() -> DropFilter:
+    """Return the global DropFilter singleton instance."""
+    global _drop_filter
+    with _filter_lock:
+        if _drop_filter is None:
+            _drop_filter = DropFilter()
+        return _drop_filter
+
+
+def init_drop_filter(db_path: Union[str, Path]) -> DropFilter:
+    """Initialize or update the global DropFilter singleton with database path."""
+    global _drop_filter
+    with _filter_lock:
+        _drop_filter = DropFilter(db_path)
+        return _drop_filter

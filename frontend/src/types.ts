@@ -194,4 +194,78 @@ export interface VersionInfo {
   checked_at?: number | null;
 }
 
+export interface DropRule {
+  id: number;
+  source_pattern?: string | null;
+  app_pattern?: string | null;
+  message_pattern: string;
+  is_regex: boolean;
+  is_enabled: boolean;
+  dropped_count: number;
+  created_at: string;
+}
+
+export interface DropRuleCreate {
+  source_pattern?: string | null;
+  app_pattern?: string | null;
+  message_pattern: string;
+  is_regex?: boolean;
+  is_enabled?: boolean;
+}
+
+export interface DropRuleUpdate {
+  source_pattern?: string | null;
+  app_pattern?: string | null;
+  message_pattern?: string;
+  is_regex?: boolean;
+  is_enabled?: boolean;
+  reset_counter?: boolean;
+}
+
+export interface DropRuleTestRequest {
+  source_pattern?: string | null;
+  app_pattern?: string | null;
+  message_pattern: string;
+  is_regex?: boolean;
+  sample_message: string;
+  sample_source?: string | null;
+  sample_app?: string | null;
+}
+
+export interface DropRuleTestResponse {
+  matched: boolean;
+  error?: string | null;
+}
+
+export interface SavedView {
+  id: number;
+  name: string;
+  query_params: {
+    query?: string;
+    severity_max?: number;
+    source?: string | string[];
+    sources?: string[];
+    app_name?: string | string[];
+    apps?: string[];
+    from?: string;
+    to?: string;
+    [key: string]: any;
+  };
+  is_pinned: boolean;
+  created_at: string;
+}
+
+export interface SavedViewCreate {
+  name: string;
+  query_params: Record<string, any>;
+  is_pinned?: boolean;
+}
+
+export interface SavedViewUpdate {
+  name?: string;
+  query_params?: Record<string, any>;
+  is_pinned?: boolean;
+}
+
+
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Sparkles, Copy, Check, Plus, Edit2, Layers, Terminal } from 'lucide-react';
+import { Sparkles, Copy, Check, Plus, Edit2, Layers, Terminal, FilterX } from 'lucide-react';
 import { LogEntry } from '../../types.ts';
 import { fetchLogContext } from '../../api/logs.ts';
 import { SeverityBadge } from '../common/SeverityBadge.tsx';
@@ -15,6 +15,7 @@ interface LogDetailModalProps {
   onInspectWithContext?: (logs: LogEntry[]) => void;
   onAddAlias?: (ip: string) => void;
   isHostAliased?: boolean;
+  onCreateDropRule?: (log: LogEntry) => void;
 }
 
 export const LogDetailModal: React.FC<LogDetailModalProps> = ({
@@ -25,6 +26,7 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
   onInspectWithContext,
   onAddAlias,
   isHostAliased,
+  onCreateDropRule,
 }) => {
   const hostIsAliased = Boolean(
     isHostAliased ?? (log && log.source_alias && log.source_alias !== log.source_ip)
@@ -133,6 +135,17 @@ export const LogDetailModal: React.FC<LogDetailModalProps> = ({
                   <span>Add Host Alias</span>
                 </button>
               )
+            )}
+
+            {onCreateDropRule && (
+              <button
+                onClick={() => onCreateDropRule(log)}
+                className="flex items-center justify-center gap-1.5 px-2.5 py-1 bg-dark-800 hover:bg-dark-700 text-slate-200 border border-dark-600 rounded transition font-medium cursor-pointer"
+                title="Create an ingestion drop rule for similar logs"
+              >
+                <FilterX className="w-3.5 h-3.5 text-accent-400" />
+                <span>Create Drop Rule</span>
+              </button>
             )}
 
             <button

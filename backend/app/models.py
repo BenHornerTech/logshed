@@ -357,3 +357,83 @@ class AiModelsResponse(BaseModel):
     is_live: bool = True
     error: Optional[str] = None
 
+
+# ---------------------------------------------------------------------------
+# Drop Rules Models
+# ---------------------------------------------------------------------------
+
+class DropRuleCreate(BaseModel):
+    """Payload for creating an ingestion drop rule."""
+    source_pattern: Optional[str] = Field(None, max_length=255, description="Host IP or alias pattern (supports wildcards)")
+    app_pattern: Optional[str] = Field(None, max_length=255, description="Container or application pattern (supports wildcards)")
+    message_pattern: Optional[str] = Field("*", max_length=1000, description="Substring, wildcard, or regular expression match pattern")
+    is_regex: bool = Field(False, description="Whether message_pattern should be evaluated as a regular expression")
+    is_enabled: bool = Field(True, description="Whether the rule is active")
+
+
+class DropRuleUpdate(BaseModel):
+    """Payload for updating an ingestion drop rule."""
+    source_pattern: Optional[str] = Field(None, max_length=255)
+    app_pattern: Optional[str] = Field(None, max_length=255)
+    message_pattern: Optional[str] = Field(None, max_length=1000)
+    is_regex: Optional[bool] = None
+    is_enabled: Optional[bool] = None
+    reset_counter: Optional[bool] = None
+
+
+class DropRuleResponse(BaseModel):
+    """Drop rule response representation."""
+    id: int
+    source_pattern: Optional[str] = None
+    app_pattern: Optional[str] = None
+    message_pattern: str
+    is_regex: bool = False
+    is_enabled: bool = True
+    dropped_count: int = 0
+    created_at: str
+
+
+class DropRuleTestRequest(BaseModel):
+    """Payload for testing candidate drop rule patterns against sample log data."""
+    source_pattern: Optional[str] = Field(None, max_length=255)
+    app_pattern: Optional[str] = Field(None, max_length=255)
+    message_pattern: Optional[str] = Field("*", max_length=1000)
+    is_regex: bool = Field(False)
+    sample_message: str = Field(..., description="Sample message payload to test against")
+    sample_source: Optional[str] = Field(None, description="Sample host alias or IP")
+    sample_app: Optional[str] = Field(None, description="Sample application or container name")
+
+
+class DropRuleTestResponse(BaseModel):
+    """Result of testing a drop rule pattern."""
+    matched: bool
+    error: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Saved Views Models
+# ---------------------------------------------------------------------------
+
+class SavedViewCreate(BaseModel):
+    """Payload for creating a saved search/filter view."""
+    name: str = Field(..., min_length=1, max_length=100, description="Human-readable view name")
+    query_params: dict[str, Any] = Field(..., description="JSON search and filter parameter dictionary")
+    is_pinned: bool = Field(False, description="Whether the view is pinned as a quick chip")
+
+
+class SavedViewUpdate(BaseModel):
+    """Payload for modifying a saved view."""
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    query_params: Optional[dict[str, Any]] = None
+    is_pinned: Optional[bool] = None
+
+
+class SavedViewResponse(BaseModel):
+    """Saved view representation."""
+    id: int
+    name: str
+    query_params: dict[str, Any]
+    is_pinned: bool = False
+    created_at: str
+
+
