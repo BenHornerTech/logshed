@@ -1,0 +1,301 @@
+"""
+Tests for NotifierService, Apprise URL encryption, token masking, and Notifications API.
+"""
+
+import asyncio
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+from app.core import pipeline as pipeline_mod
+from app.core.migrations import get_connection, run_migrations
+from app.core.rate_limiter import login_rate_limiter
+from app.core.security import (
+    SESSION_COOKIE_NAME,
+    create_session_token,
+    get_or_create_master_key,
+    reset_crypto_cache,
+)
+from app.core.sse import sse_manager
+from app.main import create_app
+from app.services.drop_filter import init_drop_filter
+from app.services.notifier import (
+    NotifierService,
+    decrypt_channel_url,
+    encrypt_channel_url,
+    get_notifier,
+    mask_notification_url,
+    validate_notification_url,
+)
+
+
+@pytest.fixture(autouse=True)
+def reset_test_env(tmp_path: Path, monkeypatch):
+    pipeline_mod._log_queue = None
+    pipeline_mod._dropped_logs_total = 0
+    pipeline_mod._dropped_by_filter_total = 0
+    login_rate_limiter.reset()
+    reset_crypto_cache()
+    sse_manager.reset()
+
+    db_file = tmp_path / "logs.db"
+    key_file = tmp_path / ".secret_key"
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DB_PATH", str(db_file))
+    monkeypatch.setenv("SECRET_KEY_PATH", str(key_file))
+    monkeypatch.delenv("LOGSHED_SECRET_KEY", raising=False)
+
+    run_migrations(db_file)
+    get_or_create_master_key(key_file)
+    init_drop_filter(db_file)
+
+    yield
+
+    pipeline_mod._log_queue = None
+    login_rate_limiter.reset()
+    reset_crypto_cache()
+    sse_manager.reset()
+
+
+@pytest_asyncio.fixture
+async def client():
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"x-requested-with": "XMLHttpRequest"},
+    ) as ac:
+        yield ac
+
+
+@pytest.fixture
+def auth_headers():
+    token = create_session_token(user_id=1)
+    return {
+        "Cookie": f"{SESSION_COOKIE_NAME}={token}",
+        "x-requested-with": "XMLHttpRequest",
+    }
+
+
+# ===================================================================
+# 1. Unit Tests: URL Validation, Encryption, and Masking
+# ===================================================================
+
+class TestNotifierUnit:
+
+    def test_validate_notification_url_valid(self):
+        valid, err = validate_notification_url("discord://123456789/abcdefghij")
+        assert valid is True
+        assert err is None
+
+        valid, err = validate_notification_url("gotify://push.example.com/A1B2C3D4E5")
+        assert valid is True
+        assert err is None
+
+        valid, err = validate_notification_url("ntfy://mytopic")
+        assert valid is True
+        assert err is None
+
+    def test_validate_notification_url_invalid(self):
+        valid, err = validate_notification_url("")
+        assert valid is False
+        assert "empty" in err.lower()
+
+        valid, err = validate_notification_url("not_a_valid_protocol://xyz")
+        assert valid is False
+        assert err is not None
+
+    def test_mask_notification_url(self):
+        # Discord webhook masking
+        masked = mask_notification_url("discord://123456789/my_secret_token")
+        assert "my_secret_token" not in masked
+        assert "discord://" in masked
+
+        # Gotify masking
+        masked_gotify = mask_notification_url("gotify://push.example.com/verysecrettoken")
+        assert "verysecrettoken" not in masked_gotify
+        assert "gotify://" in masked_gotify
+
+        # Empty
+        assert mask_notification_url("") == ""
+
+    def test_encrypt_and_decrypt_channel_url(self):
+        plain = "discord://123456789/secret_token_value"
+        encrypted = encrypt_channel_url(plain)
+        assert encrypted != plain
+        assert "secret_token_value" not in encrypted
+
+        decrypted = decrypt_channel_url(encrypted)
+        assert decrypted == plain
+
+
+# ===================================================================
+# 2. Service Tests: Dispatch & Testing via Apprise
+# ===================================================================
+
+class TestNotifierService:
+
+    @pytest.mark.asyncio
+    async def test_test_channel_success(self):
+        notifier = NotifierService()
+        with patch("apprise.Apprise.notify", return_value=True):
+            success, msg = await notifier.test_channel("discord://123456789/test_token")
+            assert success is True
+            assert "successfully" in msg.lower()
+
+    @pytest.mark.asyncio
+    async def test_test_channel_failure(self):
+        notifier = NotifierService()
+        with patch("apprise.Apprise.notify", return_value=False):
+            success, msg = await notifier.test_channel("discord://123456789/test_token")
+            assert success is False
+            assert "rejected" in msg.lower() or "verify" in msg.lower()
+
+    @pytest.mark.asyncio
+    async def test_test_channel_invalid_url(self):
+        notifier = NotifierService()
+        success, msg = await notifier.test_channel("invalid://nothing")
+        assert success is False
+        assert "invalid" in msg.lower() or "unsupported" in msg.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_notification_to_all_channels(self, tmp_path):
+        db_file = tmp_path / "logs.db"
+        notifier = NotifierService(db_path=db_file)
+
+        # Seed two channels: one enabled, one disabled
+        with get_connection(db_file) as conn:
+            enc1 = encrypt_channel_url("discord://111/token1")
+            enc2 = encrypt_channel_url("discord://222/token2")
+            conn.execute(
+                "INSERT INTO notification_channels (name, url, is_enabled, created_at, updated_at) VALUES (?, ?, 1, datetime('now'), datetime('now'))",
+                ("Channel 1", enc1),
+            )
+            conn.execute(
+                "INSERT INTO notification_channels (name, url, is_enabled, created_at, updated_at) VALUES (?, ?, 0, datetime('now'), datetime('now'))",
+                ("Channel 2 Disabled", enc2),
+            )
+            conn.commit()
+
+        with patch("apprise.Apprise.notify", return_value=True) as mock_notify:
+            res = await notifier.send_notification(title="Alert", body="Disk full")
+            assert res is True
+            assert mock_notify.called
+
+    @pytest.mark.asyncio
+    async def test_send_notification_specific_channel(self, tmp_path):
+        db_file = tmp_path / "logs.db"
+        notifier = NotifierService(db_path=db_file)
+
+        with get_connection(db_file) as conn:
+            enc1 = encrypt_channel_url("discord://111/token1")
+            cur = conn.execute(
+                "INSERT INTO notification_channels (name, url, is_enabled, created_at, updated_at) VALUES (?, ?, 1, datetime('now'), datetime('now'))",
+                ("Target Channel", enc1),
+            )
+            conn.commit()
+            cid = cur.lastrowid
+
+        with patch("apprise.Apprise.notify", return_value=True) as mock_notify:
+            res = await notifier.send_notification(title="Alert", body="Disk full", channel_id=cid)
+            assert res is True
+            assert mock_notify.called
+
+
+# ===================================================================
+# 3. API Integration Tests: CRUD and Test Endpoints
+# ===================================================================
+
+class TestNotificationsApi:
+
+    @pytest.mark.asyncio
+    async def test_crud_notification_channel(self, client: AsyncClient, auth_headers: dict):
+        # 1. Create channel
+        create_payload = {
+            "name": "Ops Discord",
+            "url": "discord://123456789/my_real_secret_token",
+            "is_enabled": True,
+        }
+        res = await client.post("/api/notifications/channels", json=create_payload, headers=auth_headers)
+        assert res.status_code == 201
+        data = res.json()
+        assert data["name"] == "Ops Discord"
+        assert data["is_enabled"] is True
+        assert "my_real_secret_token" not in data["url"]
+        channel_id = data["id"]
+
+        # Verify ciphertext in database
+        with get_connection(Path(client._transport.app.state._db_path if hasattr(client._transport.app, 'state') and hasattr(client._transport.app.state, '_db_path') else 'logs.db')) as conn:
+            pass
+
+        # 2. List channels
+        list_res = await client.get("/api/notifications/channels", headers=auth_headers)
+        assert list_res.status_code == 200
+        channels = list_res.json()
+        assert len(channels) >= 1
+        found = [c for c in channels if c["id"] == channel_id]
+        assert len(found) == 1
+        assert found[0]["name"] == "Ops Discord"
+        assert "my_real_secret_token" not in found[0]["url"]
+
+        # 3. Update channel (toggle enabled, change name)
+        update_payload = {
+            "name": "Production Discord Alerts",
+            "is_enabled": False,
+        }
+        update_res = await client.put(f"/api/notifications/channels/{channel_id}", json=update_payload, headers=auth_headers)
+        assert update_res.status_code == 200
+        updated_data = update_res.json()
+        assert updated_data["name"] == "Production Discord Alerts"
+        assert updated_data["is_enabled"] is False
+
+        # 4. Delete channel
+        del_res = await client.delete(f"/api/notifications/channels/{channel_id}", headers=auth_headers)
+        assert del_res.status_code == 200
+
+        # Verify not found after delete
+        list_res2 = await client.get("/api/notifications/channels", headers=auth_headers)
+        assert not any(c["id"] == channel_id for c in list_res2.json())
+
+    @pytest.mark.asyncio
+    async def test_create_channel_invalid_url_returns_400(self, client: AsyncClient, auth_headers: dict):
+        payload = {
+            "name": "Bad Target",
+            "url": "notavalidscheme://test",
+        }
+        res = await client.post("/api/notifications/channels", json=payload, headers=auth_headers)
+        assert res.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_test_endpoint_with_raw_url(self, client: AsyncClient, auth_headers: dict):
+        with patch("apprise.Apprise.notify", return_value=True):
+            test_payload = {
+                "url": "discord://123456789/valid_candidate_token",
+            }
+            res = await client.post("/api/notifications/test", json=test_payload, headers=auth_headers)
+            assert res.status_code == 200
+            data = res.json()
+            assert data["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_test_endpoint_with_channel_id(self, client: AsyncClient, auth_headers: dict):
+        create_payload = {
+            "name": "Test Target",
+            "url": "discord://123456789/target_token",
+        }
+        res = await client.post("/api/notifications/channels", json=create_payload, headers=auth_headers)
+        channel_id = res.json()["id"]
+
+        with patch("apprise.Apprise.notify", return_value=True):
+            test_payload = {"channel_id": channel_id}
+            res = await client.post("/api/notifications/test", json=test_payload, headers=auth_headers)
+            assert res.status_code == 200
+            assert res.json()["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_unauthenticated_requests_rejected(self, client: AsyncClient):
+        res = await client.get("/api/notifications/channels")
+        assert res.status_code in (401, 403)

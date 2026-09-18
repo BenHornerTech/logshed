@@ -437,3 +437,43 @@ class SavedViewResponse(BaseModel):
     created_at: str
 
 
+# ---------------------------------------------------------------------------
+# Notification Channel Models
+# ---------------------------------------------------------------------------
+
+class NotificationChannelCreate(BaseModel):
+    """Payload for creating a new notification channel."""
+    name: str = Field(..., min_length=1, max_length=100, description="Friendly channel name")
+    url: str = Field(..., min_length=5, max_length=2000, description="Apprise-compatible notification target URL")
+    is_enabled: bool = Field(True, description="Whether the channel is active")
+
+
+class NotificationChannelUpdate(BaseModel):
+    """Payload for updating an existing notification channel."""
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    url: Optional[str] = Field(None, min_length=5, max_length=2000)
+    is_enabled: Optional[bool] = None
+
+
+class NotificationChannelResponse(BaseModel):
+    """Masked representation of a notification channel."""
+    id: int
+    name: str
+    url: str
+    is_enabled: bool
+    created_at: str
+    updated_at: str
+
+
+class NotificationTestRequest(BaseModel):
+    """Payload for testing an existing channel or a raw URL before saving."""
+    channel_id: Optional[int] = Field(None, description="Existing channel ID to test")
+    url: Optional[str] = Field(None, description="Raw candidate URL to test before creating")
+
+
+class NotificationTestResponse(BaseModel):
+    """Result of testing a notification target."""
+    success: bool
+    message: str
+
+

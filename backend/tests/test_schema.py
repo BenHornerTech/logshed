@@ -72,6 +72,8 @@ class TestSchemaIntegrity:
             "fts_index_state",
             "drop_rules",
             "saved_views",
+            "notification_channels",
+            "alert_rules",
         }
         assert expected.issubset(tables)
 
@@ -181,8 +183,51 @@ class TestSchemaIntegrity:
             "idx_storage_metrics_time",
             "idx_drop_rules_enabled",
             "idx_saved_views_pinned",
+            "idx_notification_channels_enabled",
+            "idx_alert_rules_enabled",
         }
         assert expected.issubset(indexes)
+
+    def test_notification_channels_schema(self, db_path: Path):
+        """notification_channels table should contain expected columns and constraints."""
+        conn = get_connection(db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(notification_channels);")
+        cols = {row[1]: row for row in cursor.fetchall()}
+        conn.close()
+
+        expected = {"id", "name", "url", "is_enabled", "created_at", "updated_at"}
+        assert expected.issubset(set(cols.keys()))
+        assert cols["name"][3] == 1  # NOT NULL
+        assert cols["url"][3] == 1  # NOT NULL
+
+    def test_alert_rules_schema(self, db_path: Path):
+        """alert_rules table should contain expected columns and constraints."""
+        conn = get_connection(db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(alert_rules);")
+        cols = {row[1]: row for row in cursor.fetchall()}
+        conn.close()
+
+        expected = {
+            "id",
+            "name",
+            "rule_type",
+            "filter_app",
+            "filter_severity",
+            "match_pattern",
+            "threshold_count",
+            "window_seconds",
+            "cooldown_seconds",
+            "ai_enrichment",
+            "is_enabled",
+            "last_triggered_at",
+            "suppress_until",
+            "created_at",
+        }
+        assert expected.issubset(set(cols.keys()))
+        assert cols["name"][3] == 1  # NOT NULL
+        assert cols["rule_type"][3] == 1  # NOT NULL
 
     def test_ai_audit_log_columns(self, db_path: Path):
         """ai_audit_log should include token metrics and system_prompt columns."""

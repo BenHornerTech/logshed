@@ -231,6 +231,36 @@ CREATE TABLE IF NOT EXISTS saved_views (
 );
 
 CREATE INDEX IF NOT EXISTS idx_saved_views_pinned ON saved_views(is_pinned, name);
+
+CREATE TABLE IF NOT EXISTS notification_channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    is_enabled BOOLEAN NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_channels_enabled ON notification_channels(is_enabled);
+
+CREATE TABLE IF NOT EXISTS alert_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    rule_type TEXT NOT NULL,
+    filter_app TEXT,
+    filter_severity INTEGER,
+    match_pattern TEXT,
+    threshold_count INTEGER DEFAULT 1,
+    window_seconds INTEGER DEFAULT 60,
+    cooldown_seconds INTEGER DEFAULT 300,
+    ai_enrichment BOOLEAN DEFAULT 0,
+    is_enabled BOOLEAN NOT NULL DEFAULT 1,
+    last_triggered_at DATETIME,
+    suppress_until DATETIME,
+    created_at DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(is_enabled);
 ''')
 
 

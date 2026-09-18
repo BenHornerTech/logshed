@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import ai, aliases, auth, drop_rules, logs, saved_views, settings, system
+from app.api import ai, aliases, auth, drop_rules, logs, notifications, saved_views, settings, system
 from app.api.deps import run_db_query
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
@@ -415,6 +415,7 @@ def create_app() -> FastAPI:
     api_router.include_router(aliases.router)
     api_router.include_router(drop_rules.router)
     api_router.include_router(saved_views.router)
+    api_router.include_router(notifications.router)
     api_router.include_router(system.router)
     api_router.include_router(ai.router)
 

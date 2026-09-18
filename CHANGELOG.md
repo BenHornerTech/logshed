@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Asynchronous FTS5 Indexing Worker**: Decoupled full-text search indexing from the raw log ingestion path into a supervised background task (`FTSIndexWorker`), enabling raw ingestion rates without holding exclusive SQLite write locks during tokenization.
 - **Chunked Batch Ingestion with RETURNING id**: Modernized `QueueConsumer` batch inserts using parameterized multi-row `INSERT INTO logs (...) VALUES (...) RETURNING id` queries to eliminate Python interpreter loops while accurately binding IDs for live SSE streaming.
 - **Thread-Local Read Connection Reuse**: Reusable SQLite read connections for worker threads in `run_db_query`, eliminating ephemeral connection churn and per-request PRAGMA execution overhead.
-- **Database Schema Migration v2**: Upgraded schema to version 2, dropping synchronous `logs_ai` trigger and introducing `fts_index_state`, `drop_rules`, and `saved_views` tables with guarded deletion triggers to prevent orphaned FTS records.
+- **Universal Notification Targets (Webhooks & Apprise)**: Universal alerting dispatcher supporting 80+ notification services (Discord, Gotify, Telegram, Ntfy, Pushover, Slack, Email) using standard URL formats. Includes URL encryption at rest with the master key, token masking for secure client display, and asynchronous dispatch via `asyncio.to_thread`.
+- **Notification Targets Management & Live Testing**: Dedicated Settings card for managing notification targets, toggling enabled state, testing connectivity with immediate dry-run notifications, and full CRUD API integration.
+- **Database Schema Migration v2 Expansion**: Expanded Migration 2 to introduce `notification_channels` and `alert_rules` tables with covering indexes for alert routing and delivery.
 
 ## [1.1.0] - 2026-09-16
 

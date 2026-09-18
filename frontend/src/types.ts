@@ -267,5 +267,36 @@ export interface SavedViewUpdate {
   is_pinned?: boolean;
 }
 
+export interface NotificationChannel {
+  id: number;
+  name: string;
+  url: string;
+  is_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationChannelCreate {
+  name: string;
+  url: string;
+  is_enabled?: boolean;
+}
+
+export interface NotificationChannelUpdate {
+  name?: string;
+  url?: string;
+  is_enabled?: boolean;
+}
+
+export interface NotificationTestRequest {
+  channel_id?: number;
+  url?: string;
+}
+
+export interface NotificationTestResponse {
+  success: boolean;
+  message: string;
+}
+
 
 

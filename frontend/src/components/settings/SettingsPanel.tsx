@@ -25,6 +25,7 @@ import { changePassword } from '../../api/auth.ts';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT, normalizePrompt, getOrdinalSuffix } from '../../utils/aiPrompt.ts';
 import { DropRulesCard } from './DropRulesCard.tsx';
+import { NotificationsCard } from './NotificationsCard.tsx';
 
 export interface SettingsPanelProps {
   onDirtyChange?: (isDirty: boolean) => void;
@@ -862,6 +863,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
       {/* Ingestion Drop Rules Section */}
       <DropRulesCard />
+
+      {/* Notification Channels & Webhooks Section */}
+      <NotificationsCard />
 
       {/* Admin Password Reset Section */}
       <section className="bg-dark-900 border border-dark-700 rounded-xl p-3.5 sm:p-5 shadow-md space-y-4">
