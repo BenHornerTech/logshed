@@ -210,8 +210,8 @@ describe('StoragePanel Component', () => {
       expect(screen.getByText('AI Root-Cause Audit Log (1)')).toBeInTheDocument();
     });
 
-    // In mobile view, desktop 6-column header "TIMESTAMP" is omitted
-    expect(screen.queryByText('TIMESTAMP')).not.toBeInTheDocument();
+    // In mobile view, desktop 6-column header "Timestamp" is omitted
+    expect(screen.queryByText('Timestamp')).not.toBeInTheDocument();
 
     // Mobile card shows clean summary and model
     expect(screen.getByText('The technitium-sync service completed its sync successfully.')).toBeInTheDocument();

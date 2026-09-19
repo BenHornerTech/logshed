@@ -24,11 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Alert Firing Log & Unified Incident Detail View**: Historical alert record tracking with model attribution, matching event counts, log snippets with quick copy actions, and formatted markdown rendering matching the Historical AI Root-Cause Analysis layout.
 - **Database Schema Migration v2 Expansion**: Expanded Migration 2 to introduce `notification_channels`, `alert_rules`, and `alert_history` tables with covering indexes for alert routing and delivery.
 - **Composite Index on Alert History**: Added `idx_alert_history_rule_time` covering `(rule_id, triggered_at DESC)` in `alert_history` to accelerate rule-specific incident history queries.
+- **Alert Rule Modal Component**: Extracted `AlertRuleModal` to encapsulate alert rule creation and editing form state, validation, and multi-select handling.
+- **Alert Test Dry-Run Modal**: Extracted `AlertTestModal` with signature-aware sample generation (detecting HTTP 401/403, SSH brute-force, sudo escalation, and OOM signatures) and helpful usage hints.
+- **Incident Status Badge Component**: Reusable `IncidentStatusBadge` component for triggered, AI-enriched, and AI-failed status indicators across mobile cards and desktop tables.
+- **Automated AI Redaction Notice**: Informative disclaimer banner displayed beneath active alert rules whenever any configured rule has AI enrichment enabled.
 
 ### Changed
 - **Alerts Tab Layout Alignment**: Standardized container width and header styling in the Alerts tab to match Storage and Settings, including seamless Alert Firing Log table headers.
 - **Alerts Subtab Deep-Linking**: Added unique browser URL routes for Active Rules (`/alerts/rules`), Quick Rules (`/alerts/presets`), and Incident History (`/alerts/history`) with bidirectional browser navigation.
 - **Incident History Modal Presentation**: Replaced inline accordion rows in Incident History with responsive desktop table and mobile card layouts that open a dedicated modal overlay for log analysis and diagnosis details.
+- **Table Column Header Typography**: Harmonized table headers in Incident History and Storage AI Audit Log with Settings tables, adopting title case, standard sans-serif font (`font-sans`), medium weight (`font-medium`), and matching border styling (`border-dark-700`).
+- **Channel Map Optimization in Alerts Panel**: Pre-indexed notification channels into a memoized Map for O(1) channel lookups during rendering.
 - **Alert Rule Documentation & Channel Status**: Unified documentation link styling with syntax documentation in Settings, and added real-time inactive and deleted channel warnings on rule cards.
 - **Alert Push Notification Formatting**: Streamlined push notification payload to avoid repeating the alert title in message bodies, appends AI diagnosis details, and generates direct history links when `APP_URL` is configured.
 - **Dedicated Notification Worker Pool**: Dedicated `ThreadPoolExecutor(max_workers=4, thread_name_prefix="logshed-notifier")` for Apprise notification dispatching via `loop.run_in_executor`, decoupled from the general asyncio thread pool, with graceful shutdown hooks during application lifecycle termination.
@@ -41,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **CompiledAlertRule Last Trigger Timestamp Assignment**: Fixed an initialization bug in `CompiledAlertRule.__init__` where `last_triggered_at` was received as an argument but never assigned to the instance attribute.
+- **Numeric Input Backspacing in Alert Rules**: Resolved an issue where clearing numeric input fields in the alert rule modal forced a leading zero, ensuring fields can be completely cleared and typed into smoothly.
 
 ### Security
 - **Sliding Window Bounds & Memory Caps**: Clamped incoming log timestamps between `now_epoch - 86400` and `now_epoch + 300` to prevent future timestamp spoofing, computed sliding window cutoffs relative to current epoch time, and bounded maximum sliding window deques to `threshold_count * 2` (capped to `threshold_count` during cooldown suppression) to prevent memory expansion.

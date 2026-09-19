@@ -3,6 +3,7 @@ import { Sparkles, Brain, Copy, Check, AlertCircle } from 'lucide-react';
 import { AlertHistoryItem } from '../../types.ts';
 import { MarkdownRenderer } from '../common/MarkdownRenderer.tsx';
 import { useClipboard } from '../../utils/hooks.ts';
+import { IncidentStatusBadge } from './IncidentStatusBadge.tsx';
 
 interface IncidentHistoryDetailProps {
   item: AlertHistoryItem;
@@ -60,21 +61,10 @@ export const IncidentHistoryDetail: React.FC<IncidentHistoryDetailProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            {isFailed ? (
-              <span className="bg-red-950/80 border border-red-800 text-red-300 px-2 py-0.5 rounded text-[10px] font-semibold uppercase flex items-center gap-1">
-                <AlertCircle className="w-3 h-3" />
-                Failed
-              </span>
-            ) : item.ai_enrichment ? (
-              <span className="bg-purple-950/80 border border-purple-800 text-purple-300 px-2 py-0.5 rounded text-[10px] font-semibold uppercase flex items-center gap-1">
-                <Sparkles className="w-3 h-3" />
-                AI Complete
-              </span>
-            ) : (
-              <span className="bg-dark-900 border border-dark-700 text-slate-400 px-2 py-0.5 rounded text-[10px] font-semibold uppercase">
-                Triggered
-              </span>
-            )}
+            <IncidentStatusBadge
+              aiEnrichment={item.ai_enrichment}
+              incidentSummary={item.incident_summary}
+            />
           </div>
         </div>
       </div>

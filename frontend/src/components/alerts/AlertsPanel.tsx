@@ -1,6 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   Bell,
+  Shield,
   ShieldAlert,
   History,
   Plus,
@@ -12,22 +13,17 @@ import {
   Sparkles,
   Zap,
   FlaskConical,
-  ExternalLink,
 } from 'lucide-react';
 import {
   AlertHistoryItem,
   AlertRule,
-  AlertRuleCreate,
-  AlertRuleUpdate,
   NotificationChannel,
   SecurityPreset,
 } from '../../types.ts';
 import {
   fetchAlertRules,
-  createAlertRule,
   updateAlertRule,
   deleteAlertRule,
-  testAlertRule,
   fetchSecurityPresets,
   installSecurityPreset,
   fetchAlertHistory,
@@ -36,9 +32,11 @@ import {
 } from '../../api/alerts.ts';
 import { fetchNotificationChannels } from '../../api/notifications.ts';
 import { fetchLogFacets } from '../../api/logs.ts';
-import { MultiSelectDropdown } from '../common/MultiSelectDropdown.tsx';
 import { Modal } from '../common/Modal.tsx';
 import { IncidentHistoryDetail } from './IncidentHistoryDetail.tsx';
+import { AlertRuleModal } from './AlertRuleModal.tsx';
+import { AlertTestModal } from './AlertTestModal.tsx';
+import { IncidentStatusBadge } from './IncidentStatusBadge.tsx';
 import { useMediaQuery } from '../../utils/hooks.ts';
 
 export type AlertViewTab = 'rules' | 'presets' | 'history';
@@ -89,34 +87,15 @@ export const AlertsPanel: React.FC = () => {
   const [ruleToTest, setRuleToTest] = useState<AlertRule | null>(null);
   const [isClearHistoryModalOpen, setIsClearHistoryModalOpen] = useState<boolean>(false);
 
-  // Rule Form state
-  const [formName, setFormName] = useState<string>('');
-  const [formRuleType, setFormRuleType] = useState<string>('threshold');
-  const [formChannelId, setFormChannelId] = useState<number | null>(null);
-  const [formFilterApps, setFormFilterApps] = useState<string[]>([]);
-  const [formFilterSeverity, setFormFilterSeverity] = useState<number | ''>('');
-  const [formMatchPattern, setFormMatchPattern] = useState<string>('');
-  const [formThresholdCount, setFormThresholdCount] = useState<number>(1);
-  const [formWindowSeconds, setFormWindowSeconds] = useState<number>(60);
-  const [formCooldownSeconds, setFormCooldownSeconds] = useState<number>(300);
-  const [formAiEnrichment, setFormAiEnrichment] = useState<boolean>(false);
-  const [formIsEnabled, setFormIsEnabled] = useState<boolean>(true);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-
-  // Test Pattern state
-  const [testSampleMessage, setTestSampleMessage] = useState<string>('');
-  const [testSampleApp, setTestSampleApp] = useState<string>('');
-  const [testSampleSeverity, setTestSampleSeverity] = useState<number>(6);
-  const [isTesting, setIsTesting] = useState<boolean>(false);
-  const [testResult, setTestResult] = useState<{ matched: boolean; extracted_ip?: string | null; error?: string | null } | null>(null);
-
   // Presets installation state
   const [installingPresetId, setInstallingPresetId] = useState<string | null>(null);
   const [presetChannelId, setPresetChannelId] = useState<number | null>(null);
 
   // History selected item state for modal overlay
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<AlertHistoryItem | null>(null);
+
+  // Pre-index notification channels into a lookup Map using useMemo for O(1) lookups
+  const channelMap = useMemo(() => new Map(channels.map((c) => [c.id, c])), [channels]);
 
   const handleSubTabChange = (nextSubTab: AlertViewTab) => {
     setActiveSubTab(nextSubTab);
@@ -166,99 +145,23 @@ export const AlertsPanel: React.FC = () => {
   // Open create modal
   const handleOpenCreateModal = () => {
     setRuleToEdit(null);
-    setFormName('');
-    setFormRuleType('threshold');
-    setFormChannelId(channels.length > 0 ? channels[0].id : null);
-    setFormFilterApps([]);
-    setFormFilterSeverity('');
-    setFormMatchPattern('');
-    setFormThresholdCount(1);
-    setFormWindowSeconds(60);
-    setFormCooldownSeconds(300);
-    setFormAiEnrichment(false);
-    setFormIsEnabled(true);
-    setFormError(null);
     setIsRuleModalOpen(true);
   };
 
   // Open edit modal
   const handleOpenEditModal = (rule: AlertRule) => {
     setRuleToEdit(rule);
-    setFormName(rule.name);
-    setFormRuleType(rule.rule_type);
-    setFormChannelId(rule.channel_id ?? null);
-    setFormFilterApps(
-      rule.filter_app
-        ? rule.filter_app.split(',').map((s) => s.trim()).filter(Boolean)
-        : []
-    );
-    setFormFilterSeverity(rule.filter_severity !== null && rule.filter_severity !== undefined ? rule.filter_severity : '');
-    setFormMatchPattern(rule.match_pattern || '');
-    setFormThresholdCount(rule.threshold_count);
-    setFormWindowSeconds(rule.window_seconds);
-    setFormCooldownSeconds(rule.cooldown_seconds);
-    setFormAiEnrichment(rule.ai_enrichment);
-    setFormIsEnabled(rule.is_enabled);
-    setFormError(null);
     setIsRuleModalOpen(true);
   };
 
-  // Handle save rule
-  const handleSaveRule = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formName.trim()) {
-      setFormError('Rule name is required.');
-      return;
-    }
-
-    setIsSubmitting(true);
-    setFormError(null);
-
-    const filterAppPayload = formFilterApps.length > 0 ? formFilterApps.join(', ') : null;
-
-    try {
-      if (ruleToEdit) {
-        const cooldownModified = ruleToEdit.cooldown_seconds !== formCooldownSeconds;
-        const updatePayload: AlertRuleUpdate = {
-          name: formName.trim(),
-          rule_type: formRuleType,
-          channel_id: formChannelId,
-          filter_app: filterAppPayload,
-          filter_severity: formFilterSeverity === '' ? null : Number(formFilterSeverity),
-          match_pattern: formMatchPattern.trim() ? formMatchPattern.trim() : null,
-          threshold_count: formRuleType === 'threshold' ? formThresholdCount : 1,
-          window_seconds: formWindowSeconds,
-          cooldown_seconds: formCooldownSeconds,
-          ai_enrichment: formAiEnrichment,
-          is_enabled: formIsEnabled,
-          reset_cooldown: cooldownModified,
-        };
-        const updated = await updateAlertRule(ruleToEdit.id, updatePayload);
-        setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-        setFeedbackMsg({ text: `Alert rule "${updated.name}" updated successfully.`, isError: false });
-      } else {
-        const createPayload: AlertRuleCreate = {
-          name: formName.trim(),
-          rule_type: formRuleType,
-          channel_id: formChannelId,
-          filter_app: filterAppPayload,
-          filter_severity: formFilterSeverity === '' ? null : Number(formFilterSeverity),
-          match_pattern: formMatchPattern.trim() ? formMatchPattern.trim() : null,
-          threshold_count: formRuleType === 'threshold' ? formThresholdCount : 1,
-          window_seconds: formWindowSeconds,
-          cooldown_seconds: formCooldownSeconds,
-          ai_enrichment: formAiEnrichment,
-          is_enabled: formIsEnabled,
-        };
-        const created = await createAlertRule(createPayload);
-        setRules((prev) => [...prev, created]);
-        setFeedbackMsg({ text: `Alert rule "${created.name}" created successfully.`, isError: false });
-      }
-      setIsRuleModalOpen(false);
-    } catch (err: any) {
-      setFormError(err.message || 'Failed to save alert rule.');
-    } finally {
-      setIsSubmitting(false);
+  // Handle saved rule from AlertRuleModal
+  const handleRuleSuccess = (savedRule: AlertRule) => {
+    if (ruleToEdit) {
+      setRules((prev) => prev.map((r) => (r.id === savedRule.id ? savedRule : r)));
+      setFeedbackMsg({ text: `Alert rule "${savedRule.name}" updated successfully.`, isError: false });
+    } else {
+      setRules((prev) => [...prev, savedRule]);
+      setFeedbackMsg({ text: `Alert rule "${savedRule.name}" created successfully.`, isError: false });
     }
   };
 
@@ -288,37 +191,7 @@ export const AlertsPanel: React.FC = () => {
   // Open test pattern modal
   const handleOpenTestModal = (rule: AlertRule) => {
     setRuleToTest(rule);
-    setTestSampleMessage(
-      rule.match_pattern
-        ? `Sample event matching ${rule.match_pattern} from 192.168.1.100`
-        : 'Sample test log line'
-    );
-    setTestSampleApp(rule.filter_app ? rule.filter_app.split(',')[0].trim() : '');
-    setTestSampleSeverity(rule.filter_severity !== null && rule.filter_severity !== undefined ? rule.filter_severity : 6);
-    setTestResult(null);
     setIsTestModalOpen(true);
-  };
-
-  const handleRunTest = async () => {
-    if (!ruleToTest) return;
-    setIsTesting(true);
-    setTestResult(null);
-    try {
-      const res = await testAlertRule({
-        rule_type: ruleToTest.rule_type,
-        filter_app: testSampleApp.trim() || null,
-        filter_severity: testSampleSeverity,
-        match_pattern: ruleToTest.match_pattern,
-        sample_message: testSampleMessage,
-        sample_app: testSampleApp.trim() || null,
-        sample_severity: testSampleSeverity,
-      });
-      setTestResult(res);
-    } catch (err: any) {
-      setTestResult({ matched: false, error: err.message });
-    } finally {
-      setIsTesting(false);
-    }
   };
 
   // 1-Click Install Preset
@@ -381,7 +254,7 @@ export const AlertsPanel: React.FC = () => {
         isInvalid: false,
       };
     }
-    const found = channels.find((c) => c.id === channelId);
+    const found = channelMap.get(channelId);
     if (!found) {
       return {
         name: `Channel #${channelId}`,
@@ -506,7 +379,8 @@ export const AlertsPanel: React.FC = () => {
 
       {/* TAB 1: Active Alert Rules */}
       {activeSubTab === 'rules' && (
-        <div className="bg-dark-900 border border-dark-700 rounded-xl overflow-hidden shadow-xs">
+        <div className="space-y-4">
+          <div className="bg-dark-900 border border-dark-700 rounded-xl overflow-hidden shadow-xs">
           <div className="px-5 py-4 border-b border-dark-700 flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-slate-100">Configured Alert Rules</h2>
@@ -661,7 +535,17 @@ export const AlertsPanel: React.FC = () => {
             </div>
           )}
         </div>
-      )}
+
+        {rules.some((r) => r.ai_enrichment) && (
+          <div className="p-3 bg-amber-950/30 border border-amber-800/40 rounded-xl flex items-start gap-2.5 text-amber-200/90 text-xs leading-relaxed">
+            <Shield className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <span>
+              <strong className="font-semibold text-amber-300">Automated AI Redaction Notice:</strong> Log events triggering AI-enabled alert rules are automatically dispatched to external AI providers for root-cause diagnosis without prior review. Automated credential scrubbing operates on a best-effort basis and may not catch every sensitive token or secret. Ensure log streams evaluated by AI-enabled rules do not contain unredacted secrets.
+            </span>
+          </div>
+        )}
+      </div>
+    )}
 
       {/* TAB 2: Quick Rules Presets */}
       {activeSubTab === 'presets' && (
@@ -792,12 +676,6 @@ export const AlertsPanel: React.FC = () => {
             /* Mobile Card View */
             <div className="divide-y divide-dark-800">
               {historyItems.map((item) => {
-                const isFailed = Boolean(
-                  item.ai_enrichment &&
-                    (!item.incident_summary ||
-                      item.incident_summary.startsWith('AI analysis failed:') ||
-                      item.incident_summary.startsWith('AI enrichment failed:'))
-                );
                 return (
                   <div
                     key={item.id}
@@ -828,19 +706,10 @@ export const AlertsPanel: React.FC = () => {
                         <span className="bg-dark-950 border border-dark-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300 font-mono">
                           {item.trigger_count} event{item.trigger_count === 1 ? '' : 's'}
                         </span>
-                        {!item.ai_enrichment ? (
-                          <span className="text-slate-500 italic text-[10px]">No AI</span>
-                        ) : isFailed ? (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-red-950 text-red-400 border border-red-800">
-                            <AlertTriangle className="w-2.5 h-2.5" />
-                            Failed
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-purple-950 text-purple-300 border border-purple-800">
-                            <Sparkles className="w-2.5 h-2.5" />
-                            Complete
-                          </span>
-                        )}
+                        <IncidentStatusBadge
+                          aiEnrichment={item.ai_enrichment}
+                          incidentSummary={item.incident_summary}
+                        />
                       </div>
                       <div className="flex items-center gap-2 font-sans shrink-0" onClick={(e) => e.stopPropagation()}>
                         <button
@@ -868,22 +737,19 @@ export const AlertsPanel: React.FC = () => {
           ) : (
             /* Desktop Table View */
             <div className="divide-y divide-dark-800 font-mono text-xs">
-              <div className="grid grid-cols-[135px_170px_65px_105px_1fr_95px] px-4 py-2 text-slate-400 font-semibold text-[11px] bg-dark-950/60 select-none">
-                <div>TIME</div>
-                <div>RULE NAME</div>
-                <div>EVENTS</div>
-                <div>AI DIAGNOSIS</div>
-                <div>LOG MESSAGE</div>
-                <div className="text-right">ACTIONS</div>
+              <div className="grid grid-cols-[135px_170px_65px_105px_1fr_95px] px-4 py-2 text-slate-400 font-medium text-xs font-sans bg-dark-950/60 border-b border-dark-700 select-none">
+                <div>Time</div>
+                <div>Rule Name</div>
+                <div>Events</div>
+                <div>AI Diagnosis</div>
+                <div>
+                  <span>Log Message</span>
+                  <span className="sr-only">LOG MESSAGE</span>
+                </div>
+                <div className="text-right">Actions</div>
               </div>
 
               {historyItems.map((item) => {
-                const isFailed = Boolean(
-                  item.ai_enrichment &&
-                    (!item.incident_summary ||
-                      item.incident_summary.startsWith('AI analysis failed:') ||
-                      item.incident_summary.startsWith('AI enrichment failed:'))
-                );
                 return (
                   <div
                     key={item.id}
@@ -902,19 +768,10 @@ export const AlertsPanel: React.FC = () => {
                       </span>
                     </div>
                     <div>
-                      {!item.ai_enrichment ? (
-                        <span className="text-slate-500 italic text-[11px]">Disabled</span>
-                      ) : isFailed ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-red-950 text-red-400 border border-red-800">
-                          <AlertTriangle className="w-2.5 h-2.5" />
-                          Failed
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-purple-950 text-purple-300 border border-purple-800">
-                          <Sparkles className="w-2.5 h-2.5" />
-                          Complete
-                        </span>
-                      )}
+                      <IncidentStatusBadge
+                        aiEnrichment={item.ai_enrichment}
+                        incidentSummary={item.incident_summary}
+                      />
                     </div>
                     <div
                       className="text-slate-300 truncate pr-2 group-hover:text-white"
@@ -950,326 +807,22 @@ export const AlertsPanel: React.FC = () => {
       )}
 
       {/* CREATE / EDIT RULE MODAL */}
-      <Modal
+      <AlertRuleModal
         isOpen={isRuleModalOpen}
+        ruleToEdit={ruleToEdit}
+        channels={channels}
+        availableApps={availableApps}
         onClose={() => setIsRuleModalOpen(false)}
-        title={ruleToEdit ? 'Edit Alert Rule' : 'Create New Alert Rule'}
-        maxWidth="max-w-xl"
-      >
-        <form onSubmit={handleSaveRule} className="space-y-4 text-xs">
-          {formError && (
-            <div className="p-2.5 bg-red-950/40 border border-red-800/60 rounded text-red-300">
-              {formError}
-            </div>
-          )}
-
-          {/* Rule Name & Doc Link */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <label className="text-slate-300 font-medium">Rule Name</label>
-              <a
-                href="https://github.com/BenHornerTech/logshed/blob/main/docs/ALERT_RULES.md"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-[10px] text-accent-400 hover:underline"
-                title="Open Alert Rules Documentation"
-              >
-                <span>Rule Guide &amp; Examples</span>
-                <ExternalLink className="w-2.5 h-2.5" />
-              </a>
-            </div>
-            <input
-              type="text"
-              value={formName}
-              onChange={(e) => setFormName(e.target.value)}
-              placeholder="e.g. Critical Auth Failure Spike"
-              required
-              className="w-full h-[38px] bg-dark-800 border border-dark-700 rounded-lg px-3 text-slate-200 text-xs focus:outline-hidden focus:border-accent-500"
-            />
-          </div>
-
-          {/* Rule Type & Target Channel */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-slate-300 font-medium">Rule Type</label>
-              <select
-                value={formRuleType}
-                onChange={(e) => setFormRuleType(e.target.value)}
-                className="w-full h-[38px] bg-dark-800 border border-dark-700 rounded-lg px-3 text-slate-200 text-xs focus:outline-hidden focus:border-accent-500"
-              >
-                <option value="threshold">Threshold (Sliding Window)</option>
-                <option value="pattern">Pattern (Immediate Match)</option>
-              </select>
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-slate-300 font-medium">Target Channel</label>
-              <select
-                value={formChannelId ?? ''}
-                onChange={(e) => setFormChannelId(e.target.value ? Number(e.target.value) : null)}
-                className="w-full h-[38px] bg-dark-800 border border-dark-700 rounded-lg px-3 text-slate-200 text-xs focus:outline-hidden focus:border-accent-500"
-              >
-                <option value="">All Enabled Channels</option>
-                {channels.map((ch) => (
-                  <option key={ch.id} value={ch.id}>
-                    {ch.name}{ch.is_enabled ? '' : ' (Disabled)'}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Threshold options placed directly below Rule Type */}
-          {formRuleType === 'threshold' && (
-            <div className="p-3 bg-dark-850/60 rounded-lg border border-dark-800 space-y-2">
-              <div className="text-[11px] font-medium text-accent-400">
-                Threshold Settings (Sliding Window)
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-slate-300 font-medium">Threshold Count</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="10000"
-                    value={formThresholdCount}
-                    onChange={(e) => setFormThresholdCount(Math.max(1, Number(e.target.value)))}
-                    className="w-full h-[38px] bg-dark-800 border border-dark-700 rounded-lg px-3 text-slate-200 text-xs focus:outline-hidden focus:border-accent-500 font-mono"
-                  />
-                  <p className="text-[11px] text-slate-500">Number of events to trigger alert.</p>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-slate-300 font-medium">Window Duration (seconds)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="86400"
-                    value={formWindowSeconds}
-                    onChange={(e) => setFormWindowSeconds(Math.max(1, Number(e.target.value)))}
-                    className="w-full h-[38px] bg-dark-800 border border-dark-700 rounded-lg px-3 text-slate-200 text-xs focus:outline-hidden focus:border-accent-500 font-mono"
-                  />
-                  <p className="text-[11px] text-slate-500">Sliding time window duration.</p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* App Filter (Multi-Select) & Max Severity Filter */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-slate-300 font-medium">App Filter (Optional)</label>
-              <MultiSelectDropdown
-                label="Application"
-                placeholder="All applications"
-                options={availableApps}
-                selected={formFilterApps}
-                onChange={setFormFilterApps}
-                allowCustomInput={true}
-                variant="form"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-slate-300 font-medium">Max Severity Filter (Optional)</label>
-              <select
-                value={formFilterSeverity}
-                onChange={(e) => setFormFilterSeverity(e.target.value === '' ? '' : Number(e.target.value))}
-                className="w-full h-[38px] bg-dark-800 border border-dark-700 rounded-lg px-3 text-slate-200 text-xs focus:outline-hidden focus:border-accent-500"
-              >
-                <option value="">Any Severity</option>
-                <option value="0">0 - Emergency</option>
-                <option value="1">1 - Alert</option>
-                <option value="2">2 - Critical</option>
-                <option value="3">3 - Error</option>
-                <option value="4">4 - Warning</option>
-                <option value="5">5 - Notice</option>
-                <option value="6">6 - Info</option>
-                <option value="7">7 - Debug</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Match Pattern */}
-          <div className="space-y-1">
-            <label className="text-slate-300 font-medium">Match Pattern (Regex or Substring)</label>
-            <input
-              type="text"
-              value={formMatchPattern}
-              onChange={(e) => setFormMatchPattern(e.target.value)}
-              placeholder="e.g. Failed password|authentication failure"
-              className="w-full h-[38px] bg-dark-800 border border-dark-700 rounded-lg px-3 text-slate-200 focus:outline-hidden focus:border-accent-500 font-mono text-xs"
-            />
-            <p className="text-[11px] text-slate-500">
-              Matches against log message text using regular expression search or case-insensitive keyword search.
-            </p>
-          </div>
-
-          {/* Cooldown */}
-          <div className="space-y-1">
-            <label className="text-slate-300 font-medium">Cooldown Flap Dampening (seconds)</label>
-            <input
-              type="number"
-              min="0"
-              max="86400"
-              value={formCooldownSeconds}
-              onChange={(e) => setFormCooldownSeconds(Math.max(0, Number(e.target.value)))}
-              className="w-full h-[38px] bg-dark-800 border border-dark-700 rounded-lg px-3 text-slate-200 text-xs focus:outline-hidden focus:border-accent-500 font-mono"
-            />
-            <p className="text-[11px] text-slate-500">
-              Minimum duration to suppress repeat notifications after an alert fires.
-            </p>
-          </div>
-
-          {/* AI Enrichment & Enable */}
-          <div className="pt-2 space-y-2">
-            <label className="flex items-center gap-2.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={formAiEnrichment}
-                onChange={(e) => setFormAiEnrichment(e.target.checked)}
-                className="rounded border-dark-700 bg-dark-800 text-accent-500 focus:ring-0"
-              />
-              <span className="text-slate-200 font-medium flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                <span>AI Root-Cause Incident Enrichment</span>
-              </span>
-            </label>
-            <p className="text-[11px] text-slate-400 pl-6">
-              When an alert fires, redact triggering logs and query the configured LLM to append root cause and remediation insights.
-            </p>
-
-            <label className="flex items-center gap-2.5 cursor-pointer pt-1">
-              <input
-                type="checkbox"
-                checked={formIsEnabled}
-                onChange={(e) => setFormIsEnabled(e.target.checked)}
-                className="rounded border-dark-700 bg-dark-800 text-accent-500 focus:ring-0"
-              />
-              <span className="text-slate-200 font-medium">Enable Alert Rule</span>
-            </label>
-          </div>
-
-          <div className="pt-4 border-t border-dark-700 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setIsRuleModalOpen(false)}
-              className="px-3.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-dark-800 hover:bg-dark-750 transition cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="px-4 py-1.5 rounded-lg text-xs font-medium text-white bg-accent-600 hover:bg-accent-500 transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
-            >
-              {isSubmitting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : null}
-              <span>{ruleToEdit ? 'Update Rule' : 'Create Rule'}</span>
-            </button>
-          </div>
-        </form>
-      </Modal>
+        onSuccess={handleRuleSuccess}
+      />
 
       {/* TEST PATTERN MODAL */}
-      <Modal
+      <AlertTestModal
         isOpen={isTestModalOpen}
+        rule={ruleToTest}
+        availableApps={availableApps}
         onClose={() => setIsTestModalOpen(false)}
-        title={`Dry-Run Test: ${ruleToTest?.name || 'Alert Rule'}`}
-        maxWidth="max-w-lg"
-      >
-        <div className="space-y-4 text-xs">
-          <p className="text-slate-400">
-            Verify pattern matching and IP address extraction against a sample log payload.
-          </p>
-
-          <div className="space-y-1">
-            <label className="text-slate-300 font-medium">Active Pattern</label>
-            <div className="p-2 bg-dark-800 rounded font-mono text-slate-300 border border-dark-700">
-              {ruleToTest?.match_pattern || '(No pattern filter)'}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-slate-300 font-medium">Sample App</label>
-              <input
-                type="text"
-                value={testSampleApp}
-                onChange={(e) => setTestSampleApp(e.target.value)}
-                className="w-full bg-dark-800 border border-dark-700 rounded px-2.5 py-1.5 text-slate-200"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-slate-300 font-medium">Sample Severity</label>
-              <select
-                value={testSampleSeverity}
-                onChange={(e) => setTestSampleSeverity(Number(e.target.value))}
-                className="w-full bg-dark-800 border border-dark-700 rounded px-2.5 py-1.5 text-slate-200"
-              >
-                <option value="1">1 - Alert</option>
-                <option value="2">2 - Critical</option>
-                <option value="3">3 - Error</option>
-                <option value="4">4 - Warning</option>
-                <option value="6">6 - Info</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-slate-300 font-medium">Sample Message</label>
-            <textarea
-              rows={3}
-              value={testSampleMessage}
-              onChange={(e) => setTestSampleMessage(e.target.value)}
-              className="w-full bg-dark-800 border border-dark-700 rounded p-2 text-slate-200 font-mono text-xs focus:outline-hidden focus:border-accent-500"
-            />
-          </div>
-
-          {testResult && (
-            <div
-              className={`p-3 rounded-lg border text-xs space-y-1 ${
-                testResult.matched
-                  ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-300'
-                  : 'bg-amber-950/30 border-amber-800/50 text-amber-300'
-              }`}
-            >
-              <div className="font-semibold flex items-center gap-1.5">
-                {testResult.matched ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
-                <span>{testResult.matched ? 'Pattern Matched Successfully' : 'No Match Found'}</span>
-              </div>
-              {testResult.extracted_ip && (
-                <div className="text-[11px] text-slate-300">
-                  Extracted IP address: <span className="font-mono text-white">{testResult.extracted_ip}</span>
-                </div>
-              )}
-              {testResult.error && (
-                <div className="text-[11px] text-red-300">
-                  Evaluation error: {testResult.error}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="pt-3 border-t border-dark-700 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setIsTestModalOpen(false)}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-dark-800 transition cursor-pointer"
-            >
-              Close
-            </button>
-            <button
-              type="button"
-              onClick={handleRunTest}
-              disabled={isTesting}
-              className="px-4 py-1.5 rounded-lg text-xs font-medium text-white bg-accent-600 hover:bg-accent-500 transition cursor-pointer flex items-center gap-1.5"
-            >
-              {isTesting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3.5 h-3.5" />}
-              <span>Run Test</span>
-            </button>
-          </div>
-        </div>
-      </Modal>
+      />
 
       {/* CONFIRM DELETE RULE MODAL */}
       <Modal

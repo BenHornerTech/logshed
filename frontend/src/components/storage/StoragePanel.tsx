@@ -274,13 +274,13 @@ export const StoragePanel: React.FC = () => {
         ) : (
           /* Desktop Table View */
           <div className="divide-y divide-dark-800 font-mono text-xs">
-            <div className="grid grid-cols-[135px_150px_130px_75px_1fr_95px] px-4 py-2 text-slate-400 font-semibold text-[11px] bg-dark-950/60 select-none">
-              <div>TIMESTAMP</div>
-              <div>HOST • APP</div>
-              <div>MODEL</div>
-              <div>TOKENS</div>
-              <div>SUMMARY</div>
-              <div className="text-right">ACTIONS</div>
+            <div className="grid grid-cols-[135px_150px_130px_75px_1fr_95px] px-4 py-2 text-slate-400 font-medium text-xs font-sans bg-dark-950/60 border-b border-dark-700 select-none">
+              <div>Timestamp</div>
+              <div>Host • App</div>
+              <div>Model</div>
+              <div>Tokens</div>
+              <div>Summary</div>
+              <div className="text-right">Actions</div>
             </div>
 
             {auditLogs.map((item) => (
