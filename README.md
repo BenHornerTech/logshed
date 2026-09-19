@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/BenHornerTech/logshed"><img src="https://img.shields.io/badge/version-1.1.0-blue?style=flat-square" alt="Version 1.1.0"></a>
+  <a href="https://github.com/BenHornerTech/logshed"><img src="https://img.shields.io/badge/version-1.2.0-blue?style=flat-square" alt="Version 1.2.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT License"></a>
   <a href="https://github.com/BenHornerTech/logshed/pkgs/container/logshed"><img src="https://img.shields.io/badge/container-ghcr.io-blue?logo=docker&logoColor=white&style=flat-square" alt="GHCR Container"></a>
   <a href="#prerequisites--system-requirements"><img src="https://img.shields.io/badge/arch-amd64%20%7C%20arm64-blueviolet?style=flat-square" alt="Multi-Arch Support"></a>
@@ -34,11 +34,14 @@
  - [Docker Run](#generic-docker-run)
  - [Initial Setup](#initial-setup--authentication)
 - [Configuration Reference](#configuration-reference)
- - [Environment Variables](#environment-variables)
- - [Runtime Settings (Web UI)](#runtime-settings-web-ui)
- - [Data Persistence & Storage Paths](#data-persistence--storage-paths)
- - [Internal Diagnostic Logging](#internal-diagnostic-logging)
- - [Secret Redaction & Raw Log Fidelity](#secret-redaction--raw-log-fidelity)
+  - [Environment Variables](#environment-variables)
+  - [Runtime Settings (Web UI)](#runtime-settings-web-ui)
+  - [Data Persistence & Storage Paths](#data-persistence--storage-paths)
+  - [Internal Diagnostic Logging](#internal-diagnostic-logging)
+  - [Secret Redaction & Raw Log Fidelity](#secret-redaction--raw-log-fidelity)
+- [Real-Time Alerts & Security Canaries](#real-time-alerts--security-canaries)
+- [Universal Notification Targets](#universal-notification-targets)
+- [Ingestion Drop Rules & Saved Views](#ingestion-drop-rules--saved-views)
 - [AI Incident Diagnosis](#ai-incident-diagnosis)
 - [Local Development](#local-development)
 - [Licensing](#licensing)
@@ -61,10 +64,15 @@ LogShed is a compact, self-hosted log hub designed for home labs and personal se
 - **Single container, single process**: The main thread runs FastAPI and monitored async workers. There is no separate database process, Redis instance, or message broker to run or maintain.
 - **Low memory usage**: Idles at roughly 150 MB to 250 MB of RAM under normal home lab traffic.
 - **Dual ingestion**:
- - **Syslog**: Listens on port 1514 (UDP and TCP) for RFC 3164 and RFC 5424 formats, supporting both octet-counted and newline-delimited TCP framing.
- - **Docker Engine API**: Tails local containers via `/var/run/docker.sock` or remote hosts via TCP proxy without extra dependencies.
+  - **Syslog**: Listens on port 1514 (UDP and TCP) for RFC 3164 and RFC 5424 formats, supporting both octet-counted and newline-delimited TCP framing.
+  - **Docker Engine API**: Tails local containers via `/var/run/docker.sock` or remote hosts via TCP proxy without extra dependencies.
 - **Multiline stream assembly**: Groups multi-line exceptions (such as Python tracebacks or Java stack traces) by source stream within a short buffer window so related lines stay together.
-- **Full-text search (SQLite FTS5)**: Fast prefix search across hosts, container names, log content, and severity tags.
+- **Real-time alert engine**: Evaluates incoming logs in memory with sliding window threshold rules or immediate pattern matches, cooldown flap dampening, and optional automated AI incident diagnosis.
+- **Pre-packaged security canary rules**: 1-click rules to catch SSH brute-force attempts, reverse-proxy authentication floods, sudo privilege escalation, and kernel out-of-memory (OOM) events.
+- **Universal notification dispatcher**: Native delivery across 80+ notification services via Apprise and webhooks (Pushover, Discord, Telegram, Gotify, Ntfy, Slack, Email) with SSRF safeguards.
+- **Ingestion drop rules**: Discard repetitive chatter and noisy log patterns in memory before database insertion and FTS5 indexing, complete with live drop counters and 1-click rule generation from log detail modals.
+- **Saved filter views & URL sync**: Save and pin filter views directly on the console and mobile filter drawer with bidirectional URL query parameter sync for easy bookmarking and sharing.
+- **Full-text search (SQLite FTS5)**: Fast prefix search across hosts, container names, log content, and severity tags, decoupled into a background indexing worker with sub-second catch-up latency.
 - **Optional AI diagnosis**: Select log rows in the web UI to request an explanation and suggested fixes from Google Gemini, OpenAI, or a local model (Ollama / vLLM). API requests are strictly manual, and sensitive values (passwords, tokens, keys) are stripped before dispatch.
 - **Host aliases**: Map IP addresses to friendly names (for example, `192.168.1.1` to `router`), which automatically apply across existing records.
 - **Automatic retention**: Purges older logs in the background on a schedule (default: 14 days) and reclaims SQLite storage space without taking the database offline.
@@ -102,6 +110,7 @@ LogShed was designed and built using AI models from **Google Gemini** and **Anth
 | **Storage & Search** | Standard Library `sqlite3` + `asyncio.to_thread()`, WAL mode, FTS5 external content virtual table |
 | **Frontend UI** | [React 19](https://react.dev/), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/), [@tanstack/react-virtual](https://tanstack.com/virtual), [Recharts](https://recharts.org/), [Lucide React](https://lucide.dev/) |
 | **Collector Integrations** | [HTTPX](https://www.python-httpx.org/) (Docker Engine API over UDS and TCP), Async UDP/TCP Syslog server |
+| **Alerting & Notifications** | [Apprise](https://github.com/caronc/apprise) (multi-channel alerts and webhooks) |
 | **AI Integrations** | Google GenAI SDK (`google-genai`), OpenAI SDK (`openai` compatible with Ollama/vLLM/LocalAI) |
 | **Security & Cryptography** | `argon2-cffi` (password hashing), `cryptography.fernet` (runtime settings encryption) |
 | **Packaging & Base** | Multi-stage Docker build, `python:3.12-slim`, `tini` init, `gosu` privilege dropping |
@@ -116,8 +125,8 @@ For complete technical schemas, database structures, FTS5 triggers, and REST/SSE
 
 | Resource | Minimum | Recommended |
 |---|---|---|
-| **RAM** | 256 MB | 512 MB – 1 GB (handles heavy burst ingestion and large browser buffers) |
-| **CPU** | 1 vCPU / core | 1–2 cores (handles continuous FTS5 indexing and log stream parsing) |
+| **RAM** | 256 MB | 512 MB - 1 GB (handles heavy burst ingestion and large browser buffers) |
+| **CPU** | 1 vCPU / core | 1 - 2 cores (handles continuous FTS5 indexing and log stream parsing) |
 | **Storage** | 1 GB free space | Direct SSD / NVMe cache pool (high IOPS for SQLite WAL checkpoints) |
 
 > [!WARNING]
@@ -158,6 +167,8 @@ services:
      - SYSLOG_PORT=1514
      - DOCKER_HOST=unix:///var/run/docker.sock
      - DOCKER_SOURCE_ALIAS=docker
+      # - APP_URL=http://192.168.1.50:8080
+      # - ALLOW_PRIVATE_NOTIFICATION_TARGETS=true
       # - DOCKER_EXCLUDE_CONTAINERS=logshed,noisy_container
       # - LOGSHED_INTERNAL_LOG_LEVEL=WARNING
     volumes:
@@ -263,7 +274,9 @@ Environment variables are supplied at container startup and control networking, 
 | `LOGSHED_INTERNAL_LOG_LEVEL` | Minimum severity for LogShed internal log records (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`, or `DISABLED`). | `WARNING` | No |
 | `MAX_RETENTION_DAYS` | Maximum retention period in days for the slider in settings (minimum `1`). | `30` | No |
 | `COOKIE_SECURE` | Set to `true` to force the `Secure` flag on session cookies when behind an SSL proxy that strips `X-Forwarded-Proto`. | `false` | No |
-| `TRUSTED_PROXIES` | Comma-separated list of trusted reverse proxy IPs or CIDR blocks for client IP lookup. | *(empty)* | No |
+| `TRUSTED_PROXIES` | Comma-separated list of trusted reverse proxy IPs or CIDR blocks for client IP lookup. Can also set `TRUST_DOCKER_PROXIES=true` to automatically trust Docker bridge subnets (`172.16.0.0/12`). | *(empty)* | No |
+| `APP_URL` | Base URL of the LogShed instance (e.g. `http://192.168.1.50:8080` or `https://logshed.example.com`). Used in push notifications to generate direct clickable links to incident history details. | *(empty)* | No |
+| `ALLOW_PRIVATE_NOTIFICATION_TARGETS` | Permits notification webhooks to target local network / RFC 1918 private IPs and `.local`/`.internal`/`.lan` hosts (`true` or `false`). Set to `false` for stricter SSRF protection. | `true` | No |
 | `DATA_DIR` | Directory for persistent database files. | `/data` | No |
 | `DB_PATH` | Explicit path override for the SQLite database file. | `/data/logs.db` | No |
 | `CORS_ORIGINS` | Comma-separated origins permitted for cross-origin requests (empty in production). | *(empty)* | No |
@@ -282,6 +295,8 @@ To protect credentials from leaking into environment dumps or process listings, 
 - **AI Fallback Models**: Comma-separated secondary models for automatic failover during rate limits or timeouts
 - **Custom AI Base URL**: Optional endpoint for self-hosted LLMs (e.g., `http://192.168.1.50:11434/v1` for Ollama or vLLM)
 - **AI System Prompt**: Editable instructions guiding root-cause analysis role and structure
+- **Notification Channels**: Universal notification endpoints and webhooks via Apprise URL schemes, with live delivery testing, token masking, and encrypted URL storage
+- **Ingestion Drop Rules**: Filtering criteria (host, application, pattern) to discard noise before database persistence, with live drop counters and interactive test modal
 - **Active Log Retention**: Slider ranging from 1 to `MAX_RETENTION_DAYS` (default: 14 days)
 - **Internal Log Level**: Runtime dropdown to configure LogShed diagnostic log capture without restart
 - **Automated Update Checks**: Toggle to check GitHub Container Registry for new releases
@@ -313,8 +328,87 @@ LogShed monitors its own health by recording internal warnings and errors into i
 
 ### Secret Redaction & Raw Log Fidelity
 
-- **Sensitive Token Redaction**: Before log lines are sent to an external AI provider for diagnosis, LogShed passes the selected text through `redactor.py` to scrub API keys, JWTs, cloud credentials, passwords, and connection strings. You can review the redacted preview in the UI before confirming dispatch.
+- **Sensitive Token Redaction**: Before log lines are sent to an external AI provider for diagnosis or dispatched in outbound alert notifications, LogShed passes the text through `redactor.py` to scrub API keys, JWTs, cloud credentials, passwords, and connection strings. When initiating on-demand AI analysis in the console, you can review the redacted preview before confirming dispatch.
 - **Raw Log Fidelity**: In the database and live stream viewer, LogShed stores and displays original, unaltered log payloads. We avoid destructive regex stripping of message bodies so that stack traces, structured JSON payloads, and embedded application timestamps remain intact and verifiable.
+
+---
+
+## Real-Time Alerts & Security Canaries
+
+LogShed includes an in-memory alert evaluation engine that monitors incoming syslog messages and container logs in real time.
+
+Access alerts through the dedicated **Alerts** tab in the top navigation bar:
+
+- **Active Rules (`/alerts/rules`)**: Review, toggle, create, edit, and test custom alert rules.
+- **Quick Rules (`/alerts/presets`)**: 1-click installable security canaries for common homelab incidents:
+  - **SSH Brute-Force Attacks**: Detects repeated SSH authentication failures within a sliding window.
+  - **Reverse-Proxy Auth Floods**: Catches HTTP 401/403 status code bursts from Nginx, Traefik, or Caddy.
+  - **Sudo Privilege Escalation**: Immediate pattern alert when an unapproved user attempts `sudo` or command elevation.
+  - **Kernel Out-of-Memory (OOM) Killer**: Catches kernel memory panics and process terminations.
+- **Incident History (`/alerts/history`)**: Audit trail of triggered incidents with event counts, log excerpts, and full AI diagnosis reports.
+
+### Rule Evaluation Types
+
+1. **Threshold (Sliding Window)**:
+   - Tracks matching events within a rolling time window (for example, at least 5 events within 60 seconds).
+   - Ideal for burst detection, repeated failure spikes, and rate anomalies.
+2. **Pattern (Immediate Match)**:
+   - Triggers immediately on a single matching log line.
+   - Ideal for critical system alarms (such as kernel panics or hardware errors).
+
+### Cooldown Flap Dampening
+
+Every rule includes a configurable cooldown period (minimum 5 seconds, default 300 seconds). Once an alert fires, duplicate notifications are suppressed during the cooldown window to prevent notification floods while ongoing incidents are active.
+
+### Automated AI Incident Diagnosis
+
+When AI enrichment is enabled on a rule, LogShed automatically scrubs sensitive tokens from triggering logs and requests root-cause diagnosis from your configured AI provider. The resulting incident report includes a concise summary, root cause, and remediation commands directly in the notification and incident log.
+
+For full configuration details, syntax documentation, and practical examples, see the [Alert Rules Guide](docs/ALERT_RULES.md).
+
+---
+
+## Universal Notification Targets
+
+LogShed integrates [Apprise](https://github.com/caronc/apprise) to dispatch alerts across more than 80 notification services and custom webhook endpoints, including:
+
+- **Mobile Push & Messaging**: Pushover, Telegram, Discord, Gotify, Ntfy, Slack, Matrix, Signal
+- **Email & Webhooks**: Custom JSON webhooks, SMTP, SendGrid, Mailgun
+
+### Managing Notification Channels
+
+Configure notification endpoints in the **Settings** panel under **Notification Targets**:
+- Enter a standard Apprise URL (for example, `discord://webhook_id/webhook_token` or `pover://user_key@token`).
+- Click **Send Test Notification** to confirm network connectivity and payload delivery.
+- URLs are encrypted at rest with the master key, and credentials are automatically masked in the web interface.
+
+### Security & SSRF Safeguards
+
+Outbound notifications include built-in safeguards:
+- **SSRF Protection**: Blocks requests to Docker daemon control ports (`2375`, `2376`), container loopback addresses, and cloud instance metadata ranges (`169.254.169.254`).
+- **Private Subnet Control**: By default (`ALLOW_PRIVATE_NOTIFICATION_TARGETS=true`), webhooks can contact local homelab services and LAN IPs. Setting this to `false` blocks RFC 1918 private subnets and local domain names (`.local`, `.internal`, `.lan`).
+- **Credential & Secret Scrubbing**: All notification titles, log context lines, and AI summaries are processed through the secret redactor before leaving the server.
+
+---
+
+## Ingestion Drop Rules & Saved Views
+
+### Ingestion Drop Rules
+
+Homelab environments often generate repetitive log noise (such as periodic health checks or debug chatter) that clutters search views and consumes disk space.
+
+Ingestion drop rules evaluate incoming logs in memory before database insertion and FTS5 indexing:
+- **Rule Criteria**: Match against host/source, application/container, and message patterns (substring, regular expression, or wildcard `*`).
+- **Zero Disk Overhead**: Dropped logs are discarded immediately. Drop counters are held in memory and periodically flushed to SQLite without lock contention.
+- **Console Quick-Action**: Open any log entry in the Console, click **Create Drop Rule**, and LogShed pre-fills the rule creation modal with the host, application, and message context.
+- **Dry-Run Testing**: Test regular expressions and pattern logic against sample log payloads in the Settings panel before saving.
+
+### Saved Filter Views & URL Sync
+
+Save frequently used search queries and filter combinations for rapid recall:
+- Access saved views from the dropdown menu on the Console filter bar or the mobile navigation drawer.
+- Pin your preferred views for 1-tap activation.
+- Filter criteria automatically sync bidirectionally with browser URL query parameters, enabling direct bookmarking and link sharing across devices.
 
 ---
 
