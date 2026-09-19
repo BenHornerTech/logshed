@@ -491,7 +491,7 @@ class AlertRuleCreate(BaseModel):
     match_pattern: Optional[str] = Field(None, max_length=1000, description="Regex or keyword pattern to match against log messages")
     threshold_count: int = Field(1, ge=1, le=10000, description="Occurrences needed within window to trigger")
     window_seconds: int = Field(60, ge=1, le=86400, description="Sliding window duration in seconds")
-    cooldown_seconds: int = Field(300, ge=0, le=86400, description="Cooldown dampening duration in seconds")
+    cooldown_seconds: int = Field(300, ge=5, le=86400, description="Cooldown dampening duration in seconds")
     ai_enrichment: bool = Field(False, description="Whether to enrich incident alerts with LLM root-cause analysis")
     is_enabled: bool = Field(True, description="Whether the rule is actively evaluated")
 
@@ -506,7 +506,7 @@ class AlertRuleUpdate(BaseModel):
     match_pattern: Optional[str] = Field(None, max_length=1000)
     threshold_count: Optional[int] = Field(None, ge=1, le=10000)
     window_seconds: Optional[int] = Field(None, ge=1, le=86400)
-    cooldown_seconds: Optional[int] = Field(None, ge=0, le=86400)
+    cooldown_seconds: Optional[int] = Field(None, ge=5, le=86400)
     ai_enrichment: Optional[bool] = None
     is_enabled: Optional[bool] = None
     reset_cooldown: Optional[bool] = Field(False, description="Clear active cooldown suppression immediately")

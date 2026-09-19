@@ -314,16 +314,24 @@ class TestAlertsApi:
         conn.commit()
         conn.close()
 
-        # Update cooldown from 300s to 1s
+        # Update cooldown from 300s to 5s
         update_res = await client.put(
             f"/api/alerts/rules/{rule_id}",
-            json={"cooldown_seconds": 1},
+            json={"cooldown_seconds": 5},
             headers=auth_headers,
         )
         assert update_res.status_code == 200
-        # Since last trigger was 10s ago, 1s cooldown is already over, so suppress_until must be None!
+        # Since last trigger was 10s ago, 5s cooldown is already over, so suppress_until must be None!
         assert update_res.json()["suppress_until"] is None
-        assert update_res.json()["cooldown_seconds"] == 1
+        assert update_res.json()["cooldown_seconds"] == 5
+
+        # Verify cooldown_seconds < 5 is rejected by validation (422)
+        invalid_res = await client.put(
+            f"/api/alerts/rules/{rule_id}",
+            json={"cooldown_seconds": 4},
+            headers=auth_headers,
+        )
+        assert invalid_res.status_code == 422
 
     @pytest.mark.asyncio
     async def test_create_alert_rule_redos_patterns_rejected(self, client: AsyncClient, auth_headers: dict):

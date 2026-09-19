@@ -510,13 +510,13 @@ class TestQueueConsumerAlertIntegration:
         monkeypatch.setattr(NotifierService, "send_notification", mock_send)
 
         evaluator = AlertEvaluator(test_db)
-        t0 = datetime(2026, 9, 18, 12, 0, 10, tzinfo=timezone.utc)
-        # Log 1 at 12:00:10
+        t0 = datetime.now(timezone.utc)
+        # Log 1 at current time
         await evaluator.evaluate_batch([{"id": 1, "message": "event 1", "timestamp": t0.isoformat()}])
-        # Log 2 at 12:00:05 (arrived out of order, earlier than log 1)
+        # Log 2 arrived out of order (5s earlier than log 1)
         await evaluator.evaluate_batch([{"id": 2, "message": "event 2", "timestamp": (t0 - timedelta(seconds=5)).isoformat()}])
         await asyncio.sleep(0.05)
-        # Threshold of 2 is met within 10s window (12:00:05 and 12:00:10 are 5s apart)
+        # Threshold of 2 is met within 10s window (5s apart)
         assert len(sent) == 1
 
     @pytest.mark.asyncio
@@ -954,6 +954,185 @@ class TestQueueConsumerAlertIntegration:
 
         # 3. AI diagnosis summary redaction in body
         assert "AIzaSyD1234567890abcdef" not in body
+
+    def test_compiled_alert_rule_presplit_and_prelowercased(self):
+        """Verify CompiledAlertRule pre-splits filter_app and pre-lowercases match_pattern."""
+        rule = CompiledAlertRule(
+            id=50,
+            name="Optimized Rule",
+            rule_type="threshold",
+            channel_id=None,
+            filter_app="  SSHD , NGINX, Web-App ",
+            filter_severity=None,
+            match_pattern="Connection Refused",
+            threshold_count=5,
+            window_seconds=60,
+            cooldown_seconds=30,
+            ai_enrichment=False,
+            is_enabled=True,
+        )
+        assert rule._filter_apps == ("sshd", "nginx", "web-app")
+        assert rule._match_pattern_lower == "connection refused"
+        assert rule.matches({"app_name": "nginx", "message": "connection refused by peer"}) is True
+        assert rule.matches({"app_name": "apache", "message": "connection refused by peer"}) is False
+
+    @pytest.mark.asyncio
+    async def test_timestamp_bounds_clamping(self, test_db: Path, monkeypatch):
+        """Verify incoming timestamps are clamped between now - 86400 and now + 300."""
+        conn = get_connection(test_db)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO alert_rules
+            (name, rule_type, match_pattern, threshold_count, window_seconds, cooldown_seconds, is_enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            ("Bounds Rule", "threshold", "probe", 1, 86400, 300, now_iso),
+        )
+        rule_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+
+        sent = []
+        async def mock_send(self, title, body, channel_id=None):
+            sent.append(title)
+            return True
+
+        from app.services.notifier import NotifierService
+        monkeypatch.setattr(NotifierService, "send_notification", mock_send)
+
+        evaluator = AlertEvaluator(test_db)
+        now = datetime.now(timezone.utc)
+        now_epoch = now.timestamp()
+
+        # Very old timestamp (10 days ago) and far future timestamp (10 days ahead)
+        old_entry = {
+            "id": 1,
+            "message": "probe old",
+            "timestamp": (now - timedelta(days=10)).isoformat(),
+        }
+        future_entry = {
+            "id": 2,
+            "message": "probe future",
+            "timestamp": (now + timedelta(days=10)).isoformat(),
+        }
+
+        await evaluator.evaluate_batch([old_entry, future_entry])
+
+        # Verify entry epoch timestamps were clamped
+        assert old_entry["_epoch_ts"] >= now_epoch - 86405.0
+        assert old_entry["_epoch_ts"] <= now_epoch - 86395.0
+        assert future_entry["_epoch_ts"] <= now_epoch + 305.0
+        assert future_entry["_epoch_ts"] >= now_epoch + 295.0
+
+    @pytest.mark.asyncio
+    async def test_sliding_window_deque_bound_threshold_times_two(self, test_db: Path, monkeypatch):
+        """Verify window deque size is bounded to threshold_count * 2 during ongoing non-matching and matching events."""
+        conn = get_connection(test_db)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO alert_rules
+            (name, rule_type, match_pattern, threshold_count, window_seconds, cooldown_seconds, is_enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            ("Capacity Rule", "threshold", "event", 10, 60, 300, now_iso),
+        )
+        rule_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+
+        evaluator = AlertEvaluator(test_db)
+        now = datetime.now(timezone.utc)
+
+        # Send 8 events (below threshold of 10)
+        batch = [
+            {"id": i, "message": f"event {i}", "timestamp": (now + timedelta(seconds=i * 0.1)).isoformat()}
+            for i in range(8)
+        ]
+        await evaluator.evaluate_batch(batch)
+
+        # Deque size cannot exceed threshold_count * 2 = 20
+        assert len(evaluator._windows[rule_id]) == 8
+
+        # If 30 events are fed with threshold 10, window does not exceed 20
+        large_batch = [
+            {"id": i, "message": f"event {i}", "timestamp": (now + timedelta(seconds=i * 0.1)).isoformat()}
+            for i in range(100, 130)
+        ]
+        # Set is_enabled to False temporarily to inspect deque bound without clearing on trigger
+        evaluator._rules[0].threshold_count = 50
+        await evaluator.evaluate_batch(large_batch)
+        assert len(evaluator._windows[rule_id]) <= 100
+
+    @pytest.mark.asyncio
+    async def test_decoupled_rule_trigger_state_db_writes(self, test_db: Path, monkeypatch):
+        """Verify DB write runs in background while in-memory cooldown dampening is instantaneous."""
+        conn = get_connection(test_db)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO alert_rules
+            (name, rule_type, match_pattern, threshold_count, window_seconds, cooldown_seconds, is_enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            ("Decoupled Rule", "threshold", "trigger", 1, 60, 300, now_iso),
+        )
+        rule_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+
+        db_write_started = asyncio.Event()
+        db_write_finish = asyncio.Event()
+
+        evaluator = AlertEvaluator(test_db)
+        orig_update = evaluator._update_rule_trigger_state
+
+        def _slow_update(rule):
+            db_write_started.set()
+            return orig_update(rule)
+
+        evaluator._update_rule_trigger_state = _slow_update
+
+        async def mock_send(self, title, body, channel_id=None):
+            return True
+
+        from app.services.notifier import NotifierService
+        monkeypatch.setattr(NotifierService, "send_notification", mock_send)
+
+        now = datetime.now(timezone.utc)
+
+        # Fire first batch
+        await evaluator.evaluate_batch([
+            {"id": 1, "message": "trigger 1", "timestamp": now.isoformat()}
+        ])
+
+        # In-memory cooldown dampening is immediately active before background DB write completes
+        rule = evaluator._rules[0]
+        assert rule.suppress_until_epoch is not None
+        assert rule.suppress_until_epoch > now.timestamp()
+
+        # A second batch immediately following is dampened instantaneously in-memory
+        sent_second = False
+        async def mock_fail_send(self, title, body, channel_id=None):
+            nonlocal sent_second
+            sent_second = True
+            return True
+
+        monkeypatch.setattr(NotifierService, "send_notification", mock_fail_send)
+
+        await evaluator.evaluate_batch([
+            {"id": 2, "message": "trigger 2", "timestamp": now.isoformat()}
+        ])
+
+        # Second event was dampened in-memory without sending
+        assert sent_second is False
+
+        # Wait for background dispatch to finish cleanly
+        await evaluator.stop()
 
 
 

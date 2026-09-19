@@ -419,3 +419,39 @@ class TestNotificationsApi:
             assert "<strong>Alert: Auth Spike</strong>" in payload.get("message")
             assert "**Alert:" not in payload.get("message")
 
+    def test_notification_worker_pool_configuration(self):
+        """Verify that the notification thread pool is configured with 4 workers and proper thread prefix."""
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from app.services.notifier import get_notification_executor
+
+        executor = get_notification_executor()
+        assert isinstance(executor, ThreadPoolExecutor)
+        assert executor._max_workers == 4
+        assert executor._thread_name_prefix == "logshed-notifier"
+
+        # Verify thread prefix on running thread
+        def _get_thread_name():
+            return threading.current_thread().name
+
+        future = executor.submit(_get_thread_name)
+        thread_name = future.result(timeout=2.0)
+        assert thread_name.startswith("logshed-notifier")
+
+    def test_notification_worker_pool_shutdown(self):
+        """Verify shutdown_notifier_executor terminates executor and get_notification_executor refreshes."""
+        from app.services.notifier import (
+            get_notification_executor,
+            shutdown_notifier_executor,
+        )
+
+        executor = get_notification_executor()
+        shutdown_notifier_executor(wait=True)
+        assert executor._shutdown is True
+
+        # Calling get_notification_executor creates a fresh active pool
+        fresh_executor = get_notification_executor()
+        assert fresh_executor is not executor
+        assert fresh_executor._shutdown is False
+        assert fresh_executor._thread_name_prefix == "logshed-notifier"
+

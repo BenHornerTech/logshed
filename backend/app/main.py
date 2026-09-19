@@ -335,6 +335,12 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Error stopping AlertEvaluator: {e}")
 
     try:
+        from app.services.notifier import shutdown_notifier_executor
+        shutdown_notifier_executor(wait=True)
+    except Exception as e:
+        logger.warning(f"Error shutting down notification executor: {e}")
+
+    try:
         from app.services.drop_filter import get_drop_filter
         get_drop_filter().flush_counts()
     except Exception as e:

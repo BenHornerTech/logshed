@@ -109,10 +109,21 @@ class CompiledAlertRule:
         self.suppress_until_epoch: Optional[float] = None
         self._recompute_suppress_epoch()
 
+        # Pre-split comma-delimited filter_app into a tuple of stripped, lowercased strings (PERF-02)
+        if self.filter_app and self.filter_app.strip():
+            self._filter_apps = tuple(
+                p.strip().lower() for p in self.filter_app.split(",") if p.strip()
+            )
+        else:
+            self._filter_apps = ()
+
         self.compiled_regex: Optional[re.Pattern] = None
+        self._match_pattern_lower: Optional[str] = None
         if self.match_pattern and self.match_pattern.strip() and self.match_pattern.strip() != "*":
+            clean_pat = self.match_pattern.strip()
+            self._match_pattern_lower = clean_pat.lower()
             try:
-                self.compiled_regex = re.compile(self.match_pattern.strip(), re.IGNORECASE)
+                self.compiled_regex = re.compile(clean_pat, re.IGNORECASE)
             except re.error:
                 self.compiled_regex = None
 
@@ -141,11 +152,10 @@ class CompiledAlertRule:
         if not self.is_enabled:
             return False
 
-        # 1. App filter check (supports comma-separated apps from multi-select)
-        if self.filter_app and self.filter_app.strip():
+        # 1. App filter check (supports pre-split comma-separated apps from multi-select)
+        if self._filter_apps:
             app_name = entry.get("app_name") or ""
-            patterns = [p.strip() for p in self.filter_app.split(",") if p.strip()]
-            if patterns and not any(match_wildcard(p, app_name) for p in patterns):
+            if not any(match_wildcard(p, app_name) for p in self._filter_apps):
                 return False
 
         # 2. Severity filter check (syslog 0-7, lower is more severe)
@@ -155,8 +165,8 @@ class CompiledAlertRule:
             if actual_sev > self.filter_severity:
                 return False
 
-        # 3. Message pattern check
-        if self.match_pattern and self.match_pattern.strip() and self.match_pattern.strip() != "*":
+        # 3. Message pattern check (using cached regex or pre-lowercased substring)
+        if self._match_pattern_lower:
             message = str(entry.get("message") or "")
             raw = str(entry.get("raw") or "")
 
@@ -164,7 +174,7 @@ class CompiledAlertRule:
                 if not (self.compiled_regex.search(message) or (raw and self.compiled_regex.search(raw))):
                     return False
             else:
-                pat_lower = self.match_pattern.strip().lower()
+                pat_lower = self._match_pattern_lower
                 if pat_lower not in message.lower() and (not raw or pat_lower not in raw.lower()):
                     return False
 
@@ -275,46 +285,67 @@ class AlertEvaluator:
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         now_epoch = now_utc.timestamp()
         now_iso = now_utc.isoformat()
+        min_epoch = now_epoch - 86400.0
+        max_epoch = now_epoch + 300.0
+
+        # Pre-parse and store normalized float epoch timestamps on incoming log entries (PERF-02, SEC-05)
+        for entry in batch:
+            ts_val = entry.get("timestamp")
+            entry_epoch = now_epoch
+            if ts_val:
+                try:
+                    clean_ts = str(ts_val).replace("Z", "+00:00")
+                    dt = datetime.datetime.fromisoformat(clean_ts)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=datetime.timezone.utc)
+                    entry_epoch = dt.timestamp()
+                except Exception:
+                    entry_epoch = now_epoch
+
+            # Clamp incoming entry epoch timestamps between now_epoch - 86400 and now_epoch + 300 (SEC-05)
+            if entry_epoch < min_epoch:
+                entry_epoch = min_epoch
+            elif entry_epoch > max_epoch:
+                entry_epoch = max_epoch
+            entry["_epoch_ts"] = entry_epoch
 
         fired_events: list[tuple[CompiledAlertRule, list[dict[str, Any]]]] = []
 
         with self._lock:
             for rule in rules:
                 window = self._windows.setdefault(rule.id, deque())
+                # Compute window cutoff using now_epoch - rule.window_seconds (SEC-05)
+                window_cutoff = now_epoch - rule.window_seconds
+                max_window_size = rule.threshold_count * 2
 
                 for entry in batch:
                     try:
                         if not rule.matches(entry):
                             continue
 
-                        # Extract log timestamp ensuring UTC
-                        ts_val = entry.get("timestamp")
-                        entry_epoch = now_epoch
-                        if ts_val:
-                            try:
-                                clean_ts = str(ts_val).replace("Z", "+00:00")
-                                dt = datetime.datetime.fromisoformat(clean_ts)
-                                if dt.tzinfo is None:
-                                    dt = dt.replace(tzinfo=datetime.timezone.utc)
-                                entry_epoch = dt.timestamp()
-                            except Exception:
-                                entry_epoch = now_epoch
+                        entry_epoch = entry.get("_epoch_ts", now_epoch)
 
                         # Evict expired entries outside the sliding window
-                        window_cutoff = entry_epoch - rule.window_seconds
                         while window and window[0][0] < window_cutoff:
                             window.popleft()
 
-                        # Append entry preserving chronological order under timestamp skew
+                        # Skip entries that fall outside the active sliding window
+                        if entry_epoch < window_cutoff:
+                            continue
+
+                        # Append entry preserving chronological order under timestamp jitter (PERF-02)
                         if not window or entry_epoch >= window[-1][0]:
                             window.append((entry_epoch, entry))
                         else:
-                            window.append((entry_epoch, entry))
-                            sorted_items = sorted(window, key=lambda x: x[0])
-                            window.clear()
-                            window.extend(sorted_items)
-                            while window and window[0][0] < window_cutoff:
-                                window.popleft()
+                            # Backwards linear search for insertion index to avoid full deque sorting
+                            idx = len(window)
+                            while idx > 0 and window[idx - 1][0] > entry_epoch:
+                                idx -= 1
+                            window.insert(idx, (entry_epoch, entry))
+
+                        # Bound maximum deque size to rule.threshold_count * 2 (SEC-05)
+                        while len(window) > max_window_size:
+                            window.popleft()
 
                         # Check threshold condition
                         if len(window) >= rule.threshold_count:
@@ -324,7 +355,7 @@ class AlertEvaluator:
                             )
 
                             if is_suppressed:
-                                # Cap window to threshold_count during cooldown to avoid memory ballooning
+                                # Cap window to threshold_count during cooldown to avoid memory expansion
                                 while len(window) > rule.threshold_count:
                                     window.popleft()
                             else:
@@ -346,10 +377,8 @@ class AlertEvaluator:
                         logger.debug(f"Error evaluating rule {rule.id}: {e}")
                         continue
 
-        # Process fired alert events outside lock
+        # Process fired alert events outside lock (PERF-04)
         for rule, logs in fired_events:
-            # Update database state for rule non-blocking via asyncio.to_thread
-            await asyncio.to_thread(self._update_rule_trigger_state, rule)
             # Dispatch alert notification asynchronously in background with lifecycle tracking
             task = asyncio.create_task(self._dispatch_alert(rule, logs))
             self._pending_tasks.add(task)
@@ -384,11 +413,15 @@ class AlertEvaluator:
     ) -> None:
         """
         Process alert firing:
-        1. Extract IP indicators (for security canary alerts).
-        2. Perform AI diagnosis enrichment if enabled.
-        3. Persist record into alert_history table non-blocking via asyncio.to_thread.
-        4. Send notification via NotifierService.
+        1. Persist rule trigger state to SQLite non-blocking via asyncio.to_thread (PERF-04).
+        2. Extract IP indicators (for security canary alerts).
+        3. Perform AI diagnosis enrichment if enabled.
+        4. Persist record into alert_history table non-blocking via asyncio.to_thread.
+        5. Send notification via NotifierService.
         """
+        # Persist rule trigger state to SQLite non-blocking in worker thread (PERF-04)
+        await asyncio.to_thread(self._update_rule_trigger_state, rule)
+
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         now_iso = now_utc.isoformat()
 

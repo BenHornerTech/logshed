@@ -8,6 +8,7 @@ test deliveries, and asynchronous dispatch using asyncio.to_thread.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import logging
 import os
@@ -20,6 +21,31 @@ import apprise
 from app.core.security import decrypt_value, encrypt_value
 
 logger = logging.getLogger(__name__)
+
+# Dedicated notification worker pool
+_notification_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="logshed-notifier",
+)
+
+
+def get_notification_executor() -> ThreadPoolExecutor:
+    """Return the dedicated notification ThreadPoolExecutor instance."""
+    global _notification_executor
+    if _notification_executor is None or getattr(_notification_executor, "_shutdown", False):
+        _notification_executor = ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="logshed-notifier",
+        )
+    return _notification_executor
+
+
+def shutdown_notifier_executor(wait: bool = True) -> None:
+    """Terminate the dedicated notification ThreadPoolExecutor gracefully."""
+    global _notification_executor
+    if _notification_executor is not None:
+        _notification_executor.shutdown(wait=wait)
+
 
 # Blocked metadata, loopback, and private IP networks
 _METADATA_NETWORKS = [
@@ -371,7 +397,20 @@ class NotifierService:
             logger.debug("No active notification channels found for dispatch.")
             return False
 
-        return await asyncio.to_thread(_sync_send_notification, urls, title, body, body_format)
+        loop = asyncio.get_running_loop()
+        executor = _notification_executor if (_notification_executor is not None and not getattr(_notification_executor, "_shutdown", False)) else get_notification_executor()
+        return await loop.run_in_executor(
+            executor,
+            _sync_send_notification,
+            urls,
+            title,
+            body,
+            body_format,
+        )
+
+    def shutdown(self, wait: bool = True) -> None:
+        """Terminate the notification worker pool gracefully."""
+        shutdown_notifier_executor(wait=wait)
 
 
 _notifier_instance: Optional[NotifierService] = None
