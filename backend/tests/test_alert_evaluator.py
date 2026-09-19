@@ -306,15 +306,74 @@ class TestAlertEvaluatorEngine:
         await evaluator.stop()
 
         assert len(sent_payloads) == 1
+        assert sent_payloads[0]["title"] == "LogShed Alert: SSH Threat"
         body = sent_payloads[0]["body"]
-        assert "**App:** sshd" in body
-        assert "192.168.1.105" in body
-        assert "AI Incident Diagnosis" in body
-        assert "Automated SSH brute-force attack detected." in body
+        assert "LogShed Alert: SSH Threat" not in body
+        assert "App: sshd" in body
+        assert "Log: Failed password for invalid user admin from 192.168.1.105 port 55122 ssh2" in body
+        assert "AI Analysis: Automated SSH brute-force attack detected." in body
+        assert "Link:" not in body
 
         # Verify AI prompt contained Host / App metadata
         ai_prompt = captured_ai_kwargs.get("prompt_override", "")
         assert "App / Container: sshd" in ai_prompt
+
+    @pytest.mark.asyncio
+    async def test_app_url_configured_includes_link_in_notification(self, test_db: Path, monkeypatch):
+        """Verify that when APP_URL is configured, the notification includes the link to /alerts/history."""
+        monkeypatch.setenv("APP_URL", "https://logshed.lan:8443")
+        conn = get_connection(test_db)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO alert_rules
+            (name, rule_type, filter_app, match_pattern, threshold_count, window_seconds, cooldown_seconds, ai_enrichment, is_enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+            """,
+            ("App URL Test Rule", "threshold", "sshd", "Failed password", 1, 60, 300, now_iso),
+        )
+        conn.commit()
+        conn.close()
+
+        sent_payloads = []
+
+        async def mock_send(self, title, body, channel_id=None, **kwargs):
+            sent_payloads.append({"title": title, "body": body})
+            return True
+
+        from app.services.notifier import NotifierService
+        monkeypatch.setattr(NotifierService, "send_notification", mock_send)
+
+        async def mock_execute_ai_analysis(*args, **kwargs):
+            return (
+                "Test incident diagnosis",
+                "Take action",
+                "prompt text",
+                100,
+                50,
+                0,
+                150,
+                "gemini-2.5-flash",
+                [],
+            )
+
+        import app.services.ai_engine as ai_engine
+        monkeypatch.setattr(ai_engine, "execute_ai_analysis", mock_execute_ai_analysis)
+
+        evaluator = AlertEvaluator(test_db)
+        log_entry = {
+            "id": 2,
+            "app_name": "sshd",
+            "message": "Failed password for root from 10.0.0.5 port 22",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        await evaluator.evaluate_batch([log_entry])
+        await evaluator.stop()
+
+        assert len(sent_payloads) == 1
+        body = sent_payloads[0]["body"]
+        assert "Link: https://logshed.lan:8443/alerts/history" in body
 
 
 class TestSecurityPresets:
@@ -650,10 +709,13 @@ class TestQueueConsumerAlertIntegration:
 
         # Notification still sent despite AI failure!
         assert len(sent_payloads) == 1
+        assert sent_payloads[0]["title"] == "LogShed Alert: Critical API Error"
         body = sent_payloads[0]["body"]
-        assert "Alert: Critical API Error" in body
-        assert "500 Internal Server Error in payment endpoint" in body
-        assert "AI Incident Diagnosis unavailable: Gemini API error: 504 DEADLINE_EXCEEDED" in body
+        assert "LogShed Alert: Critical API Error" not in body
+        assert "App: api" in body
+        assert "Log: 500 Internal Server Error in payment endpoint" in body
+        assert "AI Analysis: Unavailable (Gemini API error: 504 DEADLINE_EXCEEDED)" in body
+        assert "Link:" not in body
 
         # Verify incident history recorded failure
         conn = get_connection(test_db)
@@ -727,8 +789,13 @@ class TestQueueConsumerAlertIntegration:
         # Primary failed, fallback succeeded!
         assert attempted_models == ["gemini-3.7-flash", "gemini-2.5-flash"]
         assert len(sent_payloads) == 1
+        assert sent_payloads[0]["title"] == "LogShed Alert: Failover Test Rule"
         body = sent_payloads[0]["body"]
+        assert "LogShed Alert: Failover Test Rule" not in body
+        assert "App: nginx" in body
+        assert "Log: 504 upstream timed out" in body
         assert "Upstream gateway recovery" in body
+        assert "Link:" not in body
 
         # Verify alert history recorded the successful diagnosis from fallback
         conn = get_connection(test_db)
@@ -801,8 +868,12 @@ class TestQueueConsumerAlertIntegration:
         # Both models were attempted
         assert attempted_models == ["gemini-3.8-flash", "gemini-3.7-flash"]
         assert len(sent_payloads) == 1
+        assert sent_payloads[0]["title"] == "LogShed Alert: All Fail Rule"
         body = sent_payloads[0]["body"]
+        assert "LogShed Alert: All Fail Rule" not in body
+        assert "Log: Critical hardware watchdog fired" in body
         assert "All 2 models failed (gemini-3.8-flash, gemini-3.7-flash)" in body
+        assert "Link:" not in body
 
         # Verify alert history recorded clear multi-model failure
         conn = get_connection(test_db)

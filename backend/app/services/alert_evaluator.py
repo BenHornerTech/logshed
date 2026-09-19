@@ -11,6 +11,7 @@ from collections import deque
 import datetime
 import fnmatch
 import logging
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -540,33 +541,30 @@ class AlertEvaluator:
         except Exception as db_err:
             logger.error(f"Failed to record alert history for rule {rule.id}: {db_err}")
 
-        # Construct clean rich notification payload (Apprise transforms markdown into HTML for Pushover/webhooks)
-        notification_title = f"[LogShed Alert] {rule.name}"
+        # Construct clean push notification payload
+        notification_title = f"LogShed Alert: {rule.name}"
         truncated_log = format_sample_log_for_alert(sample_log)
-        body_parts = [
-            f"**Alert: {rule.name}**",
+        clean_log = truncated_log.replace("```", "").replace("`", "").strip()
+        body_lines = [
+            f"Host: {extracted_host or 'Unknown'}",
+            f"App: {extracted_app or 'Unknown'}",
+            f"Log: {clean_log}",
         ]
-        if extracted_host:
-            body_parts.append(f"**Host:** {extracted_host}")
-        if extracted_app:
-            body_parts.append(f"**App:** {extracted_app}")
-        if extracted_ip:
-            body_parts.append(f"**IP:** {extracted_ip}")
-        if truncated_log:
-            clean_log = truncated_log.replace("```", "").replace("`", "")
-            body_parts.append(f"**Log:**\n{clean_log}")
 
         if rule.ai_enrichment:
             if ai_success and summary:
                 clean_summary = strip_markdown(summary)
                 if len(clean_summary) > 200:
-                    clean_summary = clean_summary[:200] + "..."
-                model_str = f" ({actual_ai_model})" if actual_ai_model else ""
-                body_parts.append(f"**AI Incident Diagnosis{model_str}:**\n{clean_summary}\n*(View full analysis in LogShed UI)*")
+                    clean_summary = clean_summary[:197] + "..."
+                body_lines.append(f"AI Analysis: {clean_summary}")
             elif ai_error_note:
-                body_parts.append(f"*(AI Incident Diagnosis unavailable: {ai_error_note} - view in LogShed UI)*")
+                body_lines.append(f"AI Analysis: Unavailable ({ai_error_note})")
 
-        notification_body = "\n\n".join(body_parts)
+            app_url = (os.environ.get("APP_URL") or os.environ.get("app_url") or "").strip().rstrip("/")
+            if app_url:
+                body_lines.append(f"Link: {app_url}/alerts/history")
+
+        notification_body = "\n".join(body_lines)
 
         notifier = get_notifier()
         try:

@@ -87,6 +87,7 @@ const mockChannels = [
 describe('AlertsPanel Component', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    window.history.pushState(null, '', '/alerts');
     vi.spyOn(alertsApi, 'fetchAlertRules').mockResolvedValue(mockRules);
     vi.spyOn(alertsApi, 'fetchSecurityPresets').mockResolvedValue(mockPresets);
     vi.spyOn(alertsApi, 'fetchAlertHistory').mockResolvedValue(mockHistory);
@@ -370,4 +371,148 @@ describe('AlertsPanel Component', () => {
       expect(screen.getByText('192.168.1.100')).toBeInTheDocument();
     });
   });
+
+  it('displays Log Message header and opens modal overlay on incident row click', async () => {
+    render(<AlertsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('SSH Brute-Force Detection')).toBeInTheDocument();
+    });
+
+    const historyTab = screen.getByRole('button', { name: /Incident History/i });
+    fireEvent.click(historyTab);
+
+    await waitFor(() => {
+      expect(screen.getByText('LOG MESSAGE')).toBeInTheDocument();
+      expect(screen.queryByText('Sample Log')).toBeNull();
+    });
+
+    // Click on the incident row
+    const row = await screen.findByText('Failed password for root from 192.168.1.100 port 22');
+    fireEvent.click(row);
+
+    // Verify modal overlay opens with Incident Analysis title
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Incident Analysis & Log Details' })).toBeInTheDocument();
+      expect(screen.getByText('Brute-force attack from host 192.168.1.100 against root.')).toBeInTheDocument();
+      expect(screen.getByText('Triggering Log Snippet')).toBeInTheDocument();
+    });
+
+    // Close modal
+    const closeBtn = screen.getByRole('button', { name: 'Close dialog' });
+    fireEvent.click(closeBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Incident Analysis & Log Details' })).toBeNull();
+    });
+  });
+
+  it('synchronizes alert subtab URLs and updates on browser popstate', async () => {
+    const pushStateSpy = vi.spyOn(window.history, 'pushState');
+    render(<AlertsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('SSH Brute-Force Detection')).toBeInTheDocument();
+    });
+
+    // Click Quick Rules
+    const presetsTab = screen.getByRole('button', { name: /Quick Rules \(\d+\)/i });
+    fireEvent.click(presetsTab);
+    expect(pushStateSpy).toHaveBeenCalledWith(null, '', '/alerts/presets');
+
+    // Click Incident History
+    const historyTab = screen.getByRole('button', { name: /Incident History \(\d+\)/i });
+    fireEvent.click(historyTab);
+    expect(pushStateSpy).toHaveBeenCalledWith(null, '', '/alerts/history');
+
+    // Click Active Rules
+    const rulesTab = screen.getByRole('button', { name: /Active Rules \(\d+\)/i });
+    fireEvent.click(rulesTab);
+    expect(pushStateSpy).toHaveBeenCalledWith(null, '', '/alerts/rules');
+  });
+
+  it('displays updated description without QueueConsumer and matches Rule Guide link styling in modal', async () => {
+    render(<AlertsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Rules evaluated continuously against ingested log batches.')).toBeInTheDocument();
+      expect(screen.queryByText(/by QueueConsumer/)).toBeNull();
+    });
+
+    // Open Create Rule modal
+    const newRuleBtn = screen.getByRole('button', { name: /New Alert Rule/i });
+    fireEvent.click(newRuleBtn);
+
+    await waitFor(() => {
+      const docLink = screen.getByTitle('Open Alert Rules Documentation');
+      expect(docLink).toBeInTheDocument();
+      expect(docLink.className).toContain('hover:underline');
+      expect(docLink.className).toContain('inline-flex');
+    });
+  });
+
+  it('highlights inactive or missing notification channel on rules without extra pill', async () => {
+    const rulesWithBadChannel = [
+      {
+        id: 99,
+        name: 'Orphan Channel Rule',
+        rule_type: 'threshold',
+        channel_id: 999, // channel 999 does not exist
+        filter_app: 'nginx',
+        filter_severity: null,
+        match_pattern: 'error',
+        threshold_count: 1,
+        window_seconds: 60,
+        cooldown_seconds: 300,
+        ai_enrichment: false,
+        is_enabled: true,
+        trigger_count: 0,
+        last_triggered_at: null,
+        suppress_until: null,
+        created_at: '2026-09-18T09:00:00Z',
+      },
+      {
+        id: 100,
+        name: 'All Channels Rule',
+        rule_type: 'threshold',
+        channel_id: null,
+        filter_app: null,
+        filter_severity: null,
+        match_pattern: null,
+        threshold_count: 1,
+        window_seconds: 60,
+        cooldown_seconds: 300,
+        ai_enrichment: false,
+        is_enabled: true,
+        trigger_count: 0,
+        last_triggered_at: null,
+        suppress_until: null,
+        created_at: '2026-09-18T09:00:00Z',
+      },
+    ];
+
+    const channelsWithDisabled = [
+      {
+        id: 1,
+        name: 'Discord Ops',
+        url: 'discord://webhook/********',
+        is_enabled: false,
+        created_at: '2026-09-18T08:00:00Z',
+        updated_at: '2026-09-18T08:00:00Z',
+      },
+    ];
+
+    vi.spyOn(alertsApi, 'fetchAlertRules').mockResolvedValue(rulesWithBadChannel);
+    vi.spyOn(notificationsApi, 'fetchNotificationChannels').mockResolvedValue(channelsWithDisabled);
+    render(<AlertsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Orphan Channel Rule')).toBeInTheDocument();
+      expect(screen.queryByText('Channel Inactive')).toBeNull();
+      expect(screen.getByText('(Channel not found or deleted)')).toBeInTheDocument();
+      expect(screen.getByText('All Channels Rule')).toBeInTheDocument();
+      expect(screen.getByText('(1 or more target channels disabled)')).toBeInTheDocument();
+    });
+  });
 });
+

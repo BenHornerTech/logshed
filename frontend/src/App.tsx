@@ -20,7 +20,7 @@ export const pathToTab = (pathname: string): AppTab => {
   const clean = pathname.replace(/\/+$/, '').toLowerCase();
   if (clean === '/aliases') return 'aliases';
   if (clean === '/storage') return 'storage';
-  if (clean === '/alerts') return 'alerts';
+  if (clean === '/alerts' || clean.startsWith('/alerts/')) return 'alerts';
   if (clean === '/settings') return 'settings';
   return 'stream';
 };

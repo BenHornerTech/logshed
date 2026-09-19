@@ -26,6 +26,10 @@ vi.mock('../components/storage/StoragePanel.tsx', () => ({
   StoragePanel: () => <div data-testid="storage-panel">Storage Content</div>,
 }));
 
+vi.mock('../components/alerts/AlertsPanel.tsx', () => ({
+  AlertsPanel: () => <div data-testid="alerts-panel">Alerts Content</div>,
+}));
+
 describe('URL Routing and History API Synchronization', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -73,6 +77,11 @@ describe('URL Routing and History API Synchronization', () => {
       expect(pathToTab('/aliases')).toBe('aliases');
       expect(pathToTab('/aliases/')).toBe('aliases');
       expect(pathToTab('/storage')).toBe('storage');
+      expect(pathToTab('/alerts')).toBe('alerts');
+      expect(pathToTab('/alerts/rules')).toBe('alerts');
+      expect(pathToTab('/alerts/presets')).toBe('alerts');
+      expect(pathToTab('/alerts/quick-rules')).toBe('alerts');
+      expect(pathToTab('/alerts/history')).toBe('alerts');
       expect(pathToTab('/settings')).toBe('settings');
       expect(pathToTab('/unknown-path')).toBe('stream');
     });
@@ -81,6 +90,7 @@ describe('URL Routing and History API Synchronization', () => {
       expect(tabToPath('stream')).toBe('/');
       expect(tabToPath('aliases')).toBe('/aliases');
       expect(tabToPath('storage')).toBe('/storage');
+      expect(tabToPath('alerts')).toBe('/alerts');
       expect(tabToPath('settings')).toBe('/settings');
     });
   });
@@ -111,6 +121,15 @@ describe('URL Routing and History API Synchronization', () => {
 
       await waitFor(() => {
         expect(screen.getByTestId('host-alias-manager')).toBeInTheDocument();
+      });
+    });
+
+    it('initializes on alerts tab when URL pathname is /alerts or /alerts/history', async () => {
+      window.history.pushState(null, '', '/alerts/history');
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('alerts-panel')).toBeInTheDocument();
       });
     });
 

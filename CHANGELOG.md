@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Alert Firing Log & Unified Incident Detail View**: Historical alert record tracking with model attribution, matching event counts, log snippets with quick copy actions, and formatted markdown rendering matching the Historical AI Root-Cause Analysis layout.
 - **Database Schema Migration v2 Expansion**: Expanded Migration 2 to introduce `notification_channels`, `alert_rules`, and `alert_history` tables with covering indexes for alert routing and delivery.
 
+### Changed
+- **Alerts Tab Layout Alignment**: Standardized container width and header styling in the Alerts tab to match Storage and Settings, including seamless Alert Firing Log table headers.
+- **Alerts Subtab Deep-Linking**: Added unique browser URL routes for Active Rules (`/alerts/rules`), Quick Rules (`/alerts/presets`), and Incident History (`/alerts/history`) with bidirectional browser navigation.
+- **Incident History Modal Presentation**: Replaced inline accordion rows in Incident History with responsive desktop table and mobile card layouts that open a dedicated modal overlay for log analysis and diagnosis details.
+- **Alert Rule Documentation & Channel Status**: Unified documentation link styling with syntax documentation in Settings, and added real-time inactive and deleted channel warnings on rule cards.
+- **Alert Push Notification Formatting**: Streamlined push notification payload to avoid repeating the alert title in message bodies, appends AI diagnosis details, and generates direct history links when `APP_URL` is configured.
+
 ## [1.1.0] - 2026-09-16
 
 ### Added

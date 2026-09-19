@@ -13,8 +13,6 @@ import {
   Zap,
   FlaskConical,
   ExternalLink,
-  ChevronDown,
-  ChevronRight,
 } from 'lucide-react';
 import {
   AlertHistoryItem,
@@ -41,11 +39,38 @@ import { fetchLogFacets } from '../../api/logs.ts';
 import { MultiSelectDropdown } from '../common/MultiSelectDropdown.tsx';
 import { Modal } from '../common/Modal.tsx';
 import { IncidentHistoryDetail } from './IncidentHistoryDetail.tsx';
+import { useMediaQuery } from '../../utils/hooks.ts';
 
-type AlertViewTab = 'rules' | 'presets' | 'history';
+export type AlertViewTab = 'rules' | 'presets' | 'history';
+
+export const pathToAlertSubTab = (pathname: string): AlertViewTab => {
+  const clean = pathname.replace(/\/+$/, '').toLowerCase();
+  if (clean === '/alerts/presets' || clean === '/alerts/quick-rules' || clean === '/alerts/quick') {
+    return 'presets';
+  }
+  if (clean === '/alerts/history') {
+    return 'history';
+  }
+  return 'rules';
+};
+
+export const alertSubTabToPath = (subTab: AlertViewTab): string => {
+  switch (subTab) {
+    case 'presets':
+      return '/alerts/presets';
+    case 'history':
+      return '/alerts/history';
+    case 'rules':
+    default:
+      return '/alerts/rules';
+  }
+};
 
 export const AlertsPanel: React.FC = () => {
-  const [activeSubTab, setActiveSubTab] = useState<AlertViewTab>('rules');
+  const isMobile = useMediaQuery('(max-width: 767px)');
+  const [activeSubTab, setActiveSubTab] = useState<AlertViewTab>(() =>
+    pathToAlertSubTab(window.location.pathname)
+  );
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [presets, setPresets] = useState<SecurityPreset[]>([]);
@@ -90,8 +115,24 @@ export const AlertsPanel: React.FC = () => {
   const [installingPresetId, setInstallingPresetId] = useState<string | null>(null);
   const [presetChannelId, setPresetChannelId] = useState<number | null>(null);
 
-  // History expanded state
-  const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
+  // History selected item state for modal overlay
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<AlertHistoryItem | null>(null);
+
+  const handleSubTabChange = (nextSubTab: AlertViewTab) => {
+    setActiveSubTab(nextSubTab);
+    const targetPath = alertSubTabToPath(nextSubTab);
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState(null, '', targetPath);
+    }
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveSubTab(pathToAlertSubTab(window.location.pathname));
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   const loadAll = useCallback(async () => {
     setIsLoading(true);
@@ -301,6 +342,9 @@ export const AlertsPanel: React.FC = () => {
       await deleteAlertHistoryItem(id);
       setHistoryItems((prev) => prev.filter((h) => h.id !== id));
       setHistoryTotal((prev) => Math.max(0, prev - 1));
+      if (selectedHistoryItem?.id === id) {
+        setSelectedHistoryItem(null);
+      }
       setHistoryItemToDelete(null);
     } catch (err: any) {
       setFeedbackMsg({ text: err.message || 'Failed to delete history record.', isError: true });
@@ -313,6 +357,7 @@ export const AlertsPanel: React.FC = () => {
       await clearAlertHistory();
       setHistoryItems([]);
       setHistoryTotal(0);
+      setSelectedHistoryItem(null);
       setIsClearHistoryModalOpen(false);
       setFeedbackMsg({ text: 'All alert history records cleared.', isError: false });
     } catch (err: any) {
@@ -320,29 +365,63 @@ export const AlertsPanel: React.FC = () => {
     }
   };
 
-  const getChannelName = (channelId?: number | null) => {
-    if (!channelId) return 'All Enabled Channels';
+  const getChannelStatus = (channelId?: number | null) => {
+    if (channelId == null) {
+      const anyDisabled = channels.some((c) => !c.is_enabled);
+      if (channels.length > 0 && anyDisabled) {
+        return {
+          name: 'All Enabled Channels',
+          warning: '1 or more target channels disabled',
+          isInvalid: true,
+        };
+      }
+      return {
+        name: 'All Enabled Channels',
+        warning: null,
+        isInvalid: false,
+      };
+    }
     const found = channels.find((c) => c.id === channelId);
-    return found ? found.name : `Channel #${channelId}`;
+    if (!found) {
+      return {
+        name: `Channel #${channelId}`,
+        warning: 'Channel not found or deleted',
+        isInvalid: true,
+      };
+    }
+    if (!found.is_enabled) {
+      return {
+        name: found.name,
+        warning: 'Target channel is disabled',
+        isInvalid: true,
+      };
+    }
+    return {
+      name: found.name,
+      warning: null,
+      isInvalid: false,
+    };
+  };
+
+  const getChannelName = (channelId?: number | null) => {
+    return getChannelStatus(channelId).name;
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-      {/* Top Header Card */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-dark-900 border border-dark-700 p-5 rounded-xl">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-accent-500/10 text-accent-400 border border-accent-500/20">
-              <ShieldAlert className="w-5 h-5" />
-            </div>
-            <h1 className="text-lg font-semibold text-slate-100">Alert Engine</h1>
-          </div>
-          <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
-            Configure real-time threshold and pattern alert rules, deploy 1-click quick rules, and dispatch AI-enriched incident notifications.
+    <div className="max-w-5xl mx-auto p-3 sm:p-6 space-y-6 sm:space-y-8">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
+            <ShieldAlert className="w-5 h-5 text-accent-500" />
+            <span>Alert Engine</span>
+          </h2>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Configure real-time threshold and pattern alert rules, deploy 1-click quick rules, and review past incidents.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
           <button
             onClick={loadAll}
             disabled={isLoading}
@@ -388,8 +467,8 @@ export const AlertsPanel: React.FC = () => {
       {/* Section Navigation Tabs */}
       <div className="flex items-center gap-2 border-b border-dark-700 pb-2">
         <button
-          onClick={() => setActiveSubTab('rules')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+          onClick={() => handleSubTabChange('rules')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
             activeSubTab === 'rules'
               ? 'bg-dark-800 text-accent-400 border border-dark-650'
               : 'text-slate-400 hover:text-slate-200 hover:bg-dark-900'
@@ -400,20 +479,20 @@ export const AlertsPanel: React.FC = () => {
         </button>
 
         <button
-          onClick={() => setActiveSubTab('presets')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+          onClick={() => handleSubTabChange('presets')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
             activeSubTab === 'presets'
               ? 'bg-dark-800 text-accent-400 border border-dark-650'
               : 'text-slate-400 hover:text-slate-200 hover:bg-dark-900'
           }`}
         >
-          <Zap className="w-3.5 h-3.5 text-amber-400" />
+          <Zap className="w-3.5 h-3.5" />
           <span>Quick Rules ({presets.length})</span>
         </button>
 
         <button
-          onClick={() => setActiveSubTab('history')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+          onClick={() => handleSubTabChange('history')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
             activeSubTab === 'history'
               ? 'bg-dark-800 text-accent-400 border border-dark-650'
               : 'text-slate-400 hover:text-slate-200 hover:bg-dark-900'
@@ -424,6 +503,7 @@ export const AlertsPanel: React.FC = () => {
         </button>
       </div>
 
+
       {/* TAB 1: Active Alert Rules */}
       {activeSubTab === 'rules' && (
         <div className="bg-dark-900 border border-dark-700 rounded-xl overflow-hidden shadow-xs">
@@ -431,7 +511,7 @@ export const AlertsPanel: React.FC = () => {
             <div>
               <h2 className="text-sm font-semibold text-slate-100">Configured Alert Rules</h2>
               <p className="text-xs text-slate-400">
-                Rules evaluated continuously by QueueConsumer against ingested log batches.
+                Rules evaluated continuously against ingested log batches.
               </p>
             </div>
             <div className="text-xs text-slate-400 font-mono">
@@ -450,7 +530,7 @@ export const AlertsPanel: React.FC = () => {
               </p>
               <div className="flex justify-center gap-2 pt-2">
                 <button
-                  onClick={() => setActiveSubTab('presets')}
+                  onClick={() => handleSubTabChange('presets')}
                   className="px-3 py-1.5 rounded-lg text-xs font-medium text-accent-400 bg-accent-500/10 hover:bg-accent-500/20 border border-accent-500/30 transition cursor-pointer"
                 >
                   View Quick Rules
@@ -465,60 +545,71 @@ export const AlertsPanel: React.FC = () => {
             </div>
           ) : (
             <div className="divide-y divide-dark-800">
-              {rules.map((rule) => (
-                <div
-                  key={rule.id}
-                  className={`p-4 transition flex flex-col md:flex-row md:items-center justify-between gap-4 ${
-                    rule.is_enabled ? 'hover:bg-dark-850/40' : 'opacity-60 bg-dark-950/20'
-                  }`}
-                >
-                  <div className="space-y-1.5 min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-medium text-slate-200">{rule.name}</span>
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-dark-800 text-slate-300 border border-dark-650">
-                        {rule.rule_type}
-                      </span>
-                      {rule.ai_enrichment && (
-                        <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-950/40 text-purple-300 border border-purple-800/50">
-                          <Sparkles className="w-2.5 h-2.5" />
-                          <span>AI Enriched</span>
+              {rules.map((rule) => {
+                const channelStatus = getChannelStatus(rule.channel_id);
+                return (
+                  <div
+                    key={rule.id}
+                    className={`p-4 transition flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                      rule.is_enabled ? 'hover:bg-dark-850/40' : 'opacity-60 bg-dark-950/20'
+                    }`}
+                  >
+                    <div className="space-y-1.5 min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium text-slate-200">{rule.name}</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase bg-dark-800 text-slate-300 border border-dark-650">
+                          {rule.rule_type}
                         </span>
-                      )}
-                      {rule.trigger_count > 0 && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-950/30 text-amber-300 border border-amber-800/40">
-                          Fired {rule.trigger_count}x
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
-                      {rule.filter_app && (
-                        <span>
-                          App: <span className="font-mono text-slate-300">{rule.filter_app}</span>
-                        </span>
-                      )}
-                      {rule.match_pattern && (
-                        <span className="truncate max-w-xs">
-                          Pattern: <code className="font-mono text-accent-400 text-[11px]">{rule.match_pattern}</code>
-                        </span>
-                      )}
-                      <span>
-                        Threshold: <span className="text-slate-300">&ge; {rule.threshold_count} in {rule.window_seconds}s</span>
-                      </span>
-                      <span>
-                        Cooldown: <span className="text-slate-300">{rule.cooldown_seconds}s</span>
-                      </span>
-                      <span>
-                        Target: <span className="text-slate-300">{getChannelName(rule.channel_id)}</span>
-                      </span>
-                    </div>
-
-                    {rule.last_triggered_at && (
-                      <div className="text-[11px] text-slate-500">
-                        Last triggered: {new Date(rule.last_triggered_at).toLocaleString()}
+                        {rule.ai_enrichment && (
+                          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-950/40 text-purple-300 border border-purple-800/50">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            <span>AI Enriched</span>
+                          </span>
+                        )}
+                        {rule.trigger_count > 0 && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-950/30 text-amber-300 border border-amber-800/40">
+                            Fired {rule.trigger_count}x
+                          </span>
+                        )}
                       </div>
-                    )}
-                  </div>
+
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
+                        {rule.filter_app && (
+                          <span>
+                            App: <span className="font-mono text-slate-300">{rule.filter_app}</span>
+                          </span>
+                        )}
+                        {rule.match_pattern && (
+                          <span className="truncate max-w-xs">
+                            Pattern: <code className="font-mono text-accent-400 text-[11px]">{rule.match_pattern}</code>
+                          </span>
+                        )}
+                        <span>
+                          Threshold: <span className="text-slate-300">&ge; {rule.threshold_count} in {rule.window_seconds}s</span>
+                        </span>
+                        <span>
+                          Cooldown: <span className="text-slate-300">{rule.cooldown_seconds}s</span>
+                        </span>
+                        <span>
+                          Target: <span className="text-slate-300">{channelStatus.name}</span>
+                          {channelStatus.isInvalid && (
+                            <span
+                              className="inline-flex items-center gap-1 text-amber-400 ml-1.5 font-medium"
+                              title={channelStatus.warning || undefined}
+                            >
+                              <AlertTriangle className="w-3 h-3 inline" />
+                              <span className="text-[11px] text-amber-300">({channelStatus.warning})</span>
+                            </span>
+                          )}
+                        </span>
+                      </div>
+
+                      {rule.last_triggered_at && (
+                        <div className="text-[11px] text-slate-500">
+                          Last triggered: {new Date(rule.last_triggered_at).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
 
                   {/* Actions */}
                   <div className="flex items-center gap-2.5 shrink-0">
@@ -564,8 +655,9 @@ export const AlertsPanel: React.FC = () => {
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -669,11 +761,11 @@ export const AlertsPanel: React.FC = () => {
       {/* TAB 3: Incident History */}
       {activeSubTab === 'history' && (
         <div className="bg-dark-900 border border-dark-700 rounded-xl overflow-hidden shadow-xs">
-          <div className="px-5 py-4 border-b border-dark-700 flex items-center justify-between">
+          <div className="px-5 py-4 flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-slate-100">Alert Firing Log</h2>
               <p className="text-xs text-slate-400">
-                Audited record of recent alert triggers, matched sample logs, and AI incident diagnoses.
+                Audited record of recent alert triggers, log messages, and AI incident diagnoses.
               </p>
             </div>
             {historyItems.length > 0 && (
@@ -696,108 +788,162 @@ export const AlertsPanel: React.FC = () => {
                 When alert thresholds are exceeded, firing records and AI summaries will be logged here.
               </p>
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="border-b border-dark-700 text-slate-400 font-medium">
-                    <th className="pb-2 pl-3">Time</th>
-                    <th className="pb-2">Rule Name</th>
-                    <th className="pb-2">Events</th>
-                    <th className="pb-2">AI Diagnosis</th>
-                    <th className="pb-2">Sample Log</th>
-                    <th className="pb-2 text-right pr-3">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-dark-800">
-                  {historyItems.map((item) => {
-                    const isExpanded = expandedHistoryId === item.id;
-                    const isFailed = item.ai_enrichment && (
-                      !item.incident_summary ||
+          ) : isMobile ? (
+            /* Mobile Card View */
+            <div className="divide-y divide-dark-800">
+              {historyItems.map((item) => {
+                const isFailed = Boolean(
+                  item.ai_enrichment &&
+                    (!item.incident_summary ||
                       item.incident_summary.startsWith('AI analysis failed:') ||
-                      item.incident_summary.startsWith('AI enrichment failed:')
-                    );
-                    return (
-                      <React.Fragment key={item.id}>
-                        <tr
-                          className="hover:bg-dark-800/40 transition group cursor-pointer"
-                          onClick={() => setExpandedHistoryId(isExpanded ? null : item.id)}
-                        >
-                          <td className="py-2.5 pl-3 font-mono text-slate-400 whitespace-nowrap">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-slate-500 group-hover:text-slate-300 transition">
-                                {isExpanded ? (
-                                  <ChevronDown className="w-3.5 h-3.5" />
-                                ) : (
-                                  <ChevronRight className="w-3.5 h-3.5" />
-                                )}
-                              </span>
-                              <span>{new Date(item.triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                            </div>
-                          </td>
-                          <td className="py-2.5 font-medium text-slate-200">
-                            {item.rule_name}
-                          </td>
-                          <td className="py-2.5 font-mono text-slate-300">
-                            <span className="px-1.5 py-0.5 rounded bg-dark-950 border border-dark-800 text-[11px]">
-                              {item.trigger_count}
-                            </span>
-                          </td>
-                          <td className="py-2.5">
-                            {!item.ai_enrichment ? (
-                              <span className="text-slate-500 italic text-[11px]">Disabled</span>
-                            ) : isFailed ? (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-red-950 text-red-400 border border-red-800">
-                                <AlertTriangle className="w-2.5 h-2.5" />
-                                Failed
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-purple-950 text-purple-300 border border-purple-800">
-                                <Sparkles className="w-2.5 h-2.5" />
-                                Complete
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-2.5 font-mono text-slate-400 max-w-[240px] truncate" title={item.sample_log || ''}>
-                            {item.sample_log ? item.sample_log.slice(0, 80) : '-'}
-                          </td>
-                          <td className="py-2.5 text-right pr-3" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => setExpandedHistoryId(isExpanded ? null : item.id)}
-                                className="px-2 py-0.5 text-[11px] font-mono text-accent-400 bg-accent-950/50 hover:bg-accent-900/60 border border-accent-800/80 rounded transition cursor-pointer"
-                                title={isExpanded ? 'Hide incident details' : 'View incident details'}
-                              >
-                                {isExpanded ? 'Hide' : 'View'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setHistoryItemToDelete(item)}
-                                className="p-1 text-slate-500 hover:text-red-400 hover:bg-dark-800 rounded transition cursor-pointer"
-                                title="Delete incident record"
-                                aria-label={`Delete record ${item.id}`}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                        {isExpanded && (
-                          <tr className="bg-dark-950/40">
-                            <td colSpan={6} className="p-3 pl-8 border-b border-dark-800">
-                              <IncidentHistoryDetail
-                                item={item}
-                                channelName={item.channel_id ? getChannelName(item.channel_id) : undefined}
-                              />
-                            </td>
-                          </tr>
+                      item.incident_summary.startsWith('AI enrichment failed:'))
+                );
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => setSelectedHistoryItem(item)}
+                    className="p-3.5 space-y-2 hover:bg-dark-800/40 transition cursor-pointer select-none"
+                  >
+                    {/* Line 1: Rule Name & Timestamp */}
+                    <div className="flex items-center justify-between text-xs gap-2">
+                      <div className="truncate font-sans font-semibold text-slate-100">
+                        {item.rule_name}
+                      </div>
+                      <span className="text-[10px] text-slate-500 font-mono shrink-0">
+                        {new Date(item.triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                    </div>
+
+                    {/* Line 2: Log message */}
+                    <div
+                      className="text-slate-300 font-mono text-[11px] line-clamp-2 leading-relaxed"
+                      title={item.sample_log || ''}
+                    >
+                      {item.sample_log || '-'}
+                    </div>
+
+                    {/* Line 3: Events count + AI status + Actions */}
+                    <div className="flex items-center justify-between pt-1 text-[11px] text-slate-400">
+                      <div className="flex items-center gap-2">
+                        <span className="bg-dark-950 border border-dark-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300 font-mono">
+                          {item.trigger_count} event{item.trigger_count === 1 ? '' : 's'}
+                        </span>
+                        {!item.ai_enrichment ? (
+                          <span className="text-slate-500 italic text-[10px]">No AI</span>
+                        ) : isFailed ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-red-950 text-red-400 border border-red-800">
+                            <AlertTriangle className="w-2.5 h-2.5" />
+                            Failed
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-purple-950 text-purple-300 border border-purple-800">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            Complete
+                          </span>
                         )}
-                      </React.Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
+                      </div>
+                      <div className="flex items-center gap-2 font-sans shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedHistoryItem(item)}
+                          className="px-2 py-0.5 text-[11px] font-mono text-accent-400 bg-accent-950/50 hover:bg-accent-900/60 border border-accent-800/80 rounded transition cursor-pointer"
+                        >
+                          View
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setHistoryItemToDelete(item)}
+                          className="p-1 text-slate-400 hover:text-red-400 hover:bg-red-950/50 rounded transition cursor-pointer"
+                          title="Delete incident record"
+                          aria-label={`Delete record ${item.id}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* Desktop Table View */
+            <div className="divide-y divide-dark-800 font-mono text-xs">
+              <div className="grid grid-cols-[135px_170px_65px_105px_1fr_95px] px-4 py-2 text-slate-400 font-semibold text-[11px] bg-dark-950/60 select-none">
+                <div>TIME</div>
+                <div>RULE NAME</div>
+                <div>EVENTS</div>
+                <div>AI DIAGNOSIS</div>
+                <div>LOG MESSAGE</div>
+                <div className="text-right">ACTIONS</div>
+              </div>
+
+              {historyItems.map((item) => {
+                const isFailed = Boolean(
+                  item.ai_enrichment &&
+                    (!item.incident_summary ||
+                      item.incident_summary.startsWith('AI analysis failed:') ||
+                      item.incident_summary.startsWith('AI enrichment failed:'))
+                );
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => setSelectedHistoryItem(item)}
+                    className="grid grid-cols-[135px_170px_65px_105px_1fr_95px] px-4 py-2.5 items-center hover:bg-dark-800 transition text-[11px] cursor-pointer group select-none"
+                  >
+                    <div className="text-slate-400 group-hover:text-slate-300">
+                      {new Date(item.triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </div>
+                    <div className="font-medium text-slate-200 truncate pr-2 font-sans text-xs">
+                      {item.rule_name}
+                    </div>
+                    <div className="text-slate-300">
+                      <span className="px-1.5 py-0.5 rounded bg-dark-950 border border-dark-800 text-[10px]">
+                        {item.trigger_count}
+                      </span>
+                    </div>
+                    <div>
+                      {!item.ai_enrichment ? (
+                        <span className="text-slate-500 italic text-[11px]">Disabled</span>
+                      ) : isFailed ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-red-950 text-red-400 border border-red-800">
+                          <AlertTriangle className="w-2.5 h-2.5" />
+                          Failed
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-purple-950 text-purple-300 border border-purple-800">
+                          <Sparkles className="w-2.5 h-2.5" />
+                          Complete
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      className="text-slate-300 truncate pr-2 group-hover:text-white"
+                      title={item.sample_log || ''}
+                    >
+                      {item.sample_log || '-'}
+                    </div>
+                    <div className="flex items-center justify-end gap-1.5 font-sans" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedHistoryItem(item)}
+                        className="px-2 py-0.5 text-[11px] font-mono text-accent-400 bg-accent-950/50 hover:bg-accent-900/60 border border-accent-800/80 rounded transition cursor-pointer"
+                        title="View incident details"
+                      >
+                        View
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHistoryItemToDelete(item)}
+                        className="p-1 text-slate-400 hover:text-red-400 hover:bg-red-950/50 rounded border border-transparent hover:border-red-900/50 transition cursor-pointer"
+                        title="Delete incident record"
+                        aria-label={`Delete record ${item.id}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -825,11 +971,11 @@ export const AlertsPanel: React.FC = () => {
                 href="https://github.com/BenHornerTech/logshed/blob/main/docs/ALERT_RULES.md"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-accent-400 hover:text-accent-300 text-[11px] flex items-center gap-1 transition"
+                className="inline-flex items-center gap-1 text-[10px] text-accent-400 hover:underline"
                 title="Open Alert Rules Documentation"
               >
                 <span>Rule Guide &amp; Examples</span>
-                <ExternalLink className="w-3 h-3" />
+                <ExternalLink className="w-2.5 h-2.5" />
               </a>
             </div>
             <input
@@ -866,7 +1012,7 @@ export const AlertsPanel: React.FC = () => {
                 <option value="">All Enabled Channels</option>
                 {channels.map((ch) => (
                   <option key={ch.id} value={ch.id}>
-                    {ch.name}
+                    {ch.name}{ch.is_enabled ? '' : ' (Disabled)'}
                   </option>
                 ))}
               </select>
@@ -1214,6 +1360,21 @@ export const AlertsPanel: React.FC = () => {
           </div>
         </div>
       </Modal>
+
+      {/* HISTORICAL INCIDENT DETAIL MODAL */}
+      {selectedHistoryItem && (
+        <Modal
+          isOpen={!!selectedHistoryItem}
+          onClose={() => setSelectedHistoryItem(null)}
+          title="Incident Analysis & Log Details"
+          maxWidth="max-w-3xl"
+        >
+          <IncidentHistoryDetail
+            item={selectedHistoryItem}
+            channelName={selectedHistoryItem.channel_id ? getChannelName(selectedHistoryItem.channel_id) : undefined}
+          />
+        </Modal>
+      )}
     </div>
   );
 };
