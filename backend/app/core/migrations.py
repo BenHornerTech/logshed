@@ -279,6 +279,7 @@ CREATE TABLE IF NOT EXISTS alert_history (
 
 CREATE INDEX IF NOT EXISTS idx_alert_history_triggered_at ON alert_history(triggered_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alert_history_rule_id ON alert_history(rule_id);
+CREATE INDEX IF NOT EXISTS idx_alert_history_rule_time ON alert_history(rule_id, triggered_at DESC);
 ''')
 
     try:

@@ -14,24 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
+from app.core.utils import match_wildcard
+
 logger = logging.getLogger(__name__)
-
-
-def match_wildcard(pattern: Optional[str], text: Optional[str]) -> bool:
-    """
-    Case-insensitive wildcard matching supporting '*' and '?'.
-    If no wildcard characters exist in pattern, performs an exact case-insensitive match.
-    """
-    if not pattern or not pattern.strip():
-        return True
-    if not text:
-        return False
-
-    p = pattern.lower().strip()
-    t = text.lower().strip()
-    if "*" in p or "?" in p:
-        return fnmatch.fnmatchcase(t, p)
-    return p == t
 
 
 @dataclass

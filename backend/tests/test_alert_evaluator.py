@@ -35,6 +35,25 @@ class TestCompiledAlertRule:
         assert rule.matches({"app_name": "sshd", "severity": 6, "message": "test"}) is True
         assert rule.matches({"app_name": "nginx", "severity": 6, "message": "test"}) is False
 
+    def test_last_triggered_at_assignment(self):
+        ts = "2026-09-19T12:00:00+00:00"
+        rule = CompiledAlertRule(
+            id=1,
+            name="SSH Rule",
+            rule_type="threshold",
+            channel_id=None,
+            filter_app="sshd",
+            filter_severity=None,
+            match_pattern=None,
+            threshold_count=1,
+            window_seconds=60,
+            cooldown_seconds=60,
+            ai_enrichment=False,
+            is_enabled=True,
+            last_triggered_at=ts,
+        )
+        assert rule.last_triggered_at == ts
+
         # Wildcard test
         rule_wild = CompiledAlertRule(
             id=2,

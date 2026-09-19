@@ -20,6 +20,7 @@ import time
 from typing import Any, Optional, Union
 
 from app.core.redactor import redact
+from app.core.utils import match_wildcard, parse_iso_to_epoch
 from app.services.notifier import get_notifier
 from app.services.security_presets import extract_ip_from_message
 
@@ -52,23 +53,6 @@ def strip_markdown(text: str) -> str:
     t = re.sub(r"[*_]{1,3}([^*_]+)[*_]{1,3}", r"\1", t)
     t = re.sub(r"^\s*[-*+]\s+", "", t, flags=re.MULTILINE)
     return t.strip()
-
-
-def match_wildcard(pattern: Optional[str], text: Optional[str]) -> bool:
-    """
-    Wildcard pattern matching supporting '*' and '?'.
-    If no wildcard characters exist in pattern, performs an exact case-insensitive match.
-    """
-    if not pattern or not pattern.strip():
-        return True
-    if not text:
-        return False
-
-    p = pattern.lower().strip()
-    t = text.lower().strip()
-    if "*" in p or "?" in p:
-        return fnmatch.fnmatchcase(t, p)
-    return p == t
 
 
 class CompiledAlertRule:
@@ -105,6 +89,7 @@ class CompiledAlertRule:
         self.ai_enrichment = bool(ai_enrichment)
         self.is_enabled = bool(is_enabled)
         self.trigger_count = trigger_count
+        self.last_triggered_at = last_triggered_at
         self.suppress_until = suppress_until
         self.suppress_until_epoch: Optional[float] = None
         self._recompute_suppress_epoch()
@@ -132,20 +117,16 @@ class CompiledAlertRule:
         if not self.suppress_until:
             self.suppress_until_epoch = None
             return
-        try:
-            clean_suppress = str(self.suppress_until).replace("Z", "+00:00")
-            dt = datetime.datetime.fromisoformat(clean_suppress)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=datetime.timezone.utc)
-            epoch = dt.timestamp()
-            now_epoch = datetime.datetime.now(datetime.timezone.utc).timestamp()
-            if epoch <= now_epoch:
-                self.suppress_until = None
-                self.suppress_until_epoch = None
-            else:
-                self.suppress_until_epoch = epoch
-        except Exception:
+        epoch = parse_iso_to_epoch(self.suppress_until, fallback=0.0)
+        if epoch <= 0.0:
             self.suppress_until_epoch = None
+            return
+        now_epoch = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        if epoch <= now_epoch:
+            self.suppress_until = None
+            self.suppress_until_epoch = None
+        else:
+            self.suppress_until_epoch = epoch
 
     def matches(self, entry: dict[str, Any]) -> bool:
         """Check if an incoming log entry satisfies this rule's match criteria."""
@@ -290,17 +271,7 @@ class AlertEvaluator:
 
         # Pre-parse and store normalized float epoch timestamps on incoming log entries (PERF-02, SEC-05)
         for entry in batch:
-            ts_val = entry.get("timestamp")
-            entry_epoch = now_epoch
-            if ts_val:
-                try:
-                    clean_ts = str(ts_val).replace("Z", "+00:00")
-                    dt = datetime.datetime.fromisoformat(clean_ts)
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=datetime.timezone.utc)
-                    entry_epoch = dt.timestamp()
-                except Exception:
-                    entry_epoch = now_epoch
+            entry_epoch = parse_iso_to_epoch(entry.get("timestamp"), fallback=now_epoch)
 
             # Clamp incoming entry epoch timestamps between now_epoch - 86400 and now_epoch + 300 (SEC-05)
             if entry_epoch < min_epoch:

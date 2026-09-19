@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Alert Testing & Dry-Run Simulator**: Interactive test modal to validate alert matching rules and extract offending IP indicators against sample log payloads.
 - **Alert Firing Log & Unified Incident Detail View**: Historical alert record tracking with model attribution, matching event counts, log snippets with quick copy actions, and formatted markdown rendering matching the Historical AI Root-Cause Analysis layout.
 - **Database Schema Migration v2 Expansion**: Expanded Migration 2 to introduce `notification_channels`, `alert_rules`, and `alert_history` tables with covering indexes for alert routing and delivery.
+- **Composite Index on Alert History**: Added `idx_alert_history_rule_time` covering `(rule_id, triggered_at DESC)` in `alert_history` to accelerate rule-specific incident history queries.
 
 ### Changed
 - **Alerts Tab Layout Alignment**: Standardized container width and header styling in the Alerts tab to match Storage and Settings, including seamless Alert Firing Log table headers.
@@ -33,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dedicated Notification Worker Pool**: Dedicated `ThreadPoolExecutor(max_workers=4, thread_name_prefix="logshed-notifier")` for Apprise notification dispatching via `loop.run_in_executor`, decoupled from the general asyncio thread pool, with graceful shutdown hooks during application lifecycle termination.
 - **Streamlined Alert Evaluation Loop**: Pre-parsed normalized float epoch timestamps on batch entries, pre-split multi-application filter tuples, pre-lowercased substring match patterns, and replaced full deque sorting with backwards linear search for timestamp jitter insertion.
 - **Decoupled Alert Trigger State Persistence**: Offloaded rule trigger database updates (`last_triggered_at`, `suppress_until`, `trigger_count`) from the synchronous batch loop into background alert dispatch tasks, maintaining instantaneous in-memory cooldown dampening for subsequent batches.
+- **Non-Blocking Background Workers & Rule Reloads**: Offloaded periodic drop count flushing in `_drop_filter_flush_worker()` and synchronous rule reloads across alert rules and drop rules endpoints using `asyncio.to_thread`, preventing SQLite disk I/O from stalling the main event loop.
+- **Single Snapshot Lock Acquisition for Drop Rules**: Consolidated pending drop count retrieval in `list_drop_rules` to a single snapshot read (`drop_filter.get_all_pending_counts()`), eliminating per-rule lock reacquisition during endpoint queries.
+- **Consolidated Wildcard & Timestamp Utilities**: Centralized case-insensitive wildcard matching (`match_wildcard`) and resilient ISO-8601 parsing (`parse_iso_to_epoch`) into `backend/app/core/utils.py`, eliminating redundant parsing logic across the alert evaluator, drop filter, and API route handlers.
+- **Consolidated Alert Response Mapping**: Centralized database row unpacking in `alerts.py` via `_row_to_alert_rule_response()`, eliminating repeated positional tuple unpacking across rule listing, retrieval, and update endpoints.
+
+### Fixed
+- **CompiledAlertRule Last Trigger Timestamp Assignment**: Fixed an initialization bug in `CompiledAlertRule.__init__` where `last_triggered_at` was received as an argument but never assigned to the instance attribute.
 
 ### Security
 - **Sliding Window Bounds & Memory Caps**: Clamped incoming log timestamps between `now_epoch - 86400` and `now_epoch + 300` to prevent future timestamp spoofing, computed sliding window cutoffs relative to current epoch time, and bounded maximum sliding window deques to `threshold_count * 2` (capped to `threshold_count` during cooldown suppression) to prevent memory expansion.
