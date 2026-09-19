@@ -324,3 +324,65 @@ class TestAlertsApi:
         # Since last trigger was 10s ago, 1s cooldown is already over, so suppress_until must be None!
         assert update_res.json()["suppress_until"] is None
         assert update_res.json()["cooldown_seconds"] == 1
+
+    @pytest.mark.asyncio
+    async def test_create_alert_rule_redos_patterns_rejected(self, client: AsyncClient, auth_headers: dict):
+        # 1. Pathological nested repetition (a+)+
+        res1 = await client.post(
+            "/api/alerts/rules",
+            json={"name": "ReDoS Rule 1", "rule_type": "pattern", "match_pattern": "(a+)+"},
+            headers=auth_headers,
+        )
+        assert res1.status_code == 400
+        assert "backtracking" in res1.json().get("detail", "").lower()
+
+        # 2. Pathological nested repetition ([a-z]+)*
+        res2 = await client.post(
+            "/api/alerts/rules",
+            json={"name": "ReDoS Rule 2", "rule_type": "pattern", "match_pattern": "([a-z]+)*"},
+            headers=auth_headers,
+        )
+        assert res2.status_code == 400
+        assert "backtracking" in res2.json().get("detail", "").lower()
+
+        # 3. Invalid regex syntax
+        res3 = await client.post(
+            "/api/alerts/rules",
+            json={"name": "Bad Syntax Rule", "rule_type": "pattern", "match_pattern": "[invalid(regex"},
+            headers=auth_headers,
+        )
+        assert res3.status_code == 400
+        assert "invalid" in res3.json().get("detail", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_update_alert_rule_redos_rejected(self, client: AsyncClient, auth_headers: dict):
+        # Create safe rule
+        create_res = await client.post(
+            "/api/alerts/rules",
+            json={"name": "Safe Rule", "rule_type": "pattern", "match_pattern": "Failed login"},
+            headers=auth_headers,
+        )
+        assert create_res.status_code == 201
+        rule_id = create_res.json()["id"]
+
+        # Attempt to update with nested repetition ReDoS pattern
+        update_res = await client.put(
+            f"/api/alerts/rules/{rule_id}",
+            json={"match_pattern": r"(\w+)*"},
+            headers=auth_headers,
+        )
+        assert update_res.status_code == 400
+        assert "backtracking" in update_res.json().get("detail", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_test_pattern_endpoint_redos_detected(self, client: AsyncClient, auth_headers: dict):
+        payload = {
+            "rule_type": "pattern",
+            "match_pattern": r"((a+)+)+",
+            "sample_message": "aaaaaaaaaaaaaaaaaaaa!",
+        }
+        res = await client.post("/api/alerts/test", json=payload, headers=auth_headers)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["matched"] is False
+        assert "backtracking" in (data["error"] or "").lower()

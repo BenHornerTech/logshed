@@ -131,6 +131,69 @@ class TestNotifierUnit:
         decrypted = decrypt_channel_url(encrypted)
         assert decrypted == plain
 
+    def test_validate_ssrf_dangerous_schemes_rejected(self):
+        valid, err = validate_notification_url("file:///etc/passwd")
+        assert valid is False
+        assert "not allowed" in (err or "").lower()
+
+        valid, err = validate_notification_url("attach:///etc/shadow")
+        assert valid is False
+        assert "not allowed" in (err or "").lower()
+
+    def test_validate_ssrf_metadata_ips_rejected(self):
+        valid, err = validate_notification_url("json://169.254.169.254/latest/meta-data")
+        assert valid is False
+        assert "metadata" in (err or "").lower()
+
+        valid, err = validate_notification_url("json://[fe80::1]/hook")
+        assert valid is False
+        assert "metadata" in (err or "").lower()
+
+    def test_validate_ssrf_loopback_targets_rejected(self):
+        valid, err = validate_notification_url("json://127.0.0.1:8080/hook")
+        assert valid is False
+        assert "loopback" in (err or "").lower()
+
+        valid, err = validate_notification_url("json://localhost:8080/hook")
+        assert valid is False
+        assert "loopback" in (err or "").lower()
+
+        valid, err = validate_notification_url("json://[::1]:8080/hook")
+        assert valid is False
+        assert "loopback" in (err or "").lower()
+
+    def test_validate_ssrf_docker_ports_rejected(self):
+        valid, err = validate_notification_url("json://192.168.1.50:2375/v1.41/containers/json")
+        assert valid is False
+        assert "blocked" in (err or "").lower() or "port" in (err or "").lower()
+
+        valid, err = validate_notification_url("json://192.168.1.50:2376/v1.41/containers/json")
+        assert valid is False
+        assert "blocked" in (err or "").lower() or "port" in (err or "").lower()
+
+    def test_validate_private_targets_toggle(self, monkeypatch):
+        # Default allow_private=true allows private LAN targets
+        monkeypatch.setenv("ALLOW_PRIVATE_NOTIFICATION_TARGETS", "true")
+        valid, err = validate_notification_url("gotify://192.168.1.50:8080/token")
+        assert valid is True
+        assert err is None
+
+        # When false, blocks private IP targets
+        monkeypatch.setenv("ALLOW_PRIVATE_NOTIFICATION_TARGETS", "false")
+        valid, err = validate_notification_url("gotify://192.168.1.50:8080/token")
+        assert valid is False
+        assert "private" in (err or "").lower()
+
+    def test_mask_notification_url_scrubs_fallback_credentials(self):
+        masked = mask_notification_url("http://user:secretPassword123@192.168.1.50/webhook")
+        assert "secretPassword123" not in masked
+        assert "***:***@192.168.1.50" in masked
+        assert masked == "http://***:***@192.168.1.50/********"
+
+        masked_custom = mask_notification_url("custom://admin:superSecretKey@myhost:8080/alert?api=1")
+        assert "superSecretKey" not in masked_custom
+        assert "***:***@myhost:8080" in masked_custom
+
 
 # ===================================================================
 # 2. Service Tests: Dispatch & Testing via Apprise
@@ -160,6 +223,17 @@ class TestNotifierService:
         success, msg = await notifier.test_channel("invalid://nothing")
         assert success is False
         assert "invalid" in msg.lower() or "unsupported" in msg.lower()
+
+    @pytest.mark.asyncio
+    async def test_test_channel_sanitizes_exception(self):
+        notifier = NotifierService()
+        with patch("apprise.Apprise.notify", side_effect=RuntimeError("Internal socket connection failed to 10.0.0.5:80")):
+            success, msg = await notifier.test_channel("discord://123456789/test_token")
+            assert success is False
+            # Ensure raw internal details/stack traces are not leaked
+            assert "10.0.0.5" not in msg
+            assert "socket" not in msg.lower()
+            assert "verify" in msg.lower() or "failed" in msg.lower()
 
     @pytest.mark.asyncio
     async def test_send_notification_to_all_channels(self, tmp_path):
@@ -268,6 +342,26 @@ class TestNotificationsApi:
         }
         res = await client.post("/api/notifications/channels", json=payload, headers=auth_headers)
         assert res.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_create_channel_ssrf_metadata_blocked_returns_400(self, client: AsyncClient, auth_headers: dict):
+        payload = {
+            "name": "Metadata Exploit Target",
+            "url": "json://169.254.169.254/latest/meta-data",
+        }
+        res = await client.post("/api/notifications/channels", json=payload, headers=auth_headers)
+        assert res.status_code == 400
+        assert "metadata" in res.json().get("detail", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_create_channel_ssrf_docker_port_blocked_returns_400(self, client: AsyncClient, auth_headers: dict):
+        payload = {
+            "name": "Docker Socket Target",
+            "url": "json://192.168.1.100:2375/v1.41/containers/json",
+        }
+        res = await client.post("/api/notifications/channels", json=payload, headers=auth_headers)
+        assert res.status_code == 400
+        assert "port" in res.json().get("detail", "").lower() or "blocked" in res.json().get("detail", "").lower()
 
     @pytest.mark.asyncio
     async def test_test_endpoint_with_raw_url(self, client: AsyncClient, auth_headers: dict):

@@ -8,8 +8,12 @@ test deliveries, and asynchronous dispatch using asyncio.to_thread.
 """
 
 import asyncio
+import ipaddress
 import logging
-from typing import Optional, Tuple
+import os
+import socket
+from typing import Optional, Tuple, Union
+import urllib.parse
 
 import apprise
 
@@ -17,13 +21,67 @@ from app.core.security import decrypt_value, encrypt_value
 
 logger = logging.getLogger(__name__)
 
+# Blocked metadata, loopback, and private IP networks
+_METADATA_NETWORKS = [
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("fe80::/10"),
+]
+_LOOPBACK_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::/128"),
+]
+_PRIVATE_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),
+]
+_BLOCKED_PORTS = {2375, 2376}
+_DANGEROUS_SCHEMES = {"file", "attach"}
+
+
+def _check_ip_address_safety(
+    ip_addr: Union[ipaddress.IPv4Address, ipaddress.IPv6Address],
+    allow_private: bool,
+) -> Tuple[bool, Optional[str]]:
+    """Verify an IP address against blocked metadata, loopback, and private ranges."""
+    # Unwrap IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1)
+    if isinstance(ip_addr, ipaddress.IPv6Address) and ip_addr.ipv4_mapped:
+        ip_addr = ip_addr.ipv4_mapped
+
+    # 1. Cloud instance metadata
+    for net in _METADATA_NETWORKS:
+        if ip_addr in net:
+            return False, f"Target IP {ip_addr} is within blocked cloud metadata ranges (169.254.0.0/16, fe80::/10)."
+    if ip_addr.is_link_local:
+        return False, f"Target IP {ip_addr} is within link-local metadata ranges."
+
+    # 2. Container loopback
+    for net in _LOOPBACK_NETWORKS:
+        if ip_addr in net:
+            return False, f"Target IP {ip_addr} is within blocked container loopback ranges (127.0.0.0/8, ::1)."
+    if ip_addr.is_loopback or ip_addr.is_unspecified:
+        return False, f"Target IP {ip_addr} is a blocked loopback address."
+
+    # 3. Private subnets (blocked if ALLOW_PRIVATE_NOTIFICATION_TARGETS is false)
+    if not allow_private:
+        for net in _PRIVATE_NETWORKS:
+            if ip_addr in net:
+                return False, f"Target IP {ip_addr} is within private network ranges and private targets are disabled."
+        if ip_addr.is_private:
+            return False, f"Target IP {ip_addr} is a private network target and private targets are disabled."
+
+    return True, None
+
 
 def mask_notification_url(raw_url: str) -> str:
     """
     Mask sensitive secrets, tokens, and passwords in a notification URL for safe client display.
 
     Uses Apprise's native privacy mode if parseable, with fallback redaction
-    for arbitrary URLs.
+    and credential scrubbing for arbitrary URLs.
     """
     if not raw_url:
         return ""
@@ -39,18 +97,40 @@ def mask_notification_url(raw_url: str) -> str:
     except Exception as e:
         logger.debug(f"Apprise privacy mask fallback: {e}")
 
+    try:
+        parsed = urllib.parse.urlsplit(stripped)
+        if parsed.scheme:
+            netloc = parsed.netloc
+            if "@" in netloc:
+                _, host_part = netloc.rsplit("@", 1)
+                netloc = f"***:***@{host_part}"
+            if parsed.path and parsed.path != "/":
+                return f"{parsed.scheme}://{netloc}/********"
+            elif "/" in stripped.split("://", 1)[-1]:
+                return f"{parsed.scheme}://{netloc}/********"
+            return f"{parsed.scheme}://{netloc}"
+    except Exception as e:
+        logger.debug(f"urlsplit mask fallback: {e}")
+
     if "://" in stripped:
         scheme, remainder = stripped.split("://", 1)
         if "/" in remainder:
             host_part, _ = remainder.split("/", 1)
+            if "@" in host_part:
+                _, h = host_part.rsplit("@", 1)
+                host_part = f"***:***@{h}"
             return f"{scheme}://{host_part}/********"
-        return f"{scheme}://********"
+        if "@" in remainder:
+            _, h = remainder.rsplit("@", 1)
+            remainder = f"***:***@{h}"
+        return f"{scheme}://{remainder}"
     return "********"
 
 
 def validate_notification_url(url: str) -> Tuple[bool, Optional[str]]:
     """
-    Validate that a notification URL is supported and syntax-valid according to Apprise.
+    Validate that a notification URL is supported, syntax-valid according to Apprise,
+    and adheres to SSRF protection policies.
 
     Returns:
         (is_valid, error_message)
@@ -59,14 +139,72 @@ def validate_notification_url(url: str) -> Tuple[bool, Optional[str]]:
         return False, "Notification URL cannot be empty."
 
     trimmed = url.strip()
+
+    # 1. Scheme checks (disallow dangerous schemes like file:// and attach://)
+    try:
+        parsed = urllib.parse.urlsplit(trimmed)
+    except Exception as exc:
+        return False, f"Invalid notification URL syntax: {exc}"
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme in _DANGEROUS_SCHEMES or trimmed.lower().startswith(("file://", "attach://", "file:", "attach:")):
+        return False, f"Scheme '{scheme}' is not allowed for notification targets."
+
+    # 2. Port checks on URL (standard Docker daemon ports 2375, 2376)
+    if parsed.port in _BLOCKED_PORTS:
+        return False, f"Port {parsed.port} is blocked to protect container control sockets."
+
+    # 3. Hostname loopback checks
+    hostname = (parsed.hostname or "").strip()
+    clean_host = hostname.lower().rstrip(".")
+    if clean_host == "localhost" or clean_host.endswith(".localhost"):
+        return False, "Container loopback target 'localhost' is not allowed."
+
+    # 4. Apprise syntax validation
     try:
         ap_obj = apprise.Apprise()
         added = ap_obj.add(trimmed)
         if not added:
             return False, "Unsupported notification URL schema or invalid format."
-        return True, None
     except Exception as exc:
         return False, f"Invalid notification URL: {exc}"
+
+    # Verify server ports on configured Apprise plugin instances
+    for server in ap_obj:
+        server_port = getattr(server, "port", None)
+        if server_port in _BLOCKED_PORTS:
+            return False, f"Port {server_port} is blocked to protect container control sockets."
+
+    # 5. Environment configuration for private notification targets
+    allow_private_env = os.environ.get("ALLOW_PRIVATE_NOTIFICATION_TARGETS", "true").strip().lower()
+    allow_private = allow_private_env not in ("false", "0", "no")
+
+    # 6. Verify destination IPs against blocked ranges
+    if hostname:
+        try:
+            ip_obj = ipaddress.ip_address(hostname)
+            is_safe, err = _check_ip_address_safety(ip_obj, allow_private)
+            if not is_safe:
+                return False, err
+        except ValueError:
+            # Hostname is not an IP literal; resolve via socket.getaddrinfo
+            try:
+                addr_info = socket.getaddrinfo(hostname, None)
+                for addr in addr_info:
+                    resolved_ip_str = addr[4][0]
+                    try:
+                        resolved_ip = ipaddress.ip_address(resolved_ip_str)
+                        is_safe, err = _check_ip_address_safety(resolved_ip, allow_private)
+                        if not is_safe:
+                            return False, err
+                    except ValueError:
+                        continue
+            except (socket.gaierror, socket.herror, OSError) as dns_err:
+                logger.debug(f"Could not resolve host '{hostname}' during validation: {dns_err}")
+                if not allow_private and (clean_host.endswith(".local") or clean_host.endswith(".internal") or clean_host.endswith(".lan")):
+                    return False, f"Local host '{hostname}' is not permitted when private targets are disabled."
+
+    return True, None
 
 
 def encrypt_channel_url(url: str) -> str:
@@ -154,7 +292,9 @@ def _sync_test_channel(
         else:
             return False, "Notification service rejected delivery. Please verify webhook credentials or token permissions."
     except Exception as exc:
-        return False, f"Delivery error: {exc}"
+        logger.error(f"Notification delivery test failed: {exc}", exc_info=True)
+        return False, "Notification test delivery failed due to a connection or server error. Please verify host connectivity and credentials."
+
 
 
 

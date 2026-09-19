@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.services.alert_evaluator import CompiledAlertRule, get_alert_evaluator
 from app.services.security_presets import extract_ip_from_message, get_security_presets, get_security_preset_by_id
+from app.core.regex_validator import check_regex_safety, validate_regex_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,9 @@ async def create_alert_rule(
     user: dict = Depends(get_current_user),
 ) -> AlertRuleResponse:
     """Create a new alert rule and update the evaluation engine."""
+    if rule_in.match_pattern:
+        validate_regex_pattern(rule_in.match_pattern)
+
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def _insert(conn):
@@ -233,6 +237,8 @@ async def update_alert_rule(
     new_app = (rule_in.filter_app.strip() if rule_in.filter_app else None) if "filter_app" in fields else row[4]
     new_sev = rule_in.filter_severity if "filter_severity" in fields else row[5]
     new_pat = (rule_in.match_pattern.strip() if rule_in.match_pattern else None) if "match_pattern" in fields else row[6]
+    if "match_pattern" in fields and new_pat:
+        validate_regex_pattern(new_pat)
     new_thresh = rule_in.threshold_count if "threshold_count" in fields and rule_in.threshold_count is not None else row[7]
     new_win = rule_in.window_seconds if "window_seconds" in fields and rule_in.window_seconds is not None else row[8]
     new_cool = rule_in.cooldown_seconds if "cooldown_seconds" in fields and rule_in.cooldown_seconds is not None else row[9]
@@ -392,12 +398,11 @@ async def test_alert_pattern(
 
         regex_error = None
         if payload.match_pattern and payload.match_pattern.strip() and payload.match_pattern.strip() != "*":
-            try:
-                re.compile(payload.match_pattern.strip())
-            except re.error as r_err:
-                regex_error = f"Invalid regex syntax: {r_err}"
+            is_safe, err = check_regex_safety(payload.match_pattern.strip())
+            if not is_safe:
+                regex_error = err
 
-        matched = temp_rule.matches(sample_entry)
+        matched = False if regex_error else temp_rule.matches(sample_entry)
         extracted_ip = extract_ip_from_message(payload.sample_message)
 
         return AlertTestResponse(

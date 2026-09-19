@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Alert Rule Documentation & Channel Status**: Unified documentation link styling with syntax documentation in Settings, and added real-time inactive and deleted channel warnings on rule cards.
 - **Alert Push Notification Formatting**: Streamlined push notification payload to avoid repeating the alert title in message bodies, appends AI diagnosis details, and generates direct history links when `APP_URL` is configured.
 
+### Security
+- **SSRF Protection in Webhook Targets**: Hardened notification target validation against Server-Side Request Forgery. Blocks dangerous schemes (`file://`, `attach://`), Docker daemon control ports (`2375`, `2376`), container loopback destinations (`localhost`, `127.0.0.0/8`, `::1`), and cloud instance metadata IP ranges (`169.254.0.0/16`, `fe80::/10`). Destination hostnames are resolved via `socket.getaddrinfo()` to verify destination IPs against blocked ranges, while preserving local container hostnames and LAN subnets via configurable `ALLOW_PRIVATE_NOTIFICATION_TARGETS`.
+- **ReDoS Protection in Pattern Rules**: Added validation against pathological nested repetition antipatterns (such as `(a+)+`, `([a-z]+)*`, `((a+)+)+`) across alert rules and drop rules to prevent regular expression denial-of-service backtracking. Rejects vulnerable patterns with HTTP 400.
+- **Secret Redaction in Outbound Notifications**: Passed sample logs, alert titles, and AI diagnosis summaries through the on-demand secret redactor before outbound notification dispatch to prevent leaking sensitive tokens, passwords, and authorization headers to webhook endpoints.
+- **Credential Scrubbing in URL Masking**: Enhanced fallback notification URL masking via `urllib.parse.urlsplit` to scrub plain usernames and passwords in the netloc to `***:***@<host>`.
+- **Channel Testing Exception Cleansing**: Suppressed raw socket and connection error tracebacks in channel connectivity tests, returning a clean user-facing error message while recording full exception details in server logs.
+
 ## [1.1.0] - 2026-09-16
 
 ### Added

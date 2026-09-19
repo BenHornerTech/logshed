@@ -884,6 +884,78 @@ class TestQueueConsumerAlertIntegration:
         assert "All 2 models failed (gemini-3.8-flash, gemini-3.7-flash)" in row[0]
         conn.close()
 
+    @pytest.mark.asyncio
+    async def test_dispatch_alert_redacts_secrets_in_title_log_and_ai_summary(self, tmp_path, monkeypatch):
+        """Verify that secrets in alert title, sample log, and AI diagnosis are redacted before dispatch."""
+        test_db = tmp_path / "logs_redact.db"
+        run_migrations(test_db)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        conn = get_connection(test_db)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO alert_rules
+            (name, rule_type, match_pattern, threshold_count, window_seconds, cooldown_seconds, ai_enrichment, is_enabled, created_at)
+            VALUES (?, ?, ?, 1, 60, 0, 1, 1, ?)
+            """,
+            ("Rule with AWS Key AKIAIOSFODNN7EXAMPLE", "pattern", "auth_failed", now_iso),
+        )
+        conn.commit()
+        conn.close()
+
+        # Mock AI analysis returning sensitive tokens
+        async def mock_ai(*args, **kwargs):
+            return (
+                "Suspicious token usage api_key=AIzaSyD1234567890abcdef discovered.",
+                "Plaintext password leaked in stack trace",
+                "Revoke key immediately",
+                1, 2, 3, 4, 5, 6, "gemini-test", [],
+            )
+
+        monkeypatch.setattr("app.services.ai_engine.execute_ai_analysis", mock_ai)
+
+        dispatched = []
+        async def mock_send(self, title, body, channel_id=None, **kwargs):
+            dispatched.append({"title": title, "body": body})
+            return True
+
+        from app.services.notifier import NotifierService
+        monkeypatch.setattr(NotifierService, "send_notification", mock_send)
+
+        evaluator = AlertEvaluator(test_db)
+        raw_secret_message = (
+            "auth_failed: password=MySecretPass123! token=secret_token_value_9999 "
+            "Authorization: Bearer mySecretJwtTokenValue"
+        )
+        log_entry = {
+            "id": 401,
+            "app_name": "auth-service",
+            "message": raw_secret_message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        await evaluator.evaluate_batch([log_entry])
+        await asyncio.sleep(0.1)
+
+        assert len(dispatched) == 1
+        title = dispatched[0]["title"]
+        body = dispatched[0]["body"]
+
+        # 1. Title redaction
+        assert "AKIAIOSFODNN7EXAMPLE" not in title
+        assert "[REDACTED]" in title
+
+        # 2. Sample log redaction in body
+        assert "MySecretPass123!" not in body
+        assert "secret_token_value_9999" not in body
+        assert "mySecretJwtTokenValue" not in body
+        assert "[REDACTED]" in body
+
+        # 3. AI diagnosis summary redaction in body
+        assert "AIzaSyD1234567890abcdef" not in body
+
+
 
 
 

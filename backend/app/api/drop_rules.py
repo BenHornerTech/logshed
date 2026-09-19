@@ -19,6 +19,7 @@ from app.models import (
     MessageResponse,
 )
 from app.services.drop_filter import CompiledDropRule, get_drop_filter
+from app.core.regex_validator import check_regex_safety, validate_regex_pattern
 
 router = APIRouter(prefix="/drop-rules", tags=["Drop Rules"])
 
@@ -72,15 +73,9 @@ async def create_drop_rule(
             detail="At least one filter criterion (Host/IP, App/Container, or Message Pattern) must be specified.",
         )
 
-    # Validate regex syntax if enabled
+    # Validate regex syntax and ReDoS safety if enabled
     if payload.is_regex and msg != "*":
-        try:
-            re.compile(msg)
-        except re.error as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid regular expression: {e}",
-            )
+        validate_regex_pattern(msg)
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -163,14 +158,8 @@ async def update_drop_rule(
             else bool(existing["is_enabled"])
         )
 
-        if new_is_regex:
-            try:
-                re.compile(new_message)
-            except re.error as e:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid regular expression: {e}",
-                )
+        if new_is_regex and new_message != "*":
+            validate_regex_pattern(new_message)
 
         source_normalized = new_source if new_source else None
         app_normalized = new_app if new_app else None
@@ -294,10 +283,10 @@ async def test_drop_rule(
     msg_pat = payload.message_pattern.strip() if payload.message_pattern else "*"
     compiled_re = None
     if payload.is_regex and msg_pat != "*":
-        try:
-            compiled_re = re.compile(msg_pat, re.IGNORECASE)
-        except re.error as e:
-            return DropRuleTestResponse(matched=False, error=f"Invalid regular expression: {e}")
+        is_safe, err = check_regex_safety(msg_pat)
+        if not is_safe:
+            return DropRuleTestResponse(matched=False, error=err)
+        compiled_re = re.compile(msg_pat, re.IGNORECASE)
 
     rule = CompiledDropRule(
         id=0,

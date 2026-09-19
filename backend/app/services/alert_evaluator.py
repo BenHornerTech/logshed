@@ -541,9 +541,10 @@ class AlertEvaluator:
         except Exception as db_err:
             logger.error(f"Failed to record alert history for rule {rule.id}: {db_err}")
 
-        # Construct clean push notification payload
-        notification_title = f"LogShed Alert: {rule.name}"
-        truncated_log = format_sample_log_for_alert(sample_log)
+        # Construct clean push notification payload with secrets redacted
+        notification_title = str(redact(f"LogShed Alert: {rule.name}"))
+        redacted_sample_log = str(redact(sample_log)) if sample_log else ""
+        truncated_log = format_sample_log_for_alert(redacted_sample_log)
         clean_log = truncated_log.replace("```", "").replace("`", "").strip()
         body_lines = [
             f"Host: {extracted_host or 'Unknown'}",
@@ -553,12 +554,14 @@ class AlertEvaluator:
 
         if rule.ai_enrichment:
             if ai_success and summary:
-                clean_summary = strip_markdown(summary)
+                redacted_summary = str(redact(summary))
+                clean_summary = strip_markdown(redacted_summary)
                 if len(clean_summary) > 200:
                     clean_summary = clean_summary[:197] + "..."
                 body_lines.append(f"AI Analysis: {clean_summary}")
             elif ai_error_note:
-                body_lines.append(f"AI Analysis: Unavailable ({ai_error_note})")
+                redacted_error = str(redact(ai_error_note))
+                body_lines.append(f"AI Analysis: Unavailable ({redacted_error})")
 
             app_url = (os.environ.get("APP_URL") or os.environ.get("app_url") or "").strip().rstrip("/")
             if app_url:
