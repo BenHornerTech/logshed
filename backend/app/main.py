@@ -182,7 +182,7 @@ async def _drop_filter_flush_worker() -> None:
     while True:
         try:
             await asyncio.sleep(30)
-            get_drop_filter().flush_counts()
+            await asyncio.to_thread(get_drop_filter().flush_counts)
         except asyncio.CancelledError:
             break
         except Exception as e:

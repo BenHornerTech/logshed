@@ -188,6 +188,7 @@ class TestSchemaIntegrity:
             "idx_alert_rules_enabled",
             "idx_alert_history_triggered_at",
             "idx_alert_history_rule_id",
+            "idx_alert_history_rule_time",
         }
         assert expected.issubset(indexes)
 

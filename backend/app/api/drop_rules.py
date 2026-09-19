@@ -5,6 +5,7 @@ Allows configuring, updating, testing, and toggling in-memory log drop rules
 to discard repetitive syslog or container noise before persistence.
 """
 
+import asyncio
 import datetime
 import re
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -28,6 +29,7 @@ router = APIRouter(prefix="/drop-rules", tags=["Drop Rules"])
 async def list_drop_rules(user: dict = Depends(get_current_user)) -> list[DropRuleResponse]:
     """List all configured drop rules with accumulated dropped counts."""
     drop_filter = get_drop_filter()
+    counts = drop_filter.get_all_pending_counts()
 
     def _query(conn):
         cur = conn.cursor()
@@ -39,7 +41,7 @@ async def list_drop_rules(user: dict = Depends(get_current_user)) -> list[DropRu
         results = []
         for r in rows:
             rule_id = r["id"]
-            live_count = r["dropped_count"] + drop_filter.get_pending_count(rule_id)
+            live_count = r["dropped_count"] + counts.get(rule_id, 0)
             results.append(
                 DropRuleResponse(
                     id=rule_id,
@@ -110,7 +112,7 @@ async def create_drop_rule(
         )
 
     result = await run_db_query(_insert)
-    get_drop_filter().reload_rules()
+    await asyncio.to_thread(get_drop_filter().reload_rules)
     return result
 
 
@@ -213,7 +215,7 @@ async def update_drop_rule(
         )
 
     result = await run_db_query(_update)
-    get_drop_filter().reload_rules()
+    await asyncio.to_thread(get_drop_filter().reload_rules)
     return result
 
 
@@ -233,7 +235,7 @@ async def delete_drop_rule(
 
     await run_db_query(_delete)
     get_drop_filter().reset_rule_count(rule_id)
-    get_drop_filter().reload_rules()
+    await asyncio.to_thread(get_drop_filter().reload_rules)
     return MessageResponse(status="ok", detail=f"Rule {rule_id} deleted successfully.")
 
 

@@ -5,10 +5,11 @@ Provides full CRUD operations for alert rules, 1-click security canary presets,
 dry-run pattern testing, and historical alert log auditing.
 """
 
+import asyncio
 import datetime
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import get_current_user, run_db_query
@@ -27,10 +28,33 @@ from app.models import (
 from app.services.alert_evaluator import CompiledAlertRule, get_alert_evaluator
 from app.services.security_presets import extract_ip_from_message, get_security_presets, get_security_preset_by_id
 from app.core.regex_validator import check_regex_safety, validate_regex_pattern
+from app.core.utils import match_wildcard, parse_iso_to_epoch
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
+
+
+def _row_to_alert_rule_response(r: Any) -> AlertRuleResponse:
+    """Map a raw database row tuple from alert_rules into an AlertRuleResponse."""
+    return AlertRuleResponse(
+        id=r[0],
+        name=r[1],
+        rule_type=r[2],
+        channel_id=r[3],
+        filter_app=r[4],
+        filter_severity=r[5],
+        match_pattern=r[6],
+        threshold_count=r[7] or 1,
+        window_seconds=r[8] or 60,
+        cooldown_seconds=r[9] or 300,
+        ai_enrichment=bool(r[10]),
+        is_enabled=bool(r[11]),
+        trigger_count=r[12] or 0,
+        last_triggered_at=str(r[13]) if r[13] else None,
+        suppress_until=str(r[14]) if r[14] else None,
+        created_at=str(r[15]),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -53,29 +77,7 @@ async def list_alert_rules(user: dict = Depends(get_current_user)) -> list[Alert
             """
         )
         rows = cur.fetchall()
-        results = []
-        for r in rows:
-            results.append(
-                AlertRuleResponse(
-                    id=r[0],
-                    name=r[1],
-                    rule_type=r[2],
-                    channel_id=r[3],
-                    filter_app=r[4],
-                    filter_severity=r[5],
-                    match_pattern=r[6],
-                    threshold_count=r[7] or 1,
-                    window_seconds=r[8] or 60,
-                    cooldown_seconds=r[9] or 300,
-                    ai_enrichment=bool(r[10]),
-                    is_enabled=bool(r[11]),
-                    trigger_count=r[12] or 0,
-                    last_triggered_at=str(r[13]) if r[13] else None,
-                    suppress_until=str(r[14]) if r[14] else None,
-                    created_at=str(r[15]),
-                )
-            )
-        return results
+        return [_row_to_alert_rule_response(r) for r in rows]
 
     return await run_db_query(_query)
 
@@ -131,7 +133,7 @@ async def create_alert_rule(
         return rule_id
 
     rule_id = await run_db_query(_insert)
-    get_alert_evaluator().reload_rules()
+    await asyncio.to_thread(get_alert_evaluator().reload_rules)
 
     return AlertRuleResponse(
         id=rule_id,
@@ -181,24 +183,7 @@ async def get_alert_rule(
             detail=f"Alert rule {rule_id} not found.",
         )
 
-    return AlertRuleResponse(
-        id=row[0],
-        name=row[1],
-        rule_type=row[2],
-        channel_id=row[3],
-        filter_app=row[4],
-        filter_severity=row[5],
-        match_pattern=row[6],
-        threshold_count=row[7] or 1,
-        window_seconds=row[8] or 60,
-        cooldown_seconds=row[9] or 300,
-        ai_enrichment=bool(row[10]),
-        is_enabled=bool(row[11]),
-        trigger_count=row[12] or 0,
-        last_triggered_at=str(row[13]) if row[13] else None,
-        suppress_until=str(row[14]) if row[14] else None,
-        created_at=str(row[15]),
-    )
+    return _row_to_alert_rule_response(row)
 
 
 @router.put("/rules/{rule_id}", response_model=AlertRuleResponse)
@@ -250,26 +235,23 @@ async def update_alert_rule(
         suppress_until = None
     elif "cooldown_seconds" in fields and new_cool != row[9]:
         if row[13]:
-            try:
-                last_dt = datetime.datetime.fromisoformat(str(row[13]).replace("Z", "+00:00"))
-                if last_dt.tzinfo is None:
-                    last_dt = last_dt.replace(tzinfo=datetime.timezone.utc)
-                new_suppress_dt = last_dt + datetime.timedelta(seconds=new_cool)
-                now_utc = datetime.datetime.now(datetime.timezone.utc)
-                suppress_until = None if new_suppress_dt <= now_utc else new_suppress_dt.isoformat()
-            except Exception:
+            last_epoch = parse_iso_to_epoch(row[13], fallback=0.0)
+            if last_epoch > 0.0:
+                new_suppress_epoch = last_epoch + new_cool
+                now_epoch = datetime.datetime.now(datetime.timezone.utc).timestamp()
+                suppress_until = (
+                    None
+                    if new_suppress_epoch <= now_epoch
+                    else datetime.datetime.fromtimestamp(new_suppress_epoch, tz=datetime.timezone.utc).isoformat()
+                )
+            else:
                 suppress_until = None
         else:
             suppress_until = None
     elif row[14]:
-        try:
-            old_suppress_dt = datetime.datetime.fromisoformat(str(row[14]).replace("Z", "+00:00"))
-            if old_suppress_dt.tzinfo is None:
-                old_suppress_dt = old_suppress_dt.replace(tzinfo=datetime.timezone.utc)
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
-            suppress_until = None if old_suppress_dt <= now_utc else row[14]
-        except Exception:
-            suppress_until = None
+        old_suppress_epoch = parse_iso_to_epoch(row[14], fallback=0.0)
+        now_epoch = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        suppress_until = None if (old_suppress_epoch <= now_epoch or old_suppress_epoch <= 0.0) else row[14]
     else:
         suppress_until = None
 
@@ -308,29 +290,25 @@ async def update_alert_rule(
                 rule_id,
             ),
         )
+        cur.execute(
+            """
+            SELECT id, name, rule_type, channel_id, filter_app, filter_severity,
+                   match_pattern, threshold_count, window_seconds, cooldown_seconds,
+                   ai_enrichment, is_enabled, trigger_count, last_triggered_at,
+                   suppress_until, created_at
+            FROM alert_rules
+            WHERE id = ?
+            """,
+            (rule_id,),
+        )
+        updated_row = cur.fetchone()
         conn.commit()
+        return updated_row
 
-    await run_db_query(_update)
-    get_alert_evaluator().reload_rules()
+    updated_row = await run_db_query(_update)
+    await asyncio.to_thread(get_alert_evaluator().reload_rules)
 
-    return AlertRuleResponse(
-        id=rule_id,
-        name=new_name,
-        rule_type=new_type,
-        channel_id=new_channel,
-        filter_app=new_app,
-        filter_severity=new_sev,
-        match_pattern=new_pat,
-        threshold_count=new_thresh,
-        window_seconds=new_win,
-        cooldown_seconds=new_cool,
-        ai_enrichment=new_ai,
-        is_enabled=new_enabled,
-        trigger_count=row[12] or 0,
-        last_triggered_at=str(row[13]) if row[13] else None,
-        suppress_until=str(suppress_until) if suppress_until else None,
-        created_at=str(row[15]),
-    )
+    return _row_to_alert_rule_response(updated_row)
 
 
 @router.delete("/rules/{rule_id}", response_model=MessageResponse)
@@ -353,7 +331,7 @@ async def delete_alert_rule(
             detail=f"Alert rule {rule_id} not found.",
         )
 
-    get_alert_evaluator().reload_rules()
+    await asyncio.to_thread(get_alert_evaluator().reload_rules)
 
     return MessageResponse(
         status="ok",
@@ -485,7 +463,7 @@ async def install_preset(
         return rule_id
 
     rule_id = await run_db_query(_insert)
-    get_alert_evaluator().reload_rules()
+    await asyncio.to_thread(get_alert_evaluator().reload_rules)
 
     return AlertRuleResponse(
         id=rule_id,
