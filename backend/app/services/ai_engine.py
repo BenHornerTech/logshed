@@ -46,27 +46,57 @@ class AiServiceUnavailableError(RuntimeError):
 def is_retryable_for_fallback(exc: Exception) -> bool:
     """
     Returns True if an exception represents a 503/504 Service Unavailable, Timeout,
-    Deadline Exceeded, Model Overload, or 404 Model Not Found error,
+    Deadline Exceeded, Model Overload, Rate Limit / Quota Exhaustion, or 404 Model Not Found error,
     qualifying the request for failover to a fallback model.
     """
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, APITimeoutError)):
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, APITimeoutError, httpx.TimeoutException)):
         return True
     if isinstance(exc, AiServiceUnavailableError):
         return True
-    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-    if code in (404, 503, 504):
-        return True
+
+    # Check status code attribute (int or string convertible)
+    raw_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if raw_code is not None:
+        try:
+            int_code = int(raw_code)
+            if int_code in (404, 408, 429, 500, 502, 503, 504):
+                return True
+        except (ValueError, TypeError):
+            pass
+
+    # Check status string attribute (e.g. google.genai.errors.APIError status)
+    status_attr = getattr(exc, "status", None)
+    if status_attr:
+        norm_status = str(status_attr).strip().upper()
+        if norm_status in ("UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"):
+            return True
+
+    # Check exception text representation
     err_str = str(exc).lower()
     if "404" in err_str and ("not found" in err_str or "not_found" in err_str):
         return True
-    if "503" in err_str or "504" in err_str:
+    retryable_keywords = (
+        "503",
+        "504",
+        "502",
+        "500",
+        "429",
+        "408",
+        "timeout",
+        "timed out",
+        "deadline",
+        "expired",
+        "overload",
+        "unavailable",
+        "service unavailable",
+        "resource_exhausted",
+        "quota",
+        "rate limit",
+        "temporarily unavailable",
+    )
+    if any(kw in err_str for kw in retryable_keywords):
         return True
-    if "timeout" in err_str or "timed out" in err_str:
-        return True
-    if "deadline" in err_str or "expired" in err_str:
-        return True
-    if "overload" in err_str or "unavailable" in err_str:
-        return True
+
     return False
 
 
@@ -639,7 +669,12 @@ async def execute_ai_analysis(
     # Build chain of distinct candidate models to try
     models_to_try = [primary_model]
     if fallback_models:
-        for fb in fallback_models:
+        candidate_list = (
+            [m.strip() for m in fallback_models.split(",") if m.strip()]
+            if isinstance(fallback_models, str)
+            else fallback_models
+        )
+        for fb in candidate_list:
             clean_fb = fb.strip() if isinstance(fb, str) else ""
             if clean_fb and clean_fb not in models_to_try:
                 models_to_try.append(clean_fb)
@@ -648,6 +683,9 @@ async def execute_ai_analysis(
     last_error: Optional[Exception] = None
 
     for idx, current_model in enumerate(models_to_try):
+        logger.info(
+            f"AI analysis attempting model '{current_model}' (attempt {idx + 1}/{len(models_to_try)})..."
+        )
         if on_progress:
             prog_res = on_progress({
                 "stage": "calling",
@@ -712,7 +750,8 @@ async def execute_ai_analysis(
                     err_desc = raw_str[:300].strip()
                 fallback_attempts.append(f"{current_model} failed: {err_desc}")
                 logger.warning(
-                    f"Model '{current_model}' failed with retryable error ({err_desc}). Failing over to fallback model '{next_model}'..."
+                    f"Model '{current_model}' failed with retryable error ({err_desc}). "
+                    f"Failing over to fallback model '{next_model}' (attempt {idx + 2}/{len(models_to_try)})..."
                 )
                 if on_progress:
                     prog_res = on_progress({
@@ -725,8 +764,20 @@ async def execute_ai_analysis(
                     if asyncio.iscoroutine(prog_res):
                         await prog_res
                 continue
-            raise
+            if not is_retryable_for_fallback(exc):
+                raise
+            # If retryable but no more models left, let the loop complete to raise the summary of all tried models
+            break
 
     if last_error:
+        logger.error(
+            f"All {len(models_to_try)} candidate model(s) failed in AI analysis chain: {fallback_attempts}. Final error: {last_error}"
+        )
+        if len(models_to_try) > 1:
+            err_summary = f"All {len(models_to_try)} models failed ({', '.join(models_to_try)}). Last error: {last_error}"
+            raise AiServiceUnavailableError(
+                err_summary,
+                code=getattr(last_error, "code", 503),
+            ) from last_error
         raise last_error
     raise RuntimeError("No models were executed.")

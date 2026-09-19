@@ -79,9 +79,33 @@ def decrypt_channel_url(encrypted_url: str) -> str:
     return decrypt_value(encrypted_url)
 
 
-def _sync_send_notification(urls: list[str], title: str, body: str) -> bool:
+def _configure_apprise_servers(ap_obj: apprise.Apprise) -> None:
+    """
+    Ensure rich formatting (HTML/Markdown) is enabled on notification services
+    that support it (such as Pushover, Discord, Gotify, Ntfy) when not explicitly set in the URL.
+    For Pushover, enables HTML formatting so bold labels and paragraphs render natively
+    rather than showing unrendered raw markdown asterisks.
+    """
+    for server in ap_obj:
+        cls_name = server.__class__.__name__
+        if cls_name == "NotifyPushover":
+            if server.notify_format == apprise.NotifyFormat.TEXT:
+                server.notify_format = apprise.NotifyFormat.HTML
+        elif cls_name in ("NotifyDiscord", "NotifyNtfy", "NotifyGotify"):
+            if server.notify_format == apprise.NotifyFormat.TEXT:
+                server.notify_format = apprise.NotifyFormat.MARKDOWN
+
+
+def _sync_send_notification(
+    urls: list[str],
+    title: str,
+    body: str,
+    body_format: str = apprise.NotifyFormat.MARKDOWN,
+) -> bool:
     """
     Synchronous Apprise dispatch function executed in a worker thread via asyncio.to_thread.
+    Passes body_format (defaults to NotifyFormat.MARKDOWN) so services like Pushover, Slack,
+    Discord, and Telegram receive rich formatted text (HTML/Markdown) rather than raw text.
     """
     if not urls:
         logger.debug("No notification URLs provided to dispatch.")
@@ -91,10 +115,12 @@ def _sync_send_notification(urls: list[str], title: str, body: str) -> bool:
         ap_obj = apprise.Apprise()
         for u in urls:
             ap_obj.add(u)
+        _configure_apprise_servers(ap_obj)
 
         success = ap_obj.notify(
             title=title,
             body=body,
+            body_format=body_format,
         )
         return bool(success)
     except Exception as exc:
@@ -102,7 +128,12 @@ def _sync_send_notification(urls: list[str], title: str, body: str) -> bool:
         return False
 
 
-def _sync_test_channel(url: str, title: str, body: str) -> Tuple[bool, str]:
+def _sync_test_channel(
+    url: str,
+    title: str,
+    body: str,
+    body_format: str = apprise.NotifyFormat.MARKDOWN,
+) -> Tuple[bool, str]:
     """
     Synchronously test a single notification URL via Apprise in a worker thread.
     """
@@ -111,10 +142,12 @@ def _sync_test_channel(url: str, title: str, body: str) -> Tuple[bool, str]:
         added = ap_obj.add(url.strip())
         if not added:
             return False, "Failed to initialize notification target. Please check URL syntax."
+        _configure_apprise_servers(ap_obj)
 
         success = ap_obj.notify(
             title=title,
             body=body,
+            body_format=body_format,
         )
         if success:
             return True, "Notification sent successfully."
@@ -122,6 +155,7 @@ def _sync_test_channel(url: str, title: str, body: str) -> Tuple[bool, str]:
             return False, "Notification service rejected delivery. Please verify webhook credentials or token permissions."
     except Exception as exc:
         return False, f"Delivery error: {exc}"
+
 
 
 class NotifierService:
@@ -136,7 +170,8 @@ class NotifierService:
         self,
         url: str,
         title: str = "LogShed Notification Test",
-        body: str = "Connection successful! LogShed is configured to send alerts to this channel.",
+        body: str = "**LogShed Test:** Connection successful! LogShed is configured to send alerts to this channel.",
+        body_format: str = apprise.NotifyFormat.MARKDOWN,
     ) -> Tuple[bool, str]:
         """
         Deliver an immediate test notification to verify connectivity.
@@ -145,13 +180,14 @@ class NotifierService:
         if not valid:
             return False, err or "Invalid notification URL."
 
-        return await asyncio.to_thread(_sync_test_channel, url, title, body)
+        return await asyncio.to_thread(_sync_test_channel, url, title, body, body_format)
 
     async def send_notification(
         self,
         title: str,
         body: str,
         channel_id: Optional[int] = None,
+        body_format: str = apprise.NotifyFormat.MARKDOWN,
     ) -> bool:
         """
         Dispatch a notification to enabled channels (or a specific channel ID).
@@ -195,7 +231,7 @@ class NotifierService:
             logger.debug("No active notification channels found for dispatch.")
             return False
 
-        return await asyncio.to_thread(_sync_send_notification, urls, title, body)
+        return await asyncio.to_thread(_sync_send_notification, urls, title, body, body_format)
 
 
 _notifier_instance: Optional[NotifierService] = None

@@ -8,6 +8,7 @@ import { SetupModal } from './components/auth/SetupModal.tsx';
 import { LiveLogStream } from './components/logs/LiveLogStream.tsx';
 import { HostAliasManager } from './components/aliases/HostAliasManager.tsx';
 import { StoragePanel } from './components/storage/StoragePanel.tsx';
+import { AlertsPanel } from './components/alerts/AlertsPanel.tsx';
 import { SettingsPanel } from './components/settings/SettingsPanel.tsx';
 import { AiAnalysisModal } from './components/ai/AiAnalysisModal.tsx';
 import { LogEntry, AppTab } from './types.ts';
@@ -19,6 +20,7 @@ export const pathToTab = (pathname: string): AppTab => {
   const clean = pathname.replace(/\/+$/, '').toLowerCase();
   if (clean === '/aliases') return 'aliases';
   if (clean === '/storage') return 'storage';
+  if (clean === '/alerts') return 'alerts';
   if (clean === '/settings') return 'settings';
   return 'stream';
 };
@@ -29,6 +31,8 @@ export const tabToPath = (tab: AppTab): string => {
       return '/aliases';
     case 'storage':
       return '/storage';
+    case 'alerts':
+      return '/alerts';
     case 'settings':
       return '/settings';
     case 'stream':
@@ -178,6 +182,8 @@ export const App: React.FC = () => {
         )}
 
         {activeTab === 'storage' && <StoragePanel />}
+
+        {activeTab === 'alerts' && <AlertsPanel />}
 
         {activeTab === 'settings' && (
           <SettingsPanel

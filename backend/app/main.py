@@ -8,7 +8,7 @@ import datetime
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from pathlib import Path
 
@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import ai, aliases, auth, drop_rules, logs, notifications, saved_views, settings, system
+from app.api import ai, alerts, aliases, auth, drop_rules, logs, notifications, saved_views, settings, system
 from app.api.deps import run_db_query
 from app.collectors.docker_collector import DockerTailer
 from app.collectors.syslog import SyslogServer
@@ -53,6 +53,7 @@ _syslog_server: Optional[SyslogServer] = None
 _docker_tailer: Optional[DockerTailer] = None
 _assembler: Optional[KeyedMultilineAssembler] = None
 _internal_log_handler: Optional[InternalLogHandler] = None
+_alert_evaluator: Optional[Any] = None
 _background_tasks: list[asyncio.Task] = []
 
 
@@ -195,7 +196,7 @@ async def lifespan(app: FastAPI):
     Application lifespan manager.
     Sets up database schema, master encryption keys, and starts background workers.
     """
-    global _queue_consumer, _fts_worker, _metrics_worker, _prune_worker, _syslog_server, _docker_tailer, _assembler, _background_tasks
+    global _queue_consumer, _fts_worker, _metrics_worker, _prune_worker, _syslog_server, _docker_tailer, _assembler, _alert_evaluator, _background_tasks
 
     db_path = get_db_path()
     logger.info(f"Setting up LogShed database at {db_path}...")
@@ -209,6 +210,10 @@ async def lifespan(app: FastAPI):
     init_drop_filter(db_path)
     _background_tasks.append(asyncio.create_task(_supervise_worker(_drop_filter_flush_worker, "DropFilterWorker")))
 
+    # Initialize in-memory alert evaluator
+    from app.services.alert_evaluator import init_alert_evaluator
+    _alert_evaluator = init_alert_evaluator(db_path)
+
     # 2. Shared KeyedMultilineAssembler for all collectors
     _assembler = KeyedMultilineAssembler()
 
@@ -216,7 +221,7 @@ async def lifespan(app: FastAPI):
     _fts_worker = FTSIndexWorker(db_path)
     _background_tasks.append(asyncio.create_task(_supervise_worker(_fts_worker.run, "FTSIndexWorker")))
 
-    _queue_consumer = QueueConsumer(db_path, fts_indexer=_fts_worker)
+    _queue_consumer = QueueConsumer(db_path, fts_indexer=_fts_worker, alert_evaluator=_alert_evaluator)
     _background_tasks.append(asyncio.create_task(_supervise_worker(_queue_consumer.run, "QueueConsumer")))
 
     # 4. Start StorageMetricsWorker
@@ -323,6 +328,11 @@ async def lifespan(app: FastAPI):
             await _metrics_worker.stop()
         except Exception as e:
             logger.warning(f"Error stopping StorageMetricsWorker: {e}")
+    if _alert_evaluator:
+        try:
+            await _alert_evaluator.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping AlertEvaluator: {e}")
 
     try:
         from app.services.drop_filter import get_drop_filter
@@ -416,6 +426,7 @@ def create_app() -> FastAPI:
     api_router.include_router(drop_rules.router)
     api_router.include_router(saved_views.router)
     api_router.include_router(notifications.router)
+    api_router.include_router(alerts.router)
     api_router.include_router(system.router)
     api_router.include_router(ai.router)
 

@@ -591,10 +591,12 @@ class QueueConsumer:
         db_path: str | Path,
         debounce_seconds: float = 0.05,
         fts_indexer: Optional[Any] = None,
+        alert_evaluator: Optional[Any] = None,
     ):
         self._db_path = Path(db_path)
         self._debounce_seconds = debounce_seconds
         self._fts_indexer = fts_indexer
+        self._alert_evaluator = alert_evaluator
         self._started = False
         self._running = False
         self._stopping = False
@@ -607,6 +609,10 @@ class QueueConsumer:
     def set_fts_indexer(self, fts_indexer: Any) -> None:
         """Register FTSIndexWorker instance for immediate post-commit notification."""
         self._fts_indexer = fts_indexer
+
+    def set_alert_evaluator(self, alert_evaluator: Any) -> None:
+        """Register AlertEvaluator instance for post-commit batch evaluation."""
+        self._alert_evaluator = alert_evaluator
 
     def _get_connection(self) -> sqlite3.Connection:
         """Returns or opens a persistent connection configured with WAL and performance PRAGMAs."""
@@ -755,6 +761,13 @@ class QueueConsumer:
             # Broadcast to SSE subscribers on the event loop thread
             from app.core.sse import sse_manager
             await sse_manager.broadcast_batch(batch)
+
+            # Evaluate alert rules on ingested batch
+            if self._alert_evaluator is not None:
+                try:
+                    await self._alert_evaluator.evaluate_batch(batch)
+                except Exception as e:
+                    logger.warning(f"Error evaluating alert rules on batch: {e}")
 
             # Mark as done
             for _ in batch:

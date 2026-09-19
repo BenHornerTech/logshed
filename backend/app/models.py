@@ -477,3 +477,119 @@ class NotificationTestResponse(BaseModel):
     message: str
 
 
+# ---------------------------------------------------------------------------
+# Alert Rules, Presets & History Models
+# ---------------------------------------------------------------------------
+
+class AlertRuleCreate(BaseModel):
+    """Payload for creating a new alert rule."""
+    name: str = Field(..., min_length=1, max_length=100, description="Friendly alert rule name")
+    rule_type: str = Field("threshold", description="Rule type: threshold or pattern")
+    channel_id: Optional[int] = Field(None, description="Target notification channel ID (null dispatches to all enabled channels)")
+    filter_app: Optional[str] = Field(None, max_length=100, description="Optional application or container filter")
+    filter_severity: Optional[int] = Field(None, ge=0, le=7, description="Maximum severity threshold (0-7, lower is more critical)")
+    match_pattern: Optional[str] = Field(None, max_length=1000, description="Regex or keyword pattern to match against log messages")
+    threshold_count: int = Field(1, ge=1, le=10000, description="Occurrences needed within window to trigger")
+    window_seconds: int = Field(60, ge=1, le=86400, description="Sliding window duration in seconds")
+    cooldown_seconds: int = Field(300, ge=0, le=86400, description="Cooldown dampening duration in seconds")
+    ai_enrichment: bool = Field(False, description="Whether to enrich incident alerts with LLM root-cause analysis")
+    is_enabled: bool = Field(True, description="Whether the rule is actively evaluated")
+
+
+class AlertRuleUpdate(BaseModel):
+    """Payload for updating an existing alert rule."""
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    rule_type: Optional[str] = None
+    channel_id: Optional[int] = None
+    filter_app: Optional[str] = Field(None, max_length=100)
+    filter_severity: Optional[int] = Field(None, ge=0, le=7)
+    match_pattern: Optional[str] = Field(None, max_length=1000)
+    threshold_count: Optional[int] = Field(None, ge=1, le=10000)
+    window_seconds: Optional[int] = Field(None, ge=1, le=86400)
+    cooldown_seconds: Optional[int] = Field(None, ge=0, le=86400)
+    ai_enrichment: Optional[bool] = None
+    is_enabled: Optional[bool] = None
+    reset_cooldown: Optional[bool] = Field(False, description="Clear active cooldown suppression immediately")
+
+
+class AlertRuleResponse(BaseModel):
+    """Representation of an alert rule."""
+    id: int
+    name: str
+    rule_type: str
+    channel_id: Optional[int] = None
+    filter_app: Optional[str] = None
+    filter_severity: Optional[int] = None
+    match_pattern: Optional[str] = None
+    threshold_count: int = 1
+    window_seconds: int = 60
+    cooldown_seconds: int = 300
+    ai_enrichment: bool = False
+    is_enabled: bool = True
+    trigger_count: int = 0
+    last_triggered_at: Optional[str] = None
+    suppress_until: Optional[str] = None
+    created_at: str
+
+
+class AlertTestRequest(BaseModel):
+    """Payload for testing an alert rule pattern against sample input."""
+    rule_type: str = "threshold"
+    filter_app: Optional[str] = None
+    filter_severity: Optional[int] = None
+    match_pattern: Optional[str] = None
+    sample_message: str = Field(..., description="Sample message text to test")
+    sample_app: Optional[str] = Field(None, description="Sample app name")
+    sample_severity: Optional[int] = Field(6, description="Sample severity (0-7)")
+
+
+class AlertTestResponse(BaseModel):
+    """Result of testing an alert rule pattern."""
+    matched: bool
+    extracted_ip: Optional[str] = None
+    error: Optional[str] = None
+
+
+class SecurityPresetResponse(BaseModel):
+    """Predefined security canary alert preset."""
+    id: str
+    name: str
+    description: str
+    rule_type: str
+    filter_app: Optional[str] = None
+    filter_severity: Optional[int] = None
+    match_pattern: Optional[str] = None
+    threshold_count: int = 1
+    window_seconds: int = 60
+    cooldown_seconds: int = 300
+    ai_enrichment: bool = True
+
+
+class AlertPresetInstallRequest(BaseModel):
+    """Payload for installing a security preset."""
+    channel_id: Optional[int] = Field(None, description="Target notification channel ID")
+
+
+class AlertHistoryItem(BaseModel):
+    """Alert firing event record."""
+    id: int
+    rule_id: Optional[int] = None
+    rule_name: str
+    channel_id: Optional[int] = None
+    trigger_count: int = 1
+    sample_log: Optional[str] = None
+    incident_summary: Optional[str] = None
+    ai_enrichment: bool = False
+    ai_model: Optional[str] = None
+    triggered_at: str
+
+
+class AlertHistoryListResponse(BaseModel):
+    """Paginated list of historical alert firing events."""
+    items: list[AlertHistoryItem]
+    total: int
+    limit: int
+    offset: int
+
+
+

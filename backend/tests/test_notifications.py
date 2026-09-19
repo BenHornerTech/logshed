@@ -299,3 +299,29 @@ class TestNotificationsApi:
     async def test_unauthenticated_requests_rejected(self, client: AsyncClient):
         res = await client.get("/api/notifications/channels")
         assert res.status_code in (401, 403)
+
+    def test_pushover_formatting_configures_html_and_converts_markdown(self):
+        """Verify that Pushover targets receive html=1 and markdown converted to rich HTML tags."""
+        from app.services.notifier import _sync_send_notification
+        import apprise
+
+        dispatched_payloads = []
+
+        def fake_send(payload):
+            dispatched_payloads.append(payload)
+            return True
+
+        with patch("apprise.plugins.pushover.NotifyPushover._send", side_effect=fake_send):
+            success = _sync_send_notification(
+                urls=["pover://user@token"],
+                title="Alert Title",
+                body="**Alert: Auth Spike**\n\n**IP:** 10.0.0.1\n\n**Log:**\nFailed login",
+                body_format=apprise.NotifyFormat.MARKDOWN,
+            )
+            assert success is True
+            assert len(dispatched_payloads) == 1
+            payload = dispatched_payloads[0]
+            assert payload.get("html") == 1
+            assert "<strong>Alert: Auth Spike</strong>" in payload.get("message")
+            assert "**Alert:" not in payload.get("message")
+

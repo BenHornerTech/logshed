@@ -247,6 +247,7 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     rule_type TEXT NOT NULL,
+    channel_id INTEGER REFERENCES notification_channels(id) ON DELETE SET NULL,
     filter_app TEXT,
     filter_severity INTEGER,
     match_pattern TEXT,
@@ -255,13 +256,35 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     cooldown_seconds INTEGER DEFAULT 300,
     ai_enrichment BOOLEAN DEFAULT 0,
     is_enabled BOOLEAN NOT NULL DEFAULT 1,
+    trigger_count INTEGER NOT NULL DEFAULT 0,
     last_triggered_at DATETIME,
     suppress_until DATETIME,
     created_at DATETIME NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(is_enabled);
+
+CREATE TABLE IF NOT EXISTS alert_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER REFERENCES alert_rules(id) ON DELETE SET NULL,
+    rule_name TEXT NOT NULL,
+    channel_id INTEGER,
+    trigger_count INTEGER NOT NULL DEFAULT 1,
+    sample_log TEXT,
+    incident_summary TEXT,
+    ai_enrichment BOOLEAN DEFAULT 0,
+    ai_model TEXT,
+    triggered_at DATETIME NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_history_triggered_at ON alert_history(triggered_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_history_rule_id ON alert_history(rule_id);
 ''')
+
+    try:
+        conn.execute("ALTER TABLE alert_history ADD COLUMN ai_model TEXT")
+    except sqlite3.OperationalError:
+        pass
 
 
 MIGRATIONS = [

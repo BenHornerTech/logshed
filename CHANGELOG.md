@@ -16,8 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Chunked Batch Ingestion with RETURNING id**: Modernized `QueueConsumer` batch inserts using parameterized multi-row `INSERT INTO logs (...) VALUES (...) RETURNING id` queries to eliminate Python interpreter loops while accurately binding IDs for live SSE streaming.
 - **Thread-Local Read Connection Reuse**: Reusable SQLite read connections for worker threads in `run_db_query`, eliminating ephemeral connection churn and per-request PRAGMA execution overhead.
 - **Universal Notification Targets (Webhooks & Apprise)**: Universal alerting dispatcher supporting 80+ notification services (Discord, Gotify, Telegram, Ntfy, Pushover, Slack, Email) using standard URL formats. Includes URL encryption at rest with the master key, token masking for secure client display, and asynchronous dispatch via `asyncio.to_thread`.
-- **Notification Targets Management & Live Testing**: Dedicated Settings card for managing notification targets, toggling enabled state, testing connectivity with immediate dry-run notifications, and full CRUD API integration.
-- **Database Schema Migration v2 Expansion**: Expanded Migration 2 to introduce `notification_channels` and `alert_rules` tables with covering indexes for alert routing and delivery.
+- **Real-Time Alert Engine**: In-memory rule compilation and batch evaluation engine (`AlertEvaluator`) running inside the ingestion pipeline, supporting threshold sliding windows, pattern matching (regex and substring), severity thresholds, multi-application filtering, and cooldown flap dampening.
+- **Pre-Packaged Security Canary Rules**: 1-click installable canary alerts for SSH brute-force attacks, reverse-proxy authentication floods, unauthorized sudo escalation, and kernel out-of-memory (OOM) killer events.
+- **Automated AI Incident Diagnosis & Remediation**: Automated background analysis on alert triggers, generating structured summaries, root-cause analyses, and actionable remediation steps with model failover support.
+- **Enriched Alert Notifications**: Multi-channel notification delivery via Apprise (Pushover, Discord, Telegram, webhooks, etc.) with host, application, offending IP, log context, and AI incident diagnosis summaries.
+- **Alert Testing & Dry-Run Simulator**: Interactive test modal to validate alert matching rules and extract offending IP indicators against sample log payloads.
+- **Alert Firing Log & Unified Incident Detail View**: Historical alert record tracking with model attribution, matching event counts, log snippets with quick copy actions, and formatted markdown rendering matching the Historical AI Root-Cause Analysis layout.
+- **Database Schema Migration v2 Expansion**: Expanded Migration 2 to introduce `notification_channels`, `alert_rules`, and `alert_history` tables with covering indexes for alert routing and delivery.
 
 ## [1.1.0] - 2026-09-16
 

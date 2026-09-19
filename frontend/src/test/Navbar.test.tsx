@@ -118,7 +118,7 @@ describe('Navbar Component', () => {
     expect(onSelectTab).toHaveBeenCalledWith('console');
   });
 
-  it('renders all four navigation tabs and switches tabs on click', async () => {
+  it('renders all five navigation tabs and switches tabs on click', async () => {
     vi.spyOn(systemApi, 'fetchHealth').mockResolvedValue({
       status: 'ok',
       db: 'ok',
@@ -143,11 +143,13 @@ describe('Navbar Component', () => {
     const consoleBtn = screen.getByRole('button', { name: /Console View/i });
     const aliasesBtn = screen.getByRole('button', { name: /Host Aliases/i });
     const storageBtn = screen.getByRole('button', { name: /Storage/i });
+    const alertsBtn = screen.getByRole('button', { name: /Alerts/i });
     const settingsBtn = screen.getByRole('button', { name: /^Settings$/i });
 
     expect(consoleBtn).toBeInTheDocument();
     expect(aliasesBtn).toBeInTheDocument();
     expect(storageBtn).toBeInTheDocument();
+    expect(alertsBtn).toBeInTheDocument();
     expect(settingsBtn).toBeInTheDocument();
 
     fireEvent.click(aliasesBtn);
@@ -155,6 +157,9 @@ describe('Navbar Component', () => {
 
     fireEvent.click(storageBtn);
     expect(onTabChange).toHaveBeenCalledWith('storage');
+
+    fireEvent.click(alertsBtn);
+    expect(onTabChange).toHaveBeenCalledWith('alerts');
 
     fireEvent.click(settingsBtn);
     expect(onTabChange).toHaveBeenCalledWith('settings');

@@ -37,7 +37,7 @@ export interface SystemSettings {
   check_for_updates?: boolean;
 }
 
-export type AppTab = 'stream' | 'aliases' | 'storage' | 'settings';
+export type AppTab = 'stream' | 'aliases' | 'storage' | 'settings' | 'alerts';
 export interface StorageMetricsSnapshot {
   recorded_at: string;
   db_size_bytes: number;
@@ -298,5 +298,100 @@ export interface NotificationTestResponse {
   message: string;
 }
 
+export interface AlertRule {
+  id: number;
+  name: string;
+  rule_type: string;
+  channel_id?: number | null;
+  filter_app?: string | null;
+  filter_severity?: number | null;
+  match_pattern?: string | null;
+  threshold_count: number;
+  window_seconds: number;
+  cooldown_seconds: number;
+  ai_enrichment: boolean;
+  is_enabled: boolean;
+  trigger_count: number;
+  last_triggered_at?: string | null;
+  suppress_until?: string | null;
+  created_at: string;
+}
 
+export interface AlertRuleCreate {
+  name: string;
+  rule_type: string;
+  channel_id?: number | null;
+  filter_app?: string | null;
+  filter_severity?: number | null;
+  match_pattern?: string | null;
+  threshold_count?: number;
+  window_seconds?: number;
+  cooldown_seconds?: number;
+  ai_enrichment?: boolean;
+  is_enabled?: boolean;
+}
 
+export interface AlertRuleUpdate {
+  name?: string;
+  rule_type?: string;
+  channel_id?: number | null;
+  filter_app?: string | null;
+  filter_severity?: number | null;
+  match_pattern?: string | null;
+  threshold_count?: number;
+  window_seconds?: number;
+  cooldown_seconds?: number;
+  ai_enrichment?: boolean;
+  is_enabled?: boolean;
+  reset_cooldown?: boolean;
+}
+
+export interface AlertTestRequest {
+  rule_type: string;
+  filter_app?: string | null;
+  filter_severity?: number | null;
+  match_pattern?: string | null;
+  sample_message: string;
+  sample_app?: string | null;
+  sample_severity?: number | null;
+}
+
+export interface AlertTestResponse {
+  matched: boolean;
+  extracted_ip?: string | null;
+  error?: string | null;
+}
+
+export interface SecurityPreset {
+  id: string;
+  name: string;
+  description: string;
+  rule_type: string;
+  filter_app?: string | null;
+  filter_severity?: number | null;
+  match_pattern?: string | null;
+  threshold_count: number;
+  window_seconds: number;
+  cooldown_seconds: number;
+  ai_enrichment: boolean;
+}
+
+export interface AlertHistoryItem {
+  id: number;
+  rule_id?: number | null;
+  rule_name: string;
+  channel_id?: number | null;
+  trigger_count: number;
+  sample_log?: string | null;
+  incident_summary?: string | null;
+  ai_enrichment: boolean;
+  ai_model?: string | null;
+  triggered_at: string;
+}
+
+export interface AlertHistoryResponse {
+  items: AlertHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}

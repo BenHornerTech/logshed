@@ -74,6 +74,7 @@ class TestSchemaIntegrity:
             "saved_views",
             "notification_channels",
             "alert_rules",
+            "alert_history",
         }
         assert expected.issubset(tables)
 
@@ -185,6 +186,8 @@ class TestSchemaIntegrity:
             "idx_saved_views_pinned",
             "idx_notification_channels_enabled",
             "idx_alert_rules_enabled",
+            "idx_alert_history_triggered_at",
+            "idx_alert_history_rule_id",
         }
         assert expected.issubset(indexes)
 
@@ -213,6 +216,7 @@ class TestSchemaIntegrity:
             "id",
             "name",
             "rule_type",
+            "channel_id",
             "filter_app",
             "filter_severity",
             "match_pattern",
@@ -221,6 +225,7 @@ class TestSchemaIntegrity:
             "cooldown_seconds",
             "ai_enrichment",
             "is_enabled",
+            "trigger_count",
             "last_triggered_at",
             "suppress_until",
             "created_at",
@@ -228,6 +233,29 @@ class TestSchemaIntegrity:
         assert expected.issubset(set(cols.keys()))
         assert cols["name"][3] == 1  # NOT NULL
         assert cols["rule_type"][3] == 1  # NOT NULL
+
+    def test_alert_history_schema(self, db_path: Path):
+        """alert_history table should contain expected columns and constraints."""
+        conn = get_connection(db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(alert_history);")
+        cols = {row[1]: row for row in cursor.fetchall()}
+        conn.close()
+
+        expected = {
+            "id",
+            "rule_id",
+            "rule_name",
+            "channel_id",
+            "trigger_count",
+            "sample_log",
+            "incident_summary",
+            "ai_enrichment",
+            "triggered_at",
+        }
+        assert expected.issubset(set(cols.keys()))
+        assert cols["rule_name"][3] == 1  # NOT NULL
+        assert cols["triggered_at"][3] == 1  # NOT NULL
 
     def test_ai_audit_log_columns(self, db_path: Path):
         """ai_audit_log should include token metrics and system_prompt columns."""
